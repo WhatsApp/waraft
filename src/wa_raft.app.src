@@ -1,0 +1,19 @@
+%%% Copyright (c) Meta Platforms, Inc. and affiliates. All rights reserved.
+%%%
+%%% This source code is licensed under the Apache 2.0 license found in
+%%% the LICENSE file in the root directory of this source tree.
+
+%% @format
+
+{application, wa_raft, [
+    {description, "Erlang implementation of RAFT Consensus Protocol"},
+    {vsn, "1.0.0"},
+    {modules, []},
+    {registered, []},
+    %% NOTE: No more dependency is expected for this app
+    {applications, [
+        kernel,
+        stdlib
+    ]},
+    {env, []}
+]}.
