@@ -17,17 +17,73 @@ The example directory contains a generic key-value store built on top of WARaft.
 
 ```
 % Cluster config - single node. table name test, partition 1
-1> Config = #{table => test, partition => 1, nodes => ['nonode@nohost']}.
+1> Spec = wa_raft_sup:child_spec([#{table => test, partition => 1, nodes => [node()]}]).
 
-% Start raft processes
-2> supervisor:start_child(wa_raft_sup, #{id => wa_raft_part_top_sup, start => {wa_raft_part_top_sup, start_link, [[Args]]}, restart =>permanent, type => supervisor, shutdown => infinity, modules => [wa_raft_part_top_sup]}).
+% Start raft processes under kernel_sup as supervisor. It's for demo purpose only. An app supervisor should be used for a real case
+2> supervisor:start_child(kernel_sup, Spec).
+{ok,<0.140.0>}
 
-% Commit a write to table raft on partition 1
-3> wa_raft_acceptor:commit(raft_acceptor_test_1, {make_ref(), {write, test, 1, 1}}).
+% Check raft server status
+3> wa_raft_server:status(raft_server_test_1).
+[{state,stalled},
+ {id,nonode@nohost},
+ {partition,1},
+ {data_dir,"missing/test.1/"},
+ {current_term,0},
+ {voted_for,undefined},
+ {commit_index,0},
+ {last_applied,0},
+ {leader_id,undefined},
+ {next_index,#{}},
+ {match_index,#{}},
+ {log_module,wa_raft_log_ets},
+ {log_first,0},
+ {log_last,0},
+ {votes,#{}},
+ {inflight_applies,0},
+ {disable_reason,undefined},
+ {offline_peers,[]},
+ {config,#{version => 1}}]
 
-% Read the record
-4> wa_raft_acceptor:commit(raft_acceptor_test_1, {make_ref(), {read, test, 1}}).
+% Promote current node as leader
+4> wa_raft_server:promote(raft_server_test_1, 1, true, #{version => 1, membership => [{raft_server_test_1, node()}]}).
+ok
 
+5> wa_raft_server:status(raft_server_test_1).
+[{state,leader},  % leader node
+ {id,nonode@nohost},
+ {partition,1},
+ {data_dir,"missing/test.1/"},
+ {current_term,1},
+ {voted_for,undefined},
+ {commit_index,1},
+ {last_applied,1},
+ {leader_id,nonode@nohost},
+ {next_index,#{}},
+ {match_index,#{}},
+ {log_module,wa_raft_log_ets},
+ {log_first,0},
+ {log_last,1},
+ {votes,#{}},
+ {inflight_applies,0},
+ {disable_reason,undefined},
+ {offline_peers,[]},
+ {config,#{membership => [{raft_server_test_1,nonode@nohost}],
+           version => 1}}]
+
+% Write {key, 1000} to raft_server_test_1
+6> wa_raft_acceptor:commit(raft_acceptor_test_1, {make_ref(), {write, test, key, 1000}}).
+{ok, 2}
+
+% Read key
+7> wa_raft_acceptor:commit(raft_acceptor_test_1, {make_ref(), {read, test, key}}).
+{ok,{1000,#{},2}}
+
+% Stop raft
+8> supervisor:terminate_child(kernel_sup, wa_raft_sup).
+ok
+9> supervisor:delete_child(kernel_sup, wa_raft_sup).
+ok
 ```
 
 ## License
