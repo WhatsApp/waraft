@@ -4,6 +4,7 @@
 %%% the LICENSE file in the root directory of this source tree.
 
 -module(wa_raft_transport_worker).
+-compile(warn_missing_spec).
 -author('hsun324@fb.com').
 
 -behaviour(gen_server).
@@ -58,11 +59,16 @@ start_link(Number) ->
 init([Number]) ->
     {ok, #state{number = Number}}.
 
+
+-spec handle_call(Request :: term(), From :: {Pid :: pid(), Tag :: term()}, State :: state()) ->
+    {noreply, NewState :: state()}.
 handle_call(Request, From, #state{number = Number} = State) ->
-    ?LOG_WARNING("wa_raft_transport_worker[~p] received unrecognized call ~p from ~p",
+    ?LOG_WARNING("[~p] received unrecognized call ~p from ~p",
         [Number, Request, From], #{domain => [whatsapp, wa_raft]}),
     {noreply, State}.
 
+
+-spec handle_cast(Request :: term(), State :: state()) -> {noreply, NewState :: state()}.
 handle_cast({send, ID, FileID}, #state{number = Number, states = States} = State) ->
     ?RAFT_COUNT('raft.transport.send'),
     case wa_raft_transport:transport_info(ID) of
@@ -77,7 +83,7 @@ handle_cast({send, ID, FileID}, #state{number = Number, states = States} = State
                                 {{stop, Reason}, State#state{states = States#{Module => ModuleState1}}}
                         catch
                             T:E:S ->
-                                ?LOG_WARNING("wa_raft_transport_worker[~p] module ~p failed to send file ~p:~p due to ~p ~p: ~n~p",
+                                ?LOG_WARNING("[~p] module ~p failed to send file ~p:~p due to ~p ~p: ~n~p",
                                     [Number, Module, ID, FileID, T, E, S], #{domain => [whatsapp, wa_raft]}),
                                 {{T, E}, State}
                         end;
@@ -85,27 +91,29 @@ handle_cast({send, ID, FileID}, #state{number = Number, states = States} = State
                         {{stop, Reason}, State}
                 catch
                     T:E:S ->
-                        ?LOG_WARNING("wa_raft_transport_worker[~p] module ~p failed to get/init module state due to ~p ~p: ~n~p",
+                        ?LOG_WARNING("[~p] module ~p failed to get/init module state due to ~p ~p: ~n~p",
                             [Number, Module, T, E, S], #{domain => [whatsapp, wa_raft]}),
                         {{T, E}, State}
                 end,
             wa_raft_transport:complete(ID, FileID, Result, self()),
             {noreply, NewState};
         _ ->
-            ?LOG_WARNING("wa_raft_transport_worker[~p] got send request for unknown transfer ~p",
+            ?LOG_WARNING("[~p] got send request for unknown transfer ~p",
                 [Number, ID], #{domain => [whatsapp, wa_raft]}),
             {noreply, State}
     end;
 handle_cast(Request, #state{number = Number} = State) ->
-    ?LOG_WARNING("wa_raft_transport_worker[~p] received unrecognized cast ~p",
+    ?LOG_WARNING("[~p] received unrecognized cast ~p",
         [Number, Request], #{domain => [whatsapp, wa_raft]}),
     {noreply, State}.
 
+-spec handle_info(Info :: term(), State :: state()) -> {noreply, NewState :: state()}.
 handle_info(Info, #state{number = Number} = State) ->
-    ?LOG_WARNING("wa_raft_transport_worker[~p] received unrecognized info ~p",
+    ?LOG_WARNING("[~p] received unrecognized info ~p",
         [Number, Info], #{domain => [whatsapp, wa_raft]}),
     {noreply, State}.
 
+-spec terminate(term(), state()) -> ok.
 terminate(Reason, #state{states = States}) ->
     maps:fold(
         fun (Module, State, _) ->
@@ -115,10 +123,7 @@ terminate(Reason, #state{states = States}) ->
             end
         end, undefined, States).
 
-%%% ------------------------------------------------------------------------
-%%%  gen_factory worker logic
-%%%
-
+-spec get_module_state(module(), state()) -> {ok, state()} | {stop, term()}.
 get_module_state(Module, #state{states = States}) ->
     case States of
         #{Module := ModuleState} -> {ok, ModuleState};

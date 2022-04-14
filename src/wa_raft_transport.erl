@@ -266,7 +266,7 @@ init(_) ->
     schedule_scan(),
     {ok, #state{}}.
 
--spec handle_call(Request :: term(), From :: gen_factory:from(), State :: state()) -> {reply, Reply :: term(), NewState :: state()} | {noreply, NewState :: state()}.
+-spec handle_call(Request :: term(), From :: {Pid :: pid(), Tag :: term()}, State :: state()) -> {reply, Reply :: term(), NewState :: state()} | {noreply, NewState :: state()}.
 handle_call({start, Peer, Meta, Root}, _From, #state{} = State) ->
     {reply, start_transport(undefined, Peer, Meta, Root), State};
 handle_call({start_wait, Peer, Meta, Root}, From, #state{} = State) ->
@@ -441,7 +441,7 @@ handle_cast(Request, State) ->
     ?LOG_NOTICE("wa_raft_transport got unrecognized cast ~p", [Request], #{domain => [whatsapp, wa_raft]}),
     {noreply, State}.
 
--spec handle_info(Request :: term(), State :: state()) -> {noreply, NewState :: state()}.
+-spec handle_info(Info :: term(), State :: state()) -> {noreply, NewState :: state()}.
 handle_info(scan, State) ->
     lists:foreach(
         fun (ID) ->
