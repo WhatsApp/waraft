@@ -344,7 +344,7 @@ callback_mode() ->
 %%           This node should not participate any election. Otherwise it may vote yes to a lagging node and sabotage data integrity.
 -spec stalled(Type :: atom(), Event :: term(), State0 :: #raft_state{}) -> gen_statem:state_enter_result(state()).
 stalled(enter, _OldStateName, State) ->
-    set_stale(true, State),
+    wa_raft_info:set_stale(true, State),
     State1 = reset_state(State),
     {keep_state, State1};
 
@@ -450,7 +450,7 @@ leader(enter, OldStateName,
        #raft_state{name = Name, current_term = CurrentTerm, storage = StoragePid, log_view = View} = State) ->
     ?LOG_NOTICE("~p becomes leader[term ~p, last log ~p]. Previous state is ~p.", [Name, CurrentTerm, wa_raft_log:last_index(View), OldStateName], #{domain => [whatsapp, wa_raft]}),
     ?RAFT_COUNT('raft.leader.elected'),
-    set_stale(false, State),
+    wa_raft_info:set_stale(false, State),
     wa_raft_storage:cancel(StoragePid),
     State1 = reset_state(State),
     State2 = reset_leader_state(State1),
@@ -1143,7 +1143,7 @@ disabled(enter, FromState, #raft_state{disable_reason = undefined} = State) ->
 
 disabled(enter, leader, #raft_state{name = Name, current_term = CurrentTerm, storage = StoragePid} = State0) ->
     ?LOG_NOTICE("Leader[~p, term ~p] is now disabled.", [Name, CurrentTerm], #{domain => [whatsapp, wa_raft]}),
-    set_stale(true, State0),
+    wa_raft_info:set_stale(true, State0),
     State1 = reset_state(State0),
     State2 = State1#raft_state{leader_id = undefined, voted_for = undefined, next_index = #{}, match_index = #{}},
     notify_leader_change(State2),
@@ -1154,7 +1154,7 @@ disabled(enter, leader, #raft_state{name = Name, current_term = CurrentTerm, sto
 disabled(enter, FromState, #raft_state{name = Name, current_term = CurrentTerm} = State0) ->
     FromState =/= disabled andalso
         ?LOG_NOTICE("~p[~p, term ~p] is now disabled.", [FromState, Name, CurrentTerm], #{domain => [whatsapp, wa_raft]}),
-    set_stale(true, State0),
+    wa_raft_info:set_stale(true, State0),
     State1 = reset_state(State0),
     State2 = State1#raft_state{voted_for = undefined, next_index = #{}, match_index = #{}},
     wa_raft_durable_state:store(State2),
@@ -1238,7 +1238,7 @@ disabled(Type, Event, #raft_state{name = Name, current_term = CurrentTerm} = Sta
 -spec terminate(Reason :: term(), StateName :: state(), State :: #raft_state{}) -> ok.
 terminate(Reason, StateName, #raft_state{name = Name, current_term = CurrentTerm} = State) ->
     wa_raft_durable_state:sync(State),
-    set_stale(true, State),
+    wa_raft_info:set_stale(true, State),
     catch unregister(Name),
     ?LOG_NOTICE("~p[~p, term ~p] terminating due to ~p.",
         [StateName, Name, CurrentTerm, Reason], #{domain => [whatsapp, wa_raft]}),
@@ -1966,10 +1966,10 @@ append_entries(_Term, LeaderId, PrevLogIndex, PrevLogTerm, Entries, LeaderCommit
 -spec notify_leader_change(#raft_state{}) -> any().
 notify_leader_change(#raft_state{table = Table, partition = Partition, leader_id = undefined}) ->
     ?LOG_NOTICE("No leader for ~p:~p", [Table, Partition], #{domain => [whatsapp, wa_raft]}),
-    set_leader(Table, Partition, undefined);
+    wa_raft_info:set_leader(Table, Partition, undefined);
 notify_leader_change(#raft_state{table = Table, partition = Partition, leader_id = LeaderId}) ->
     ?LOG_NOTICE("Change leader to ~p for ~p:~p", [LeaderId, Table, Partition], #{domain => [whatsapp, wa_raft]}),
-    set_leader(Table, Partition, LeaderId).
+    wa_raft_info:set_leader(Table, Partition, LeaderId).
 
 %% Generic reply function that operates based on event type.
 -spec reply(Type :: cast | {call, From :: term()} | info, Node :: undefined | node(), Message :: term(), State :: #raft_state{}) -> ok | wa_raft:error().
@@ -2018,10 +2018,6 @@ update_offline_peers(#raft_state{offline_peers = OfflinePeers} = State0, Peer, I
             State0#raft_state{offline_peers = lists:delete(Peer, OfflinePeers)}
     end.
 
--spec set_leader(wa_raft:table(), wa_raft:partition(), node()) -> ok.
-set_leader(Table, Partition, Value) ->
-    persistent_term:put(?RAFT_LEADER_NODE(Table, Partition), Value).
-
 -spec maybe_heartbeat(#raft_state{}) -> #raft_state{}.
 maybe_heartbeat(State) ->
     case should_heartbeat(State) of
@@ -2040,11 +2036,6 @@ should_heartbeat(#raft_state{last_heartbeat_ts = LastHeartbeatTs}) ->
     Current = erlang:system_time(millisecond),
     Current - Latest > ?RAFT_CONFIG(raft_heartbeat_interval_ms, 120).
 
-%% Set to true if data on current node is stale. Read on this node may return out-of-dated data
--spec set_stale(boolean(), #raft_state{}) -> ok.
-set_stale(Stale, #raft_state{table = Table, partition = Partition}) ->
-    persistent_term:put(?RAFT_STALE_FLAG(Table, Partition), Stale).
-
 %% Check follower/candidate staleness due to heartbeat delay
 -spec check_follower_stale(state(), #raft_state{}) -> any().
 check_follower_stale(FSMState, #raft_state{name = Name, table = Table, partition = Partition,
@@ -2054,13 +2045,13 @@ check_follower_stale(FSMState, #raft_state{name = Name, table = Table, partition
         _         -> erlang:system_time(millisecond) - LeaderHeartbeatTs
     end,
     Stale = HeartbeatMs > ?RAFT_CONFIG(raft_follower_heartbeat_stale_ms, 10000),
-    case ?RAFT_STALE(Table, Partition) of
+    case wa_raft_info:get_stale(Table, Partition) of
         Stale ->
             ok;
         _ ->
             ?LOG_NOTICE("~p[~p, term ~p] adjusts stale to ~p due to heartbeat delay of ~p ms.",
                 [FSMState, Name, CurrentTerm, Stale, HeartbeatMs], #{domain => [whatsapp, wa_raft]}),
-            set_stale(Stale, State)
+            wa_raft_info:set_stale(Stale, State)
     end.
 
 %% Check follower state due to log entry lag and change stale flag if needed
@@ -2070,19 +2061,19 @@ check_follower_lagging(LeaderCommit, #raft_state{table = Table, partition = Part
     ?RAFT_GATHER('raft.follower.lagging', Lagging),
     case Lagging < ?RAFT_CONFIG(raft_follower_max_lagging, 5000) of
         true ->
-            case ?RAFT_STALE(Table, Partition) =/= false of
+            case wa_raft_info:get_stale(Table, Partition) =/= false of
                 true ->
                     ?LOG_NOTICE("[~p:~p] Follower catches up.", [Table, Partition], #{domain => [whatsapp, wa_raft]}),
-                    set_stale(false, State);
+                    wa_raft_info:set_stale(false, State);
                 false ->
                     ok
             end;
         false ->
-            case ?RAFT_STALE(Table, Partition) =/= true of
+            case wa_raft_info:get_stale(Table, Partition) =/= true of
                 true ->
                     ?LOG_NOTICE("[~p:~p] Follower is far behind ~p(leader ~p, follower ~p)",
                             [Table, Partition, Lagging, LeaderCommit, LastApplied], #{domain => [whatsapp, wa_raft]}),
-                    set_stale(true, State);
+                    wa_raft_info:set_stale(true, State);
                 false ->
                     ok
             end
@@ -2095,7 +2086,7 @@ check_leader_lagging(#raft_state{name = Name, table = Table, partition = Partiti
     NowTs = erlang:system_time(millisecond),
     QuorumTs = compute_quorum(HeartbeatResponse#{node() => NowTs}, 0, config(State)),
 
-    Stale = ?RAFT_STALE(Table, Partition),
+    Stale = wa_raft_info:get_stale(Table, Partition),
     QuorumAge = NowTs - QuorumTs,
     MaxAge = ?RAFT_CONFIG(raft_max_heartbeat_age_msecs, 180 * 1000),
 
@@ -2105,11 +2096,11 @@ check_leader_lagging(#raft_state{name = Name, table = Table, partition = Partiti
         true ->
             ?LOG_NOTICE("Leader[~p, term ~p] is now stale due to last heartbeat quorum age being ~p ms >= ~p ms max",
                 [Name, CurrentTerm, QuorumAge, MaxAge], #{domain => [whatsapp, wa_raft]}),
-            set_stale(true, State);
+            wa_raft_info:set_stale(true, State);
         false ->
             ?LOG_NOTICE("Leader[~p, term ~p] is no longer stale after heartbeat quorum age drops to ~p ms < ~p ms max",
                 [Name, CurrentTerm, QuorumAge, MaxAge], #{domain => [whatsapp, wa_raft]}),
-            set_stale(false, State)
+            wa_raft_info:set_stale(false, State)
     end.
 
 %% 1. FollowerEndIndex is zero: follower is empty(in stalled state). We need a snapshot catchup.

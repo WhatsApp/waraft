@@ -3,7 +3,7 @@
 %%% This source code is licensed under the Apache 2.0 license found in
 %%% the LICENSE file in the root directory of this source tree.
 %%%
-%%% Top level OTP Supervisor for monitoring ALL raft processes. 
+%%% Top level OTP Supervisor for monitoring ALL raft processes.
 
 -module(wa_raft_sup).
 -compile(warn_missing_spec).
@@ -41,6 +41,7 @@ start_link(RaftArgs) ->
 -spec init([wa_raft:args()]) -> {ok, {supervisor:sup_flags(), list(supervisor:child_spec())}}.
 init(RaftArgs) ->
     init_globals(),
+    wa_raft_info:init_tables(),
     wa_raft_transport:setup_tables(),
     ChildSpecs = [
         wa_raft_transport:child_spec(),

@@ -26,17 +26,9 @@
 -define(RAFT_STORAGE_NAME(Table, Partition), ?TO_ATOM("raft_storage_", Table, Partition)).
 %% Raft acceptor service
 -define(RAFT_ACCEPTOR_NAME(Table, Partition), ?TO_ATOM("raft_acceptor_", Table, Partition)).
-%% Raft leader node
--define(RAFT_LEADER_NODE(Table, Partition), ?TO_ATOM("raft_leader_", Table, Partition)).
-%% Raft stale flag
--define(RAFT_STALE_FLAG(Table, Partition), ?TO_ATOM("raft_stale_", Table, Partition)).
 %% RAFT catchup process
 -define(RAFT_CATCHUP(Table, Partition), ?TO_ATOM("raft_catchup_", Table, Partition)).
 
-%% Raft leader
--define(RAFT_LEADER(Table, Partition), persistent_term:get(?RAFT_LEADER_NODE(Table, Partition), undefined)).
-%% Raft flag to indicate if current data is stale
--define(RAFT_STALE(Table, Partition), persistent_term:get(?RAFT_STALE_FLAG(Table, Partition), true)).
 %% RAFT election max weight
 -define(RAFT_ELECTION_MAX_WEIGHT, 10).
 %% Raft election default weight
