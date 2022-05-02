@@ -344,6 +344,7 @@ callback_mode() ->
 %%           This node should not participate any election. Otherwise it may vote yes to a lagging node and sabotage data integrity.
 -spec stalled(Type :: atom(), Event :: term(), State0 :: #raft_state{}) -> gen_statem:state_enter_result(state()).
 stalled(enter, _OldStateName, State) ->
+    wa_raft_info:set_state(State#raft_state.table, State#raft_state.partition, ?FUNCTION_NAME),
     wa_raft_info:set_stale(true, State),
     State1 = reset_state(State),
     {keep_state, State1};
@@ -450,6 +451,7 @@ leader(enter, OldStateName,
        #raft_state{name = Name, current_term = CurrentTerm, storage = StoragePid, log_view = View} = State) ->
     ?LOG_NOTICE("~p becomes leader[term ~p, last log ~p]. Previous state is ~p.", [Name, CurrentTerm, wa_raft_log:last_index(View), OldStateName], #{domain => [whatsapp, wa_raft]}),
     ?RAFT_COUNT('raft.leader.elected'),
+    wa_raft_info:set_state(State#raft_state.table, State#raft_state.partition, ?FUNCTION_NAME),
     wa_raft_info:set_stale(false, State),
     wa_raft_storage:cancel(StoragePid),
     State1 = reset_state(State),
@@ -836,6 +838,7 @@ follower(enter, leader,
                      last_heartbeat_ts = LastHeartbeatTs, storage = StoragePid} = State) ->
     ?LOG_NOTICE("Follower[~p, term ~p] changes from leader. Match ~p. Next ~p. LastHeartbeat ~p.",
         [Name, CurrentTerm, MatchIndex, NextIndex, LastHeartbeatTs], #{domain => [whatsapp, wa_raft]}),
+    wa_raft_info:set_state(State#raft_state.table, State#raft_state.partition, ?FUNCTION_NAME),
     check_follower_stale(follower, State),
     State1 = reset_state(State),
     State2 = State1#raft_state{voted_for = undefined, next_index = maps:new(), match_index = maps:new()},
@@ -846,6 +849,7 @@ follower(enter, OldStateName,
          #raft_state{name = Name, current_term = CurrentTerm, match_index = MatchIndex, next_index = NextIndex} = State) ->
     ?LOG_NOTICE("Follower[~p, term ~p] starts with old state ~p. Match ~100p. Next ~100p",
         [Name, CurrentTerm, OldStateName, MatchIndex, NextIndex], #{domain => [whatsapp, wa_raft]}),
+    wa_raft_info:set_state(State#raft_state.table, State#raft_state.partition, ?FUNCTION_NAME),
     check_follower_stale(follower, State),
     State1 = reset_state(State),
     State2 = State1#raft_state{voted_for = undefined, next_index = maps:new(), match_index = maps:new()}, %% always reset leader on state change
@@ -1000,6 +1004,7 @@ candidate(enter, _PreviousState,
           #raft_state{id = RaftId, name = Name, current_term = CurrentTerm,
                       log_view = View, next_election_type = ElectionType} = State0) ->
     ?RAFT_COUNT('raft.leader.election_started'),
+    wa_raft_info:set_state(State0#raft_state.table, State0#raft_state.partition, ?FUNCTION_NAME),
 
     % Entering the candidate state means that we are starting a new election, thus
     % advance the term and set VotedFor to the current node. (Candidates always
@@ -1143,6 +1148,7 @@ disabled(enter, FromState, #raft_state{disable_reason = undefined} = State) ->
 
 disabled(enter, leader, #raft_state{name = Name, current_term = CurrentTerm, storage = StoragePid} = State0) ->
     ?LOG_NOTICE("Leader[~p, term ~p] is now disabled.", [Name, CurrentTerm], #{domain => [whatsapp, wa_raft]}),
+    wa_raft_info:set_state(State0#raft_state.table, State0#raft_state.partition, ?FUNCTION_NAME),
     wa_raft_info:set_stale(true, State0),
     State1 = reset_state(State0),
     State2 = State1#raft_state{leader_id = undefined, voted_for = undefined, next_index = #{}, match_index = #{}},
@@ -1154,6 +1160,7 @@ disabled(enter, leader, #raft_state{name = Name, current_term = CurrentTerm, sto
 disabled(enter, FromState, #raft_state{name = Name, current_term = CurrentTerm} = State0) ->
     FromState =/= disabled andalso
         ?LOG_NOTICE("~p[~p, term ~p] is now disabled.", [FromState, Name, CurrentTerm], #{domain => [whatsapp, wa_raft]}),
+    wa_raft_info:set_state(State0#raft_state.table, State0#raft_state.partition, ?FUNCTION_NAME),
     wa_raft_info:set_stale(true, State0),
     State1 = reset_state(State0),
     State2 = State1#raft_state{voted_for = undefined, next_index = #{}, match_index = #{}},
@@ -1238,6 +1245,7 @@ disabled(Type, Event, #raft_state{name = Name, current_term = CurrentTerm} = Sta
 -spec terminate(Reason :: term(), StateName :: state(), State :: #raft_state{}) -> ok.
 terminate(Reason, StateName, #raft_state{name = Name, current_term = CurrentTerm} = State) ->
     wa_raft_durable_state:sync(State),
+    wa_raft_info:delete_state(State#raft_state.table, State#raft_state.partition),
     wa_raft_info:set_stale(true, State),
     catch unregister(Name),
     ?LOG_NOTICE("~p[~p, term ~p] terminating due to ~p.",
