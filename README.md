@@ -13,7 +13,7 @@ WARaft is a Raft library in Erlang by WhatsApp. It provides an Erlang implementa
 
 The following code snippet gives a quick glance about how WARaft works. It creates single node WARaft cluster and write a record.
 
-The example directory contains a generic key-value store built on top of WARaft. 
+The [example directory](https://github.com/WhatsApp/waraft/tree/main/examples/kvstore/src) contains a generic key-value store built on top of WARaft. 
 
 ```
 % Cluster config - single node. table name test, partition 1
