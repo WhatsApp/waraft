@@ -90,7 +90,7 @@
 -define(HEARTBEAT_TIMEOUT, {state_timeout, ?RAFT_CONFIG(raft_heartbeat_interval_ms, 120), heartbeat}).
 -define(COMMIT_BATCH_TIMEOUT, {state_timeout, ?RAFT_CONFIG(raft_commit_batch_interval_ms, 2), batch_commit}).
 
-%% Time before considering handvoer failed in ms.
+%% Time before considering handover failed in ms.
 -define(RAFT_HANDOVER_TIMEOUT_MS(), ?RAFT_CONFIG(raft_handover_timeout_ms, 600)).
 
 -define(MAX_LOG_APPLY_BATCH_SIZE, ?RAFT_CONFIG(raft_apply_log_batch_size, 200)).
@@ -1008,7 +1008,7 @@ candidate(enter, _PreviousState,
 
     % Entering the candidate state means that we are starting a new election, thus
     % advance the term and set VotedFor to the current node. (Candidates always
-    % implictly vote for themselves.)
+    % implicitly vote for themselves.)
     State1 = advance_term(CurrentTerm + 1, RaftId, State0),
 
     LastLogIndex = wa_raft_log:last_index(View),
@@ -1022,7 +1022,7 @@ candidate(enter, _PreviousState,
     State3 = State2#raft_state{election_start_ts = os:timestamp(), next_election_type = normal, votes = #{}},
 
     % Broadcast vote requests and also send a vote-for-self.
-    % (Candidates always implictly vote for themselves.)
+    % (Candidates always implicitly vote for themselves.)
     RequestVote = case ?RAFT_CONFIG(send_request_vote_with_type, false) of
         true  -> ?REQUEST_VOTE_RPC(CurrentTerm + 1, RaftId, ElectionType, LastLogIndex, LastLogTerm);
         false -> ?REQUEST_VOTE_RPC_OLD(CurrentTerm + 1, RaftId, LastLogIndex, LastLogTerm)
@@ -1906,7 +1906,7 @@ adjust_config(Action, Config, #raft_state{id = Id, name = Name}) ->
           ok                 % the append was successful
         | invalid            % the request was malformed and no update should occur on leader
         | failed             % the request failed due to expected reasons
-        | {disable, Reason}, % an unrecoverable error occured
+        | {disable, Reason}, % an unrecoverable error occurred
     Reason :: term(),
     NewState :: #raft_state{}.
 
@@ -2113,7 +2113,7 @@ check_leader_lagging(#raft_state{name = Name, table = Table, partition = Partiti
 
 %% 1. FollowerEndIndex is zero: follower is empty(in stalled state). We need a snapshot catchup.
 %% 2. FollowerEndIndex is behind than FirstIndex: we may need file log or snapshot for catchup
-%% 3. FollowerEndIndex is behind LastAppledIndex by some threshold: we may need file log or snapshot for catchup.
+%% 3. FollowerEndIndex is behind LastAppliedIndex by some threshold: we may need file log or snapshot for catchup.
 -spec should_catchup_follower(wa_raft_log:log_index(), #raft_state{}) -> boolean().
 should_catchup_follower(FollowerEndIndex, #raft_state{log_view = View, last_applied = LastAppliedIndex}) ->
     ?RAFT_CONFIG(catchup_enabled, true) =:= true andalso

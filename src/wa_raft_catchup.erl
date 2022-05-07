@@ -126,7 +126,7 @@ handle_event({catchup, FollowerId, FollowerLastIndex, LeaderTerm, LeaderCommitIn
         end
     catch
         Type:Error:Stack ->
-            % Flatten a potentially huge error into a string representation with an intentonally
+            % Flatten a potentially huge error into a string representation with an intentionally
             % very small recursion limit to avoid logging op data and reduce overall log event size.
             ErrorStr = lists:flatten(io_lib:format("~0P", [Error, 10])),
             ?RAFT_COUNT('raft.catchup.error'),

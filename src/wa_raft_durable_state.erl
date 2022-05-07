@@ -33,20 +33,20 @@ load(#raft_state{name = Name, data_dir = RootDir} = State) ->
                     try
                         {ok, lists:foldl(
                             fun
-                                F({Item, Validator, Updator}, StateN) ->
-                                    F({Item, Validator, Updator, '$required'}, StateN);
-                                F({Item, Validator, Updator, Default}, StateN) ->
+                                F({Item, Validator, Updater}, StateN) ->
+                                    F({Item, Validator, Updater, '$required'}, StateN);
+                                F({Item, Validator, Updater, Default}, StateN) ->
                                     case proplists:lookup(Item, StateTerms) of
                                         none when Default =:= '$required' ->
                                             ?LOG_ERROR("~p read state file but cannot find ~p.",
                                                 [Name, Item], #{domain => [whatsapp, wa_raft]}),
                                             throw({error, {missing, Item}});
                                         none ->
-                                            Updator(Default, StateN);
+                                            Updater(Default, StateN);
                                         {Item, Value} ->
                                             case Validator =:= undefined orelse Validator(Value) of
                                                 true ->
-                                                    Updator(Value, StateN);
+                                                    Updater(Value, StateN);
                                                 false ->
                                                     ?LOG_ERROR("~p read state file but ~p has an invalid value `~p`.",
                                                         [Name, Item, Value], #{domain => [whatsapp, wa_raft]}),
