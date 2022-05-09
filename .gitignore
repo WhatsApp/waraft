@@ -1,0 +1,25 @@
+.DS_Store
+.rebar3
+.eunit
+*.o
+*.beam
+*.plt
+*.swp
+*.swo
+ebin
+log
+erl_crash.dump
+.rebar
+_build
+.idea
+rebar3.crashdump
+.edts
+*.coverdata
+*.log
+*.log.*
+doc
+# Emacs Backup files
+*~
+# Emacs temporary files
+.#*
+*#
