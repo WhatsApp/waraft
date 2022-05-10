@@ -212,9 +212,10 @@ membership(Service) ->
 stop(Pid) ->
     gen_statem:stop(Pid).
 
+% An API that uses storage timeout since it interacts with storage layer directly
 -spec snapshot_available(Pid :: atom() | pid(), Root :: string(), Pos :: wa_raft_log:log_pos()) -> ok | wa_raft:error().
 snapshot_available(Pid, Root, Pos) ->
-    gen_server:call(Pid, ?SNAPSHOT_AVAILABLE_COMMAND(Root, Pos), ?RPC_CALL_TIMEOUT_MS).
+    gen_server:call(Pid, ?SNAPSHOT_AVAILABLE_COMMAND(Root, Pos), ?STORAGE_CALL_TIMEOUT_MS).
 
 %% TODO(hsun324): Update promote to enable setting a RAFT cluster membership
 %%                in order to be able to bootstrap new RAFT clusters.

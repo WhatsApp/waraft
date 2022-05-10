@@ -47,8 +47,10 @@
 -define(SNAPSHOT_PREFIX, "snapshot").
 %% Snapshot name
 -define(SNAPSHOT_NAME(Index, Term), lists:concat([?SNAPSHOT_PREFIX, ".", integer_to_list(Index),  ".", integer_to_list(Term)])).
-%% Default Call timeout for all cross node wlib:call
+%% Default Call timeout for all cross node gen_server:call
 -define(RPC_CALL_TIMEOUT_MS, ?RAFT_CONFIG(raft_rpc_call_timeout, 30000)).
+%% Default call timeout for storage related operation (we need bigger default since storage can be slower)
+-define(STORAGE_CALL_TIMEOUT_MS, ?RAFT_CONFIG(raft_storage_call_timeout, 60000)).
 %% Counters
 -define(RAFT_COUNTERS, raft_counters).
 %% Number of counters

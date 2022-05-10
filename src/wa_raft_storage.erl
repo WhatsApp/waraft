@@ -153,7 +153,7 @@ stop(Pid) ->
 
 -spec status(Pid :: pid()) -> status().
 status(Pid) ->
-    gen_server:call(Pid, status, ?RPC_CALL_TIMEOUT_MS).
+    gen_server:call(Pid, status, ?STORAGE_CALL_TIMEOUT_MS).
 
 -spec apply_op(pid(), wa_raft_log:log_record(), wa_raft_log:log_term()) -> ok.
 apply_op(Pid, LogRecord, ServerTerm) ->
@@ -173,19 +173,19 @@ cancel(Pid) ->
 
 -spec open_snapshot(Pid :: pid(), LastAppliedPos :: wa_raft_log:log_pos()) -> ok | error().
 open_snapshot(Pid, LastAppliedPos) ->
-    gen_server:call(Pid, {snapshot_open, LastAppliedPos}, ?RPC_CALL_TIMEOUT_MS).
+    gen_server:call(Pid, {snapshot_open, LastAppliedPos}, ?STORAGE_CALL_TIMEOUT_MS).
 
 -spec create_snapshot(ServerRef :: pid() | atom() | {Name :: atom(), Node :: atom()}) -> {ok, Pos :: wa_raft_log:log_pos()} | error().
 create_snapshot(ServerRef) ->
-    gen_server:call(ServerRef, snapshot_create, ?RPC_CALL_TIMEOUT_MS).
+    gen_server:call(ServerRef, snapshot_create, ?STORAGE_CALL_TIMEOUT_MS).
 
 -spec create_snapshot(Pid :: pid(), Name :: string()) -> ok | error().
 create_snapshot(Pid, Name) ->
-    gen_server:call(Pid, {snapshot_create, Name}, ?RPC_CALL_TIMEOUT_MS).
+    gen_server:call(Pid, {snapshot_create, Name}, ?STORAGE_CALL_TIMEOUT_MS).
 
 -spec create_empty_snapshot(Pid :: pid(), Name :: string()) -> ok | error().
 create_empty_snapshot(Pid, Name) ->
-    gen_server:call(Pid, {snapshot_create_empty, Name}, ?RPC_CALL_TIMEOUT_MS).
+    gen_server:call(Pid, {snapshot_create_empty, Name}, ?STORAGE_CALL_TIMEOUT_MS).
 
 -spec delete_snapshot(Pid :: pid(), Name :: string()) -> ok.
 delete_snapshot(Pid, Name) ->
@@ -193,7 +193,7 @@ delete_snapshot(Pid, Name) ->
 
 -spec read_metadata(Pid :: pid(), Key :: metadata()) -> {ok, Version :: wa_raft_log:log_pos(), Value :: term()} | undefined | error().
 read_metadata(Pid, Key) ->
-    gen_server:call(Pid, {read_metadata, Key}, ?RPC_CALL_TIMEOUT_MS).
+    gen_server:call(Pid, {read_metadata, Key}, ?STORAGE_CALL_TIMEOUT_MS).
 
 %% gen_server callbacks
 -spec init([wa_raft:args()]) -> {ok, #raft_storage{}}.
