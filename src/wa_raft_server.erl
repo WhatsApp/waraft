@@ -651,10 +651,9 @@ leader(cast, ?COMMIT_COMMAND(Op), #raft_state{current_term = CurrentTerm, log_vi
     end;
 
 %% [Strong Read] Leader is eligible to serve strong reads.
-leader(cast, ?READ_COMMAND({From, Command} = Op), #raft_state{name = Name, table = Table, partition = Partition,
-                                                          current_term = CurrentTerm, storage = StoragePid,
-                                                          commit_index = CommitIndex, last_applied = LastApplied,
-                                                          first_current_term_log_index = FirstLogIndex}) ->
+leader(cast, ?READ_COMMAND({From, Command} = Op),
+       #raft_state{name = Name, table = Table, partition = Partition, current_term = CurrentTerm, storage = StoragePid,
+                   commit_index = CommitIndex, last_applied = LastApplied, first_current_term_log_index = FirstLogIndex}) ->
     ?LOG_DEBUG("Leader[~p, term ~p] receives strong read request", [Name, CurrentTerm]),
     % We take the max of first log index for the current term and the actual commit index to deal with the case
     % where leader gets elected with non-committed log entries. We wait for these non-committed log entries to
@@ -886,14 +885,11 @@ follower(Type, ?APPEND_ENTRIES_RPC_OLD(CurrentTerm, LeaderId, PrevLogIndex, Prev
 %% Follower receives AppendEntries from leader
 follower(Type, ?APPEND_ENTRIES_RPC(CurrentTerm, LeaderId, PrevLogIndex, PrevLogTerm, Entries, LeaderCommitIndex, TrimIndex),
          #raft_state{id = RaftId, current_term = CurrentTerm} = State0) ->
-    % StartT = ?START_LAT(),
     case append_entries(CurrentTerm, LeaderId, PrevLogIndex, PrevLogTerm, Entries, LeaderCommitIndex, TrimIndex, State0) of
         {{disable, Reason}, State1} ->
             State2 = State1#raft_state{disable_reason = Reason},
             {next_state, disabled, State2};
         {Result, #raft_state{log_view = View} = State1} ->
-            % ?RAFT_GATHER({'raft.follower.append.call.func', Table}, ?CALC_LAT(StartT)),
-            % HeartbeatTs =/= undefined andalso ?RAFT_GATHER({'raft.follower.heartbeat.interval', Table}, ?CALC_LAT(HeartbeatTs)),
             check_follower_lagging(LeaderCommitIndex, State1),
             State2 = State1#raft_state{leader_heartbeat_ts = erlang:system_time(millisecond)},
             LastIndex = wa_raft_log:last_index(View),
@@ -1932,19 +1928,24 @@ append_entries(_Term, LeaderId, PrevLogIndex, PrevLogTerm, Entries, LeaderCommit
     ?LOG_DEBUG("Follower[~p, term ~p] appending ~p log entries starting from ~p (leader commit ~p, leader trim ~p)",
         [Name, CurrentTerm, length(Entries), PrevLogIndex + 1, LeaderCommitIndex, LeaderTrimIndex], #{domain => [whatsapp, wa_raft]}),
     ?RAFT_GATHER('raft.follower.heartbeat.size', length(Entries)),
-    case wa_raft_log:get(View, PrevLogIndex) of
-        not_found ->
-            ?RAFT_COUNT('raft.follower.heartbeat.skip.no_prev_log'),
-            ?LOG_WARNING("Follower[~p, term ~p]: skip log appending from ~p. Prev log ~p doesn't exist",
-                [Name, CurrentTerm, LeaderId, PrevLogIndex], #{domain => [whatsapp, wa_raft]}),
-            {failed, State0};
-        {ok, {PrevLogTermAtLocal, _Op}} when PrevLogTerm =/= PrevLogTermAtLocal ->
+    case wa_raft_log:term(View, PrevLogIndex) of
+        {ok, PrevLogTerm} -> % PrevLogIndex term matches PrevLogTerm
+            {ok, LogLastIndex, View1} = wa_raft_log:append(View, PrevLogIndex + 1, Entries),
+            State1 = State0#raft_state{log_view = View1},
+            NewCommitIndex = erlang:min(LeaderCommitIndex, LogLastIndex),
+            TrimIndex = case ?RAFT_CONFIG(use_trim_index, false) of
+                true  -> LeaderTrimIndex;
+                false -> infinity
+            end,
+            State2 = apply_log(State1, NewCommitIndex, TrimIndex),
+            {ok, State2};
+        {ok, ReadPrevLogTerm} -> % PrevLogIndex term doesn't match PrevLogTerm
             % [5.3] If an existing entry conflicts with a new one (same index but different terms), delete the existing entry and all that follow it.
             %       However, if we are trying to delete log entries that have already been applied then we might be facing data corruption.
             ?RAFT_COUNT('raft.follower.heartbeat.skip.mismatch_prev_log_term'),
             ?LOG_WARNING(
                 "Follower[~p, term ~p]: skip log appending from ~p. Prev log ~p term ~p doesn't match mine ~p. last applied ~p. Truncate it",
-                [Name, CurrentTerm, LeaderId, PrevLogIndex, PrevLogTerm, PrevLogTermAtLocal, LastApplied], #{domain => [whatsapp, wa_raft]}),
+                [Name, CurrentTerm, LeaderId, PrevLogIndex, PrevLogTerm, ReadPrevLogTerm, LastApplied], #{domain => [whatsapp, wa_raft]}),
             case PrevLogIndex < LastApplied of
                 true ->
                     % We are trying to delete already applied log entries so disable this partition due to
@@ -1960,16 +1961,16 @@ append_entries(_Term, LeaderId, PrevLogIndex, PrevLogTerm, Entries, LeaderCommit
                     {ok, View1} = wa_raft_log:truncate(View, PrevLogIndex),
                     {failed, State0#raft_state{log_view = View1}}
             end;
-        _ ->
-            {ok, LogLastIndex, View1} = wa_raft_log:append(View, PrevLogIndex + 1, Entries),
-            State1 = State0#raft_state{log_view = View1},
-            NewCommitIndex = erlang:min(LeaderCommitIndex, LogLastIndex),
-            TrimIndex = case ?RAFT_CONFIG(use_trim_index, false) of
-                true  -> LeaderTrimIndex;
-                false -> infinity
-            end,
-            State2 = apply_log(State1, NewCommitIndex, TrimIndex),
-            {ok, State2}
+        not_found ->
+            ?RAFT_COUNT('raft.follower.heartbeat.skip.no_prev_log'),
+            ?LOG_WARNING("Follower[~p, term ~p]: skip log appending from ~p. Prev log ~p doesn't exist",
+                [Name, CurrentTerm, LeaderId, PrevLogIndex], #{domain => [whatsapp, wa_raft]}),
+            {failed, State0};
+        {error, Reason} ->
+            ?RAFT_COUNT('raft.follower.heartbeat.skip.read_error_prev_log_term'),
+            ?LOG_WARNING("Follower[~p, term ~p]: skip log appending from ~p. Prev log ~p read error: ~p",
+                [Name, CurrentTerm, LeaderId, PrevLogIndex, Reason], #{domain => [whatsapp, wa_raft]}),
+            {failed, State0}
     end.
 
 -spec notify_leader_change(#raft_state{}) -> any().
