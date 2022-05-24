@@ -1823,10 +1823,8 @@ heartbeat(FollowerId, #raft_state{id = RaftId, name = Name, log_view = View, cat
             {ok, LastTerm} = wa_raft_log:term(View, LastIndex),
             ?LOG_DEBUG("Leader[~p term ~p last log ~p] send empty heartbeat to follower ~p(prev ~p, catching-up ~p)",
                 [Name, CurrentTerm, LastIndex, FollowerId, PrevLogIndex, IsCatchingUp], #{domain => [whatsapp, wa_raft]}),
-            case ?RAFT_CONFIG(send_trim_index, false) of
-                true  -> ?MODULE:cast(FollowerId, ?APPEND_ENTRIES_RPC(CurrentTerm, RaftId, LastIndex, LastTerm, [], CommitIndex, 0), State1);
-                false -> ?MODULE:cast(FollowerId, ?APPEND_ENTRIES_RPC_OLD(CurrentTerm, RaftId, LastIndex, LastTerm, [], CommitIndex), State1)
-            end,
+            % Send append entries request.
+            ?MODULE:cast(FollowerId, ?APPEND_ENTRIES_RPC(CurrentTerm, RaftId, LastIndex, LastTerm, [], CommitIndex, 0), State1),
             LastFollowerHeartbeatTs =/= undefined andalso ?RAFT_GATHER('raft.leader.heartbeat.interval_ms', erlang:system_time(millisecond) - LastFollowerHeartbeatTs),
             State1;
         false ->
@@ -1837,15 +1835,12 @@ heartbeat(FollowerId, #raft_state{id = RaftId, name = Name, log_view = View, cat
             ?RAFT_GATHER('raft.leader.heartbeat.size', length(Entries)),
             ?LOG_DEBUG("Leader[~p, term ~p] heartbeat to follower ~p from ~p(~p entries). Commit index ~p",
                 [Name, CurrentTerm, FollowerId, FollowerNextIndex, length(Entries), CommitIndex], #{domain => [whatsapp, wa_raft]}),
-            Result = case ?RAFT_CONFIG(send_trim_index, false) of
-                true ->
-                    TrimIndex = lists:min(to_member_list(MatchIndex#{RaftId => LastIndex}, 0, config(State1))),
-                    ?MODULE:cast(FollowerId, ?APPEND_ENTRIES_RPC(CurrentTerm, RaftId, PrevLogIndex, PrevLogTerm, Entries, CommitIndex, TrimIndex), State1);
-                false ->
-                    ?MODULE:cast(FollowerId, ?APPEND_ENTRIES_RPC_OLD(CurrentTerm, RaftId, PrevLogIndex, PrevLogTerm, Entries, CommitIndex), State1)
-            end,
+            % Compute trim index.
+            TrimIndex = lists:min(to_member_list(MatchIndex#{RaftId => LastIndex}, 0, config(State1))),
+            % Send append entries request.
+            CastResult = ?MODULE:cast(FollowerId, ?APPEND_ENTRIES_RPC(CurrentTerm, RaftId, PrevLogIndex, PrevLogTerm, Entries, CommitIndex, TrimIndex), State1),
             NextIndex1 =
-                case Result of
+                case CastResult of
                     ok ->
                         % pipelining - move NextIndex after sending out logs. If a packet is lost, follower's AppendEntriesResponse
                         % will return send back its correct index
