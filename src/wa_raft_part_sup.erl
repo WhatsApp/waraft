@@ -10,7 +10,7 @@
 
 -module(wa_raft_part_sup).
 -compile(warn_missing_spec).
--author("hsun324@whatsapp.com").
+-author("hsun324@fb.com").
 
 -behaviour(supervisor).
 

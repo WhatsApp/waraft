@@ -56,4 +56,5 @@ init_globals() ->
     % it may trigger GC for all processes, but we only do it only during app start
     persistent_term:put(?RAFT_COUNTERS, counters:new(?RAFT_NUMBER_OF_GLOBAL_COUNTERS, [atomics])),
     persistent_term:put(raft_metrics_module, ?RAFT_CONFIG(raft_metrics_module, wa_raft_metrics)),
+    persistent_term:put(raft_distribution_module, ?RAFT_CONFIG(raft_distribution_module, wa_raft_distribution)),
     ok.

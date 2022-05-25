@@ -194,7 +194,7 @@ send_logs_loop(FollowerId, PrevLogIndex, LeaderTerm, LeaderCommitIndex,
         false -> ?APPEND_ENTRIES_RPC_OLD(LeaderTerm, Id, PrevLogIndex, PrevLogTerm, Entries, LeaderCommitIndex)
     end,
     Timeout = ?RAFT_CONFIG(raft_catchup_rpc_timeout_ms, 5000),
-    ?APPEND_ENTRIES_RESPONSE_RPC(LeaderTerm, FollowerId, PrevLogIndex, true, FollowerEndIndex) = gen_server:call(Dest, Command, Timeout),
+    ?APPEND_ENTRIES_RESPONSE_RPC(LeaderTerm, FollowerId, PrevLogIndex, true, FollowerEndIndex) = ?RAFT_DISTRIBUTION_MODULE:call(Dest, Command, Timeout),
     update_progress(Name, FollowerId, completed, NumEntries),
 
     % Continue onto the next iteration, starting from the new end index

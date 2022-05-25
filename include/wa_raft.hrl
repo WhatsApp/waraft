@@ -89,6 +89,9 @@
 -define(RAFT_COUNTV(Metric, Value), ?RAFT_METRICS_MODULE:countv(Metric, Value)).
 -define(RAFT_GATHER(Metric, Value), ?RAFT_METRICS_MODULE:gather(Metric, Value)).
 
+%% Distribution
+-define(RAFT_DISTRIBUTION_MODULE, (persistent_term:get(raft_distribution_module))).
+
 %% Log position
 -record(raft_log_pos, {
     %% log sequence number

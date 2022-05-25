@@ -1992,7 +1992,7 @@ cast(DestId, Message, #raft_state{name = Name, offline_peers = OfflinePeers}) wh
     try
         % TODO(hsun324): For the time being, assume that all members of the cluster use the same server name.
         DestAddr = {Name, DestId},
-        ok = erlang:send(DestAddr, {'$gen_cast', Message}, [noconnect, nosuspend])
+        ok = ?RAFT_DISTRIBUTION_MODULE:cast(DestAddr, Message)
     catch
         _:E ->
             ?RAFT_COUNT({'raft.server.cast.error', E}),
