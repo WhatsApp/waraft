@@ -883,18 +883,24 @@ follower(Type, ?APPEND_ENTRIES_RPC_OLD(CurrentTerm, LeaderId, PrevLogIndex, Prev
     follower(Type, ?APPEND_ENTRIES_RPC(CurrentTerm, LeaderId, PrevLogIndex, PrevLogTerm, Entries, LeaderCommit, 0), State);
 
 %% Follower receives AppendEntries from leader
-follower(Type, ?APPEND_ENTRIES_RPC(CurrentTerm, LeaderId, PrevLogIndex, PrevLogTerm, Entries, LeaderCommitIndex, TrimIndex),
+follower(Type, ?APPEND_ENTRIES_RPC(CurrentTerm, LeaderId, PrevLogIndex, PrevLogTerm, Entries, LeaderCommitIndex, LeaderTrimIndex),
          #raft_state{id = RaftId, current_term = CurrentTerm} = State0) ->
-    case append_entries(CurrentTerm, LeaderId, PrevLogIndex, PrevLogTerm, Entries, LeaderCommitIndex, TrimIndex, State0) of
+    case append_entries(CurrentTerm, LeaderId, PrevLogIndex, PrevLogTerm, Entries, State0) of
         {{disable, Reason}, State1} ->
             State2 = State1#raft_state{disable_reason = Reason},
             {next_state, disabled, State2};
         {Result, #raft_state{log_view = View} = State1} ->
-            check_follower_lagging(LeaderCommitIndex, State1),
             State2 = State1#raft_state{leader_heartbeat_ts = erlang:system_time(millisecond)},
+            TrimIndex = case ?RAFT_CONFIG(use_trim_index, false) of
+                true  -> LeaderTrimIndex;
+                false -> infinity
+            end,
             LastIndex = wa_raft_log:last_index(View),
+            NewCommitIndex = erlang:min(LeaderCommitIndex, LastIndex),
             reply(Type, LeaderId, ?APPEND_ENTRIES_RESPONSE_RPC(CurrentTerm, RaftId, PrevLogIndex, Result =:= ok, LastIndex), State2),
-            {keep_state, State2, ?ELECTION_TIMEOUT}
+            State3 = apply_log(State2, NewCommitIndex, TrimIndex),
+            check_follower_lagging(LeaderCommitIndex, State3),
+            {keep_state, State3, ?ELECTION_TIMEOUT}
     end;
 
 %% [Follower] Handle AppendEntries RPC response (5.2)
@@ -933,7 +939,7 @@ follower(Type, ?HANDOVER_RPC(CurrentTerm, NodeId, Ref, PrevLogIndex, PrevLogTerm
             reply(Type, NodeId, ?HANDOVER_FAILED_RPC(CurrentTerm, RaftId, Ref), State0),
             {keep_state, State0};
         _ ->
-            case append_entries(CurrentTerm, NodeId, PrevLogIndex, PrevLogTerm, LogEntries, 0, 0, State0) of
+            case append_entries(CurrentTerm, NodeId, PrevLogIndex, PrevLogTerm, LogEntries, State0) of
                 {ok, State1} ->
                     ?LOG_NOTICE("Follower[~p, term ~p] immediately starting new election due to append success during handover RPC.",
                         [Name, CurrentTerm], #{domain => [whatsapp, wa_raft]}),
@@ -1885,14 +1891,12 @@ adjust_config(Action, Config, #raft_state{id = Id, name = Name}) ->
 
 %% [5.3] AppendEntries RPC implementation for followers
 
--spec append_entries(Term, LeaderId, PrevLogIndex, PrevLogTerm, Entries, LeaderCommitIndex, TrimIndex, State) -> {Result, NewState} when
+-spec append_entries(Term, LeaderId, PrevLogIndex, PrevLogTerm, Entries, State) -> {Result, NewState} when
     Term :: wa_raft_log:log_term(),
     LeaderId :: node(),
     PrevLogIndex :: wa_raft_log:log_index(),
     PrevLogTerm :: wa_raft_log:log_term(),
     Entries :: [wa_raft_log:log_entry()],
-    LeaderCommitIndex :: wa_raft_log:log_index(),
-    TrimIndex :: wa_raft_log:log_index(),
     State :: #raft_state{},
     Result ::
           ok                 % the append was successful
@@ -1903,37 +1907,30 @@ adjust_config(Action, Config, #raft_state{id = Id, name = Name}) ->
     NewState :: #raft_state{}.
 
 %% [5.1] Drop stale RPCs
-append_entries(Term, _LeaderId, _PrevLogIndex, _PrevLogTerm, _Entries, _LeaderCommitIndex, _TrimIndex,
+append_entries(Term, _LeaderId, _PrevLogIndex, _PrevLogTerm, _Entries,
                #raft_state{name = Name, current_term = CurrentTerm} = State) when Term =/= CurrentTerm ->
     ?LOG_ERROR("Follower[~p, term ~p] dropping AppendEntries RPC with different term ~p.",
         [Name, CurrentTerm, Term], #{domain => [whatsapp, wa_raft]}),
     {failed, State};
 
 %% Handle first heartbeat from a leader
-append_entries(Term, LeaderId, PrevLogIndex, PrevLogTerm, Entries, LeaderCommit, TrimIndex,
+append_entries(Term, LeaderId, PrevLogIndex, PrevLogTerm, Entries,
                #raft_state{name = Name, current_term = CurrentTerm, leader_id = PrevLeaderId} = State0) when PrevLeaderId =:= undefined orelse PrevLeaderId =/= LeaderId ->
     ?LOG_NOTICE("Follower[~p, term ~p] receives first heartbeat from leader ~p. Previous leader is ~p", [Name, CurrentTerm, LeaderId, PrevLeaderId], #{domain => [whatsapp, wa_raft]}),
     State1 = State0#raft_state{leader_id = LeaderId},
     notify_leader_change(State1),
-    append_entries(Term, LeaderId, PrevLogIndex, PrevLogTerm, Entries, LeaderCommit, TrimIndex, State1);
+    append_entries(Term, LeaderId, PrevLogIndex, PrevLogTerm, Entries, State1);
 
 %% Normal operation
-append_entries(_Term, LeaderId, PrevLogIndex, PrevLogTerm, Entries, LeaderCommitIndex, LeaderTrimIndex,
-               #raft_state{current_term = CurrentTerm, log_view = View, name = Name, last_applied = LastApplied} = State0) ->
-    ?LOG_DEBUG("Follower[~p, term ~p] appending ~p log entries starting from ~p (leader commit ~p, leader trim ~p)",
-        [Name, CurrentTerm, length(Entries), PrevLogIndex + 1, LeaderCommitIndex, LeaderTrimIndex], #{domain => [whatsapp, wa_raft]}),
+append_entries(_Term, LeaderId, PrevLogIndex, PrevLogTerm, Entries,
+               #raft_state{current_term = CurrentTerm, log_view = View, name = Name, last_applied = LastApplied} = State) ->
+    ?LOG_DEBUG("Follower[~p, term ~p] appending ~p log entries starting from ~p",
+        [Name, CurrentTerm, length(Entries), PrevLogIndex + 1], #{domain => [whatsapp, wa_raft]}),
     ?RAFT_GATHER('raft.follower.heartbeat.size', length(Entries)),
     case wa_raft_log:term(View, PrevLogIndex) of
         {ok, PrevLogTerm} -> % PrevLogIndex term matches PrevLogTerm
-            {ok, LogLastIndex, View1} = wa_raft_log:append(View, PrevLogIndex + 1, Entries),
-            State1 = State0#raft_state{log_view = View1},
-            NewCommitIndex = erlang:min(LeaderCommitIndex, LogLastIndex),
-            TrimIndex = case ?RAFT_CONFIG(use_trim_index, false) of
-                true  -> LeaderTrimIndex;
-                false -> infinity
-            end,
-            State2 = apply_log(State1, NewCommitIndex, TrimIndex),
-            {ok, State2};
+            {ok, _LogLastIndex, View1} = wa_raft_log:append(View, PrevLogIndex + 1, Entries),
+            {ok, State#raft_state{log_view = View1}};
         {ok, ReadPrevLogTerm} -> % PrevLogIndex term doesn't match PrevLogTerm
             % [5.3] If an existing entry conflicts with a new one (same index but different terms), delete the existing entry and all that follow it.
             %       However, if we are trying to delete log entries that have already been applied then we might be facing data corruption.
@@ -1950,22 +1947,22 @@ append_entries(_Term, LeaderId, PrevLogIndex, PrevLogTerm, Entries, LeaderCommit
                         [Name, CurrentTerm, PrevLogIndex, LastApplied, LeaderId], #{domain => [whatsapp, wa_raft]}),
                     Reason = io_lib:format("Mismatched term found for already applied log index ~p replicated from from ~0p:~0p (last applied was ~0p).",
                                            [PrevLogIndex, LeaderId, CurrentTerm, LastApplied]),
-                    {{disable, Reason}, State0};
+                    {{disable, Reason}, State};
                 false ->
                     % We are not deleting already applied log entries, so proceed with truncation.
                     {ok, View1} = wa_raft_log:truncate(View, PrevLogIndex),
-                    {failed, State0#raft_state{log_view = View1}}
+                    {failed, State#raft_state{log_view = View1}}
             end;
         not_found ->
             ?RAFT_COUNT('raft.follower.heartbeat.skip.no_prev_log'),
             ?LOG_WARNING("Follower[~p, term ~p]: skip log appending from ~p. Prev log ~p doesn't exist",
                 [Name, CurrentTerm, LeaderId, PrevLogIndex], #{domain => [whatsapp, wa_raft]}),
-            {failed, State0};
+            {failed, State};
         {error, Reason} ->
             ?RAFT_COUNT('raft.follower.heartbeat.skip.read_error_prev_log_term'),
             ?LOG_WARNING("Follower[~p, term ~p]: skip log appending from ~p. Prev log ~p read error: ~p",
                 [Name, CurrentTerm, LeaderId, PrevLogIndex, Reason], #{domain => [whatsapp, wa_raft]}),
-            {failed, State0}
+            {failed, State}
     end.
 
 -spec notify_leader_change(#raft_state{}) -> any().
