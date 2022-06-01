@@ -247,11 +247,15 @@ adjust_membership(Name, Action, Peer) ->
 handover_candidates(Name) ->
     gen_server:call(Name, ?HANDOVER_CANDIDATES_COMMAND, ?RPC_CALL_TIMEOUT_MS).
 
+%% Instruct a RAFT leader to attempt a handover to a random handover candidate.
 -spec handover(Name :: atom() | pid()) -> ok.
 handover(Name) ->
     gen_server:cast(Name, ?HANDOVER_COMMAND(undefined)).
 
--spec handover(Name :: atom() | pid(), Peer :: node()) -> ok | wa_raft:error().
+%% Instruct a RAFT leader to attempt a handover to the specified peer node.
+%% If an `undefined` peer node is specified, then handover to a random handover candidate.
+%% Returns which peer node the handover was sent to or otherwise an error.
+-spec handover(Name :: atom() | pid(), Peer :: node() | undefined) -> {ok, Peer :: node()} | wa_raft:error().
 handover(Name, Peer) ->
     gen_server:call(Name, ?HANDOVER_COMMAND(Peer), ?RPC_CALL_TIMEOUT_MS).
 
@@ -797,7 +801,7 @@ leader(Type, ?HANDOVER_COMMAND(Peer),
                     case PrevLogIndex + length(LogEntries) of
                         LastIndex ->
                             ?MODULE:cast(Peer, ?HANDOVER_RPC(CurrentTerm, RaftId, Ref, PrevLogIndex, PrevLogTerm, LogEntries), State1),
-                            reply(Type, undefined, ok, State1),
+                            reply(Type, undefined, {ok, Peer}, State1),
                             {keep_state, State1};
                         _ ->
                             ?RAFT_COUNT('raft.leader.handover.oversize'),
