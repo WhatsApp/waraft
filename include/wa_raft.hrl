@@ -15,9 +15,9 @@
 %% DB
 -define(DB, application:get_env(?APP, db, missing)).
 %% Persistent root directory
--define(ROOT_DIR(Table, Partition), lists:concat([?DB, "/", atom_to_list(Table), ".", integer_to_list(Partition), "/"])).
+-define(ROOT_DIR(Table, Partition), lists:concat([?DB, "/", Table, ".", Partition, "/"])).
 
--define(TO_ATOM(Prefix, Table, Partition), list_to_atom(lists:concat([Prefix, atom_to_list(Table), "_" , integer_to_list(Partition)]))).
+-define(TO_ATOM(Prefix, Table, Partition), list_to_atom(lists:concat([Prefix, Table, "_" , Partition]))).
 %% Raft server name
 -define(RAFT_SERVER_NAME(Table, Partition), ?TO_ATOM("raft_server_", Table, Partition)).
 %% Raft log service
@@ -46,7 +46,7 @@
 %% Name prefix for snapshots
 -define(SNAPSHOT_PREFIX, "snapshot").
 %% Snapshot name
--define(SNAPSHOT_NAME(Index, Term), lists:concat([?SNAPSHOT_PREFIX, ".", integer_to_list(Index),  ".", integer_to_list(Term)])).
+-define(SNAPSHOT_NAME(Index, Term), lists:concat([?SNAPSHOT_PREFIX, ".", Index,  ".", Term])).
 %% Default Call timeout for all cross node gen_server:call
 -define(RPC_CALL_TIMEOUT_MS, ?RAFT_CONFIG(raft_rpc_call_timeout, 30000)).
 %% Default call timeout for storage related operation (we need bigger default since storage can be slower)

@@ -21,7 +21,7 @@
 -define(CALL_TIMEOUT, 5000).
 -define(TABLE, kvstore).
 -define(NUM_PARTITIONS, 4).
--define(PARTITION(P), list_to_atom(lists:concat(["raft_acceptor_", atom_to_list(?TABLE), "_" , integer_to_list(P)]))).
+-define(PARTITION(P), list_to_atom(lists:concat(["raft_acceptor_", ?TABLE, "_" , P]))).
 
 %% Read value for a given key. It's a blocking call.
 -spec read(term()) ->  {ok, {term(), map(), number()}} | {error, term()}.
