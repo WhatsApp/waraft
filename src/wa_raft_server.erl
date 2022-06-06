@@ -902,7 +902,10 @@ follower(Type, ?APPEND_ENTRIES_RPC(CurrentTerm, LeaderId, PrevLogIndex, PrevLogT
             LastIndex = wa_raft_log:last_index(View),
             NewCommitIndex = erlang:min(LeaderCommitIndex, LastIndex),
             reply(Type, LeaderId, ?APPEND_ENTRIES_RESPONSE_RPC(CurrentTerm, RaftId, PrevLogIndex, Result =:= ok, LastIndex), State2),
-            State3 = apply_log(State2, NewCommitIndex, TrimIndex),
+            State3 = case Result of
+                ok -> apply_log(State2, NewCommitIndex, TrimIndex);
+                _  -> State2
+            end,
             check_follower_lagging(LeaderCommitIndex, State3),
             {keep_state, State3, ?ELECTION_TIMEOUT}
     end;
