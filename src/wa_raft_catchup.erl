@@ -189,11 +189,9 @@ send_logs_loop(FollowerId, PrevLogIndex, LeaderTerm, LeaderCommitIndex,
 
     % Replicate the log entries to our peer.
     Dest = {?RAFT_SERVER_NAME(Table, Partition), FollowerId},
-    Command = case ?RAFT_CONFIG(send_trim_index, false) of
-        true  -> ?APPEND_ENTRIES_RPC(LeaderTerm, Id, PrevLogIndex, PrevLogTerm, Entries, LeaderCommitIndex, 0);
-        false -> ?APPEND_ENTRIES_RPC_OLD(LeaderTerm, Id, PrevLogIndex, PrevLogTerm, Entries, LeaderCommitIndex)
-    end,
+    Command = ?APPEND_ENTRIES_RPC(LeaderTerm, Id, PrevLogIndex, PrevLogTerm, Entries, LeaderCommitIndex, 0),
     Timeout = ?RAFT_CONFIG(raft_catchup_rpc_timeout_ms, 5000),
+
     ?APPEND_ENTRIES_RESPONSE_RPC(LeaderTerm, FollowerId, PrevLogIndex, true, FollowerEndIndex) = ?RAFT_DISTRIBUTION_MODULE:call(Dest, Command, Timeout),
     update_progress(Name, FollowerId, completed, NumEntries),
 
