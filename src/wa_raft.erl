@@ -31,5 +31,7 @@
         % Storage module
         storage_module => module(),
         % Atomic counter ref
-        counters => counters:counters_ref()
+        counters => counters:counters_ref(),
+        % Witness flag
+        witness => boolean()
     }.

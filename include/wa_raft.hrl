@@ -162,7 +162,10 @@
     votes = maps:new() :: #{node() => boolean()},
 
     %% disabled
-    disable_reason :: term()
+    disable_reason :: term(),
+
+    %% witness
+    witness :: boolean()
 }).
 
 %% Storage state

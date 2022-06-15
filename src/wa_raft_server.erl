@@ -37,7 +37,6 @@
     callback_mode/0,
     terminate/3,
     code_change/4,
-
     stalled/3,
     leader/3,
     follower/3,
@@ -58,9 +57,11 @@
     handover/2,
     handover_candidates/1,
     disable/2,
+    enter_witness/1,
     enable/1,
     set_peer_offline/3,
-    cast/3
+    cast/3,
+    witness/3
 ]).
 
 %% Exports for CT tests
@@ -107,7 +108,8 @@
     leader |
     follower |
     candidate |
-    disabled.
+    disabled |
+    witness.
 
 -type peer() :: {Name :: atom(), Node :: node()}.
 -type membership() :: [peer()].
@@ -137,6 +139,7 @@
     | {votes, #{node() => boolean()}}
     | {inflight_applies, non_neg_integer()}
     | {disable_reason, string()}
+    | {witness, boolean()}
     | {offline_peers, [node()]}
     | {config, config()}.
 
@@ -263,6 +266,10 @@ handover(Name, Peer) ->
 disable(Name, Reason) ->
     gen_server:cast(Name, ?DISABLE_COMMAND(Reason)).
 
+-spec enter_witness(Name :: atom() | pid()) -> ok | {error, ErrorReason :: atom()}.
+enter_witness(Name) ->
+    gen_server:cast(Name, ?WITNESS_COMMAND()).
+
 -spec enable(Name :: atom() | pid()) -> ok | {error, ErrorReason :: atom()}.
 enable(Name) ->
     gen_server:call(Name, ?ENABLE_COMMAND, ?RPC_CALL_TIMEOUT_MS).
@@ -288,7 +295,7 @@ init([#{table := Table, partition := Partition, counters := Counters} = RaftArgs
     ?LOG_NOTICE("Starting raft server ~w", [RaftArgs], #{domain => [whatsapp, wa_raft]}),
     Name = ?RAFT_SERVER_NAME(Table, Partition),
     Id = node(),
-
+    Witness = maps:get(witness, RaftArgs, false),
     %% Here, supervisor should have already started wa_raft_storage.
     StoragePid = whereis(?RAFT_STORAGE_NAME(Table, Partition)),
     %% Notify the wa_raft_storage of the wa_raft_server pid.
@@ -314,8 +321,10 @@ init([#{table := Table, partition := Partition, counters := Counters} = RaftArgs
         commit_index = Last#raft_log_pos.index,
         current_term = Last#raft_log_pos.term,
         data_dir = DataDir,
-        catchup = ?RAFT_CATCHUP(Table, Partition)
+        catchup = ?RAFT_CATCHUP(Table, Partition),
+        witness = Witness
     },
+
     State1 = load_config(State0),
     true = register(Name, self()),
     rand:seed(exsp, {erlang:monotonic_time(), erlang:time_offset(), erlang:unique_integer()}),
@@ -324,13 +333,16 @@ init([#{table := Table, partition := Partition, counters := Counters} = RaftArgs
     case wa_raft_durable_state:load(State1) of
         {ok, State2} ->
             % If we successfully loaded a state file, then immediately join the cluster.
+            % Begin as witness or disabled if respective messages are defined
             case State2#raft_state.disable_reason of
+                undefined when Witness -> {ok, witness, State2};
                 undefined -> {ok, follower, State2};
                 _         -> {ok, disabled, State2}
             end;
         _ ->
             % If no state file was found, then stall if we don't have data in underlying storage.
             case State1#raft_state.current_term of
+                _ when Witness -> {ok, witness, State1};
                 0 -> {ok, stalled, State1};
                 _ -> {ok, follower, State1}
             end
@@ -1252,6 +1264,133 @@ disabled(Type, Event, #raft_state{name = Name, current_term = CurrentTerm} = Sta
     reply(Type, undefined, {error, unsupported}, State),
     keep_state_and_data.
 
+%% [Witness] State functions
+-spec witness(Type :: atom(), Event :: term(), State :: #raft_state{}) -> gen_statem:state_enter_result(state()).
+witness(enter, FromState, #raft_state{witness= false} = State) ->
+    witness(enter, FromState, State#raft_state{witness = true});
+
+% [Witness] Enters witness state after being in any other state
+witness(enter, FromState, #raft_state{name = Name, current_term = CurrentTerm} = State0) ->
+    FromState =/= witness andalso
+        ?LOG_NOTICE("~p[~p, term ~p] is now witness.", [FromState, Name, CurrentTerm], #{domain => [whatsapp, wa_raft]}),
+    wa_raft_info:set_state(State0#raft_state.table, State0#raft_state.partition, ?FUNCTION_NAME),
+    wa_raft_info:set_stale(true, State0),
+    State1 = reset_state(State0),
+    State2 = State1#raft_state{voted_for = undefined, next_index = #{}, match_index = #{}},
+    wa_raft_durable_state:store(State2),
+    {keep_state, State2};
+
+witness(Type, ?RAFT_RPC(RPCType, Term, SenderId, _Payload),
+        #raft_state{id = RaftId, name = Name, current_term = CurrentTerm} = State) when Term < CurrentTerm ->
+    ?LOG_NOTICE("Witness[~p, term ~p] received stale ~p from ~p with old term ~p. Dropping.",
+        [Name, CurrentTerm, RPCType, SenderId, Term], #{domain => [whatsapp, wa_raft]}),
+    reply(Type, SenderId, ?NOTIFY_TERM_RPC(CurrentTerm, RaftId), State),
+    {keep_state, State};
+
+witness(Type, ?RAFT_RPC(RPCType, Term, SenderId, _Payload) = Event,
+        #raft_state{name = Name, current_term = CurrentTerm} = State) when Term > CurrentTerm ->
+    ?LOG_NOTICE("Witness[~p, term ~p] received ~p from ~p with new term ~p. Advancing.",
+        [Name, CurrentTerm, RPCType, SenderId, Term], #{domain => [whatsapp, wa_raft]}),
+    {repeat_state, advance_term(Term, State), {next_event, Type, Event}};
+%% [Witness] Handle AppendEntries RPC (5.2, 5.3)
+
+%% [AppendEntries] MIGRATION - adding TrimIndex
+witness(Type, ?APPEND_ENTRIES_RPC_OLD(CurrentTerm, LeaderId, PrevLogIndex, PrevLogTerm, Entries, LeaderCommit), #raft_state{} = State) ->
+    follower(Type, ?APPEND_ENTRIES_RPC(CurrentTerm, LeaderId, PrevLogIndex, PrevLogTerm, Entries, LeaderCommit, 0), State);
+
+%% Witness receives AppendEntries from leader
+witness(Type, ?APPEND_ENTRIES_RPC(CurrentTerm, LeaderId, PrevLogIndex, PrevLogTerm, Entries, LeaderCommitIndex, LeaderTrimIndex),
+         #raft_state{id = RaftId, current_term = CurrentTerm} = State0) ->
+    case append_entries(CurrentTerm, LeaderId, PrevLogIndex, PrevLogTerm, Entries, State0) of
+        {{disable, Reason}, State1} ->
+            State2 = State1#raft_state{disable_reason = Reason},
+            {next_state, disabled, State2};
+        {Result, #raft_state{log_view = View} = State1} ->
+            State2 = State1#raft_state{leader_heartbeat_ts = erlang:system_time(millisecond)},
+            TrimIndex = case ?RAFT_CONFIG(use_trim_index, false) of
+                true  -> LeaderTrimIndex;
+                false -> infinity
+            end,
+            LastIndex = wa_raft_log:last_index(View),
+            NewCommitIndex = erlang:min(LeaderCommitIndex, LastIndex),
+            reply(Type, LeaderId, ?APPEND_ENTRIES_RESPONSE_RPC(CurrentTerm, RaftId, PrevLogIndex, Result =:= ok, LastIndex), State2),
+            State3 = case Result of
+                ok -> apply_log(State2, NewCommitIndex, TrimIndex);
+                _  -> State2
+            end,
+            check_follower_lagging(LeaderCommitIndex, State3),
+            {keep_state, State3, ?ELECTION_TIMEOUT}
+    end;
+
+%% [Witness] Handle AppendEntries RPC response (5.2)
+%% [AppendEntriesResponse] Witnesses do not send AppendEntries and so should not get responses
+witness(_Type, ?APPEND_ENTRIES_RESPONSE_RPC(CurrentTerm, SenderId, _PrevLogIndex, _Success, _LastLogIndex),
+         #raft_state{name = Name, current_term = CurrentTerm}) ->
+    ?LOG_WARNING("Follower[~p, term ~p] got conflicting response from ~p.",
+        [Name, CurrentTerm, SenderId], #{domain => [whatsapp, wa_raft]}),
+    keep_state_and_data;
+
+% [Witness] Witnesses ignore any handover requests.
+witness(Type, ?HANDOVER_RPC(CurrentTerm, NodeId, Ref, _PrevLogIndex, _PrevLogTerm, _LogEntries),
+       #raft_state{id = RaftId, name = Name, current_term = CurrentTerm} = State) ->
+    ?LOG_WARNING("Witness[~p, term ~p] got orphan handover request from ~p while witness.",
+        [Name, CurrentTerm, NodeId], #{domain => [whatsapp, wa_raft]}),
+    reply(Type, NodeId, ?HANDOVER_FAILED_RPC(CurrentTerm, RaftId, Ref), State),
+    keep_state_and_data;
+
+witness(_Type, ?NOTIFY_TERM_RPC(CurrentTerm, _SenderId), #raft_state{current_term = CurrentTerm}) ->
+    keep_state_and_data;
+
+witness(_Type, ?HANDOVER_FAILED_RPC(CurrentTerm, NodeId, _Ref),
+         #raft_state{name = Name, current_term = CurrentTerm}) ->
+    ?LOG_WARNING("Witness[~p, term ~p] got conflicting handover failed from ~p.",
+        [Name, CurrentTerm, NodeId], #{domain => [whatsapp, wa_raft]}),
+    keep_state_and_data;
+
+witness({call, From}, ?SNAPSHOT_AVAILABLE_COMMAND(Root, #raft_log_pos{index = SnapshotIndex, term = SnapshotTerm} = SnapshotPos),
+        #raft_state{name = Name, data_dir = DataDir, log_view = View0, storage = StoragePid,
+                    current_term = CurrentTerm, last_applied = LastApplied} = State0) ->
+    case SnapshotIndex > LastApplied orelse LastApplied =:= 0 of
+        true ->
+            Path = filename:join(DataDir, ?SNAPSHOT_NAME(SnapshotIndex, SnapshotTerm)),
+            catch filelib:ensure_dir(Path),
+            case prim_file:rename(Root, Path) of
+                ok ->
+                    ?LOG_NOTICE("Stalled[~p, term ~p] applying snapshot ~p:~p",
+                        [Name, CurrentTerm, SnapshotIndex, SnapshotTerm], #{domain => [whatsapp, wa_raft]}),
+                    ok = wa_raft_storage:open_snapshot(StoragePid, SnapshotPos),
+                    {ok, View1} = wa_raft_log:reset(View0, SnapshotPos),
+                    State1 = State0#raft_state{log_view = View1, last_applied = SnapshotIndex, commit_index = SnapshotIndex},
+                    State2 = load_config(State1),
+                    NewTerm = max(CurrentTerm, SnapshotTerm),
+                    ?LOG_NOTICE("Stalled[~p, term ~p] switching to follower after installing snapshot at ~p:~p.",
+                        [Name, CurrentTerm, SnapshotIndex, SnapshotTerm], #{domain => [whatsapp, wa_raft]}),
+                    % At this point, we assume that we received some cluster membership configuration from
+                    % our peer so it is safe to transition to an operational state.
+                    {repeat_state, advance_term(NewTerm, State2), {reply, From, ok}};
+                {error, Reason} ->
+                    ?LOG_WARNING("Stalled[~p, term ~p] failed to rename available snapshot ~p to ~p due to ~p",
+                        [Name, CurrentTerm, Root, Path, Reason], #{domain => [whatsapp, wa_raft]}),
+                    {keep_state_and_data, {reply, From, {error, Reason}}}
+            end;
+        false ->
+            ?LOG_NOTICE("Stalled[~p, term ~p] ignoring available snapshot ~p:~p with index not past ours (~p)",
+                [Name, CurrentTerm, SnapshotIndex, SnapshotTerm, LastApplied], #{domain => [whatsapp, wa_raft]}),
+            {keep_state_and_data, {reply, From, {error, rejected}}}
+    end;
+
+%% [Witness] Witness receives RAFT command
+witness(Type, ?RAFT_COMMAND(_COMMAND, _Payload) = Event, State) ->
+    command(?FUNCTION_NAME, Type, Event, State);
+
+%% [Witness] Witness receives unknown event
+witness(Type, Event, #raft_state{name = Name, current_term = CurrentTerm} = State) ->
+    ?LOG_WARNING("Witness[~p, term ~p] receives unknown ~p event ~p",
+        [Name, CurrentTerm, Type, Event], #{domain => [whatsapp, wa_raft]}),
+    reply(Type, undefined, {error, unsupported}, State),
+    keep_state_and_data.
+
+
 -spec terminate(Reason :: term(), StateName :: state(), State :: #raft_state{}) -> ok.
 terminate(Reason, StateName, #raft_state{name = Name, current_term = CurrentTerm} = State) ->
     wa_raft_durable_state:sync(State),
@@ -1306,9 +1445,11 @@ command(StateName, {call, From}, ?STATUS_COMMAND, State) ->
         {inflight_applies, counters:get(Counters, ?RAFT_LOCAL_COUNTER_APPLY)},
         {disable_reason, State#raft_state.disable_reason},
         {offline_peers, State#raft_state.offline_peers},
-        {config, config(State)}
+        {config, config(State)},
+        {witness, State#raft_state.witness}
     ],
     {keep_state_and_data, {reply, From, Status}};
+
 %% [Promote] Non-disabled nodes check if eligible to promote and then promote to leader.
 command(StateName, {call, From}, ?PROMOTE_COMMAND(Term, Force, Config),
         #raft_state{name = Name, log_view = View0, current_term = CurrentTerm, leader_heartbeat_ts = HeartbeatTs} = State0) when StateName =/= disabled ->
@@ -1326,6 +1467,10 @@ command(StateName, {call, From}, ?PROMOTE_COMMAND(Term, Force, Config),
         % Prevent promotions to any operational state when there is no cluster membership configuration.
         (not is_map_key(membership, SavedConfig)) andalso (Config =:= undefined orelse not is_map_key(membership, Config)) ->
             ?LOG_ERROR("~p[~p, term ~p] cannot promote with neither existing nor forced config having configured membership.",
+                [StateName, Name, CurrentTerm], #{domain => [whatsapp, wa_raft]}),
+            false;
+        StateName =:= witness ->
+            ?LOG_ERROR("~p[~p, term ~p] cannot promote a witness node.",
                 [StateName, Name, CurrentTerm], #{domain => [whatsapp, wa_raft]}),
             false;
         Force ->
