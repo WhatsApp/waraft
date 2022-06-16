@@ -667,23 +667,28 @@ leader(cast, ?COMMIT_COMMAND(Op), #raft_state{current_term = CurrentTerm, log_vi
     end;
 
 %% [Strong Read] Leader is eligible to serve strong reads.
-leader(cast, ?READ_COMMAND({From, Command} = Op),
-       #raft_state{name = Name, table = Table, partition = Partition, current_term = CurrentTerm, storage = StoragePid,
-                   commit_index = CommitIndex, last_applied = LastApplied, first_current_term_log_index = FirstLogIndex}) ->
+leader(cast, ?READ_COMMAND({From, Command}),
+       #raft_state{name = Name, table = Table, partition = Partition,log_view = View0, current_term = CurrentTerm,
+                   commit_index = CommitIndex, last_applied = LastApplied, first_current_term_log_index = FirstLogIndex} = State0) ->
     ?LOG_DEBUG("Leader[~p, term ~p] receives strong read request", [Name, CurrentTerm]),
-    % We take the max of first log index for the current term and the actual commit index to deal with the case
-    % where leader gets elected with non-committed log entries. We wait for these non-committed log entries to
-    % get committed and applied for the strong-read to proceed.
-    ExpectedTermCommitIndex = max(FirstLogIndex, CommitIndex),
-    case LastApplied =:= ExpectedTermCommitIndex of
-        true ->
-            wa_raft_storage:read_op(StoragePid, LastApplied, Op);
-        _ ->
-            % Pending strong-reads are stored in the first agreed CommitIndex order for the current term.
-            % We use a reference as a tie breaker in case we have multiple reads at the same log index.
-            ets:insert(?RAFT_PENDING_READS_TABLE(Table, Partition), {{ExpectedTermCommitIndex, make_ref()}, From, Command})
-    end,
-    keep_state_and_data;
+    ReadIndex = max(CommitIndex, FirstLogIndex),
+    Pending = wa_raft_log:pending(View0),
+    LastLogIndex = wa_raft_log:last_index(View0),
+    View2 =
+        if
+            LastApplied < ReadIndex ->
+                ets:insert(?RAFT_PENDING_READS_TABLE(Table, Partition), {{ReadIndex, make_ref()}, From, Command}),
+                View0;
+            ReadIndex < LastLogIndex orelse Pending > 0 ->
+                ets:insert(?RAFT_PENDING_READS_TABLE(Table, Partition), {{ReadIndex + 1, make_ref()}, From, Command}),
+                View0;
+            true ->
+                ets:insert(?RAFT_PENDING_READS_TABLE(Table, Partition), {{ReadIndex + 1, make_ref()}, From, Command}),
+                {ok, View1} = wa_raft_log:submit(View0, {CurrentTerm, {?READ_OP, noop}}),
+                View1
+        end,
+    State1 = State0#raft_state{log_view = View2},
+    {keep_state, State1};
 
 %% [Resign] Leader resigns by switching to follower state.
 leader(Type, ?RESIGN_COMMAND, #raft_state{name = Name, current_term = CurrentTerm} = State0) ->

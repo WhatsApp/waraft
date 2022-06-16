@@ -72,6 +72,8 @@
 %% Name of ETS table for holding pending strong-read references
 -define(RAFT_PENDING_READS_TABLE(Table, Partition), ?TO_ATOM("raft_pending_reads_table_", Table, Partition)).
 
+-define(READ_OP, '$read').
+
 %% Raft minimum election timeout
 -define(RAFT_ELECTION_TIMEOUT_MS(), ?RAFT_CONFIG(raft_election_timeout_ms, 5000)).
 %% Raft maximum election timeout

@@ -498,9 +498,14 @@ config(Log) ->
 %% Add a new entry to the list of pending log entries in the current batch.
 %% These pending log entries can be commited to the log by using `sync/1` or
 %% removed from the batch using `cancel/1`.
--spec submit(View :: view(), Entry :: log_entry()) -> {ok, NewView :: view()}.
+%%
+-spec submit(View :: view() , Entry :: wa_raft_log:log_entry()) -> {ok, NewView :: view()}.
+submit(#log_view{pending = []} = View, Entry) ->
+   {ok, View#log_view{pending = [Entry]}};
+submit(#log_view{pending = [{_, {?READ_OP, noop}} | Tail]} = View, Entry) ->
+   {ok, View#log_view{pending = [Entry | Tail]}};
 submit(#log_view{pending = Pending} = View, Entry) ->
-    {ok, View#log_view{pending = [Entry | Pending]}}.
+   {ok, View#log_view{pending = [Entry | Pending]}}.
 
 %% Return the number of pending log entries in the current batch.
 -spec pending(View :: view()) -> Pending :: non_neg_integer().

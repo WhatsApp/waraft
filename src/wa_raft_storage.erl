@@ -432,7 +432,7 @@ apply_delayed_reads(#raft_storage{table = Table, partition = Partition, last_app
             [
                 begin
                     ets:delete(?RAFT_PENDING_READS_TABLE(Table, Partition), LogIndexRef),
-                    Reply = execute(Command, LastAppliedLogPos, State),
+                    {Reply, _} = execute(Command, LastAppliedLogPos, State),
                     counters:sub(Counters, ?RAFT_LOCAL_COUNTER_READ, 1),
                     gen_server:reply(From, Reply)
                 end
