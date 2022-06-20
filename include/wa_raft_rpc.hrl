@@ -10,8 +10,6 @@
 
 -define(RAFT_RPC(Type, Term, SenderId, Payload), {rpc, Type, Term, SenderId, Payload}).
 
--define(APPEND_ENTRIES_RPC_OLD(Term, SenderId, PrevLogIndex, PrevLogTerm, Entries, CommitIndex),
-    ?RAFT_RPC(append_entries, Term, SenderId, {PrevLogIndex, PrevLogTerm, Entries, CommitIndex})).
 -define(APPEND_ENTRIES_RPC(Term, SenderId, PrevLogIndex, PrevLogTerm, Entries, CommitIndex, TrimIndex),
     ?RAFT_RPC(append_entries, Term, SenderId, {PrevLogIndex, PrevLogTerm, Entries, CommitIndex, TrimIndex})).
 -define(APPEND_ENTRIES_RESPONSE_RPC(Term, SenderId, PrevLogIndex, Success, LastIndex),

@@ -387,10 +387,6 @@ stalled(Type, ?RAFT_RPC(RPCType, Term, SenderId, _Payload) = Event,
         [Name, CurrentTerm, RPCType, SenderId, Term], #{domain => [whatsapp, wa_raft]}),
     {repeat_state, advance_term(Term, State), {next_event, Type, Event}};
 
-%% [AppendEntries] MIGRATION - adding TrimIndex
-stalled(Type, ?APPEND_ENTRIES_RPC_OLD(CurrentTerm, LeaderId, PrevLogIndex, PrevLogTerm, Entries, LeaderCommit), #raft_state{} = State) ->
-    stalled(Type, ?APPEND_ENTRIES_RPC(CurrentTerm, LeaderId, PrevLogIndex, PrevLogTerm, Entries, LeaderCommit, 0), State);
-
 %% [AppendEntries] If we haven't discovered leader for this term, record it
 stalled(Type, ?APPEND_ENTRIES_RPC(CurrentTerm, LeaderId, PrevLogIndex, _PrevLogTerm, _Entries, _LeaderCommit, _TrimIndex),
         #raft_state{id = RaftId, current_term = CurrentTerm, leader_id = undefined} = State) ->
@@ -497,10 +493,6 @@ leader(Type, ?RAFT_RPC(RPCType, Term, SenderId, _Payload) = Event,
     ?LOG_NOTICE("Leader[~p, term ~p] received ~p from ~p with new term ~p. Advancing and switching to follower.",
         [Name, CurrentTerm, RPCType, SenderId, Term], #{domain => [whatsapp, wa_raft]}),
     {next_state, follower, advance_term(Term, State), {next_event, Type, Event}};
-
-%% [AppendEntries] MIGRATION - adding TrimIndex
-leader(Type, ?APPEND_ENTRIES_RPC_OLD(CurrentTerm, SenderId, PrevLogIndex, PrevLogTerm, Entries, LeaderCommit), #raft_state{} = State) ->
-    leader(Type, ?APPEND_ENTRIES_RPC(CurrentTerm, SenderId, PrevLogIndex, PrevLogTerm, Entries, LeaderCommit, 0), State);
 
 %% [Leader] Handle AppendEntries RPC (5.1, 5.2)
 %% [AppendEntries] We are leader for the current term, so we should never see an
@@ -898,11 +890,6 @@ follower(Type, ?RAFT_RPC(RPCType, Term, SenderId, _Payload) = Event,
     {repeat_state, advance_term(Term, State), {next_event, Type, Event}};
 
 %% [Follower] Handle AppendEntries RPC (5.2, 5.3)
-
-%% [AppendEntries] MIGRATION - adding TrimIndex
-follower(Type, ?APPEND_ENTRIES_RPC_OLD(CurrentTerm, LeaderId, PrevLogIndex, PrevLogTerm, Entries, LeaderCommit), #raft_state{} = State) ->
-    follower(Type, ?APPEND_ENTRIES_RPC(CurrentTerm, LeaderId, PrevLogIndex, PrevLogTerm, Entries, LeaderCommit, 0), State);
-
 %% Follower receives AppendEntries from leader
 follower(Type, ?APPEND_ENTRIES_RPC(CurrentTerm, LeaderId, PrevLogIndex, PrevLogTerm, Entries, LeaderCommitIndex, LeaderTrimIndex),
          #raft_state{id = RaftId, current_term = CurrentTerm} = State0) ->
@@ -1080,10 +1067,6 @@ candidate(Type, ?RAFT_RPC(RPCType, Term, SenderId, _Payload) = Event,
         [Name, CurrentTerm, RPCType, SenderId, Term], #{domain => [whatsapp, wa_raft]}),
     {next_state, follower, advance_term(Term, State), {next_event, Type, Event}};
 
-%% [AppendEntries] MIGRATION - adding TrimIndex
-candidate(Type, ?APPEND_ENTRIES_RPC_OLD(CurrentTerm, LeaderId, PrevLogIndex, PrevLogTerm, Entries, LeaderCommit), #raft_state{} = State) ->
-    candidate(Type, ?APPEND_ENTRIES_RPC(CurrentTerm, LeaderId, PrevLogIndex, PrevLogTerm, Entries, LeaderCommit, 0), State);
-
 %% [AppendEntries RPC] Switch to follower because current term now has a leader (5.2, 5.3)
 candidate(Type, ?APPEND_ENTRIES_RPC(CurrentTerm, LeaderId, _PrevLogIndex, _PrevLogTerm, _Entries, _LeaderCommit, _TrimIndex) = Event,
           #raft_state{name = Name, current_term = CurrentTerm} = State) ->
@@ -1217,10 +1200,6 @@ disabled(Type, ?RAFT_RPC(RPCType, Term, SenderId, _Payload) = Event,
         [Name, CurrentTerm, RPCType, SenderId, Term], #{domain => [whatsapp, wa_raft]}),
     {repeat_state, advance_term(Term, State), {next_event, Type, Event}};
 
-%% [AppendEntries] MIGRATION - adding TrimIndex
-disabled(Type, ?APPEND_ENTRIES_RPC_OLD(CurrentTerm, LeaderId, PrevLogIndex, PrevLogTerm, Entries, LeaderCommit), #raft_state{} = State) ->
-    disabled(Type, ?APPEND_ENTRIES_RPC(CurrentTerm, LeaderId, PrevLogIndex, PrevLogTerm, Entries, LeaderCommit, 0), State);
-
 disabled(_Type, ?APPEND_ENTRIES_RPC(CurrentTerm, RaftId, _PrevLogIndex, _PrevLogTerm, _Entries, _CommitIndex, _TrimIndex),
          #raft_state{current_term = CurrentTerm, leader_id = undefined} = State0) ->
     %% When we detect the leader for the current term, then set cache so that we can handle redirects.
@@ -1297,12 +1276,8 @@ witness(Type, ?RAFT_RPC(RPCType, Term, SenderId, _Payload) = Event,
     ?LOG_NOTICE("Witness[~p, term ~p] received ~p from ~p with new term ~p. Advancing.",
         [Name, CurrentTerm, RPCType, SenderId, Term], #{domain => [whatsapp, wa_raft]}),
     {repeat_state, advance_term(Term, State), {next_event, Type, Event}};
+
 %% [Witness] Handle AppendEntries RPC (5.2, 5.3)
-
-%% [AppendEntries] MIGRATION - adding TrimIndex
-witness(Type, ?APPEND_ENTRIES_RPC_OLD(CurrentTerm, LeaderId, PrevLogIndex, PrevLogTerm, Entries, LeaderCommit), #raft_state{} = State) ->
-    follower(Type, ?APPEND_ENTRIES_RPC(CurrentTerm, LeaderId, PrevLogIndex, PrevLogTerm, Entries, LeaderCommit, 0), State);
-
 %% Witness receives AppendEntries from leader
 witness(Type, ?APPEND_ENTRIES_RPC(CurrentTerm, LeaderId, PrevLogIndex, PrevLogTerm, Entries, LeaderCommitIndex, LeaderTrimIndex),
          #raft_state{id = RaftId, current_term = CurrentTerm} = State0) ->
