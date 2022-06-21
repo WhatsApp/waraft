@@ -661,24 +661,20 @@ leader(cast, ?COMMIT_COMMAND(Op), #raft_state{current_term = CurrentTerm, log_vi
 %% [Strong Read] Leader is eligible to serve strong reads.
 leader(cast, ?READ_COMMAND({From, Command}),
        #raft_state{name = Name, table = Table, partition = Partition,log_view = View0, current_term = CurrentTerm,
-                   commit_index = CommitIndex, last_applied = LastApplied, first_current_term_log_index = FirstLogIndex} = State0) ->
+                   commit_index = CommitIndex, first_current_term_log_index = FirstLogIndex} = State0) ->
     ?LOG_DEBUG("Leader[~p, term ~p] receives strong read request", [Name, CurrentTerm]),
     ReadIndex = max(CommitIndex, FirstLogIndex),
     Pending = wa_raft_log:pending(View0),
     LastLogIndex = wa_raft_log:last_index(View0),
-    View2 =
-        if
-            LastApplied < ReadIndex ->
-                ets:insert(?RAFT_PENDING_READS_TABLE(Table, Partition), {{ReadIndex, make_ref()}, From, Command}),
-                View0;
-            ReadIndex < LastLogIndex orelse Pending > 0 ->
-                ets:insert(?RAFT_PENDING_READS_TABLE(Table, Partition), {{ReadIndex + 1, make_ref()}, From, Command}),
-                View0;
-            true ->
-                ets:insert(?RAFT_PENDING_READS_TABLE(Table, Partition), {{ReadIndex + 1, make_ref()}, From, Command}),
-                {ok, View1} = wa_raft_log:submit(View0, {CurrentTerm, {?READ_OP, noop}}),
-                View1
-        end,
+    View2 = case ReadIndex < LastLogIndex orelse Pending > 0 of
+                true ->
+                    ets:insert(?RAFT_PENDING_READS_TABLE(Table, Partition), {{ReadIndex + 1, make_ref()}, From, Command}),
+                    View0;
+                false ->
+                    ets:insert(?RAFT_PENDING_READS_TABLE(Table, Partition), {{ReadIndex + 1, make_ref()}, From, Command}),
+                    {ok, View1} = wa_raft_log:submit(View0, {CurrentTerm, {?READ_OP, noop}}),
+                    View1
+            end,
     State1 = State0#raft_state{log_view = View2},
     {keep_state, State1};
 
