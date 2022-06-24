@@ -1323,34 +1323,19 @@ witness(_Type, ?HANDOVER_FAILED_RPC(CurrentTerm, NodeId, _Ref),
         [Name, CurrentTerm, NodeId], #{domain => [whatsapp, wa_raft]}),
     keep_state_and_data;
 
-witness({call, From}, ?SNAPSHOT_AVAILABLE_COMMAND(Root, #raft_log_pos{index = SnapshotIndex, term = SnapshotTerm} = SnapshotPos),
-        #raft_state{name = Name, data_dir = DataDir, log_view = View0, storage = StoragePid,
-                    current_term = CurrentTerm, last_applied = LastApplied} = State0) ->
+witness({call, From}, ?SNAPSHOT_AVAILABLE_COMMAND(_, #raft_log_pos{index = SnapshotIndex, term = SnapshotTerm} = SnapshotPos),
+        #raft_state{log_view = View0, name = Name, current_term = CurrentTerm, last_applied = LastApplied} = State0) ->
     case SnapshotIndex > LastApplied orelse LastApplied =:= 0 of
         true ->
-            Path = filename:join(DataDir, ?SNAPSHOT_NAME(SnapshotIndex, SnapshotTerm)),
-            catch filelib:ensure_dir(Path),
-            case prim_file:rename(Root, Path) of
-                ok ->
-                    ?LOG_NOTICE("Stalled[~p, term ~p] applying snapshot ~p:~p",
-                        [Name, CurrentTerm, SnapshotIndex, SnapshotTerm], #{domain => [whatsapp, wa_raft]}),
-                    ok = wa_raft_storage:open_snapshot(StoragePid, SnapshotPos),
-                    {ok, View1} = wa_raft_log:reset(View0, SnapshotPos),
-                    State1 = State0#raft_state{log_view = View1, last_applied = SnapshotIndex, commit_index = SnapshotIndex},
-                    State2 = load_config(State1),
-                    NewTerm = max(CurrentTerm, SnapshotTerm),
-                    ?LOG_NOTICE("Stalled[~p, term ~p] switching to follower after installing snapshot at ~p:~p.",
-                        [Name, CurrentTerm, SnapshotIndex, SnapshotTerm], #{domain => [whatsapp, wa_raft]}),
-                    % At this point, we assume that we received some cluster membership configuration from
-                    % our peer so it is safe to transition to an operational state.
-                    {repeat_state, advance_term(NewTerm, State2), {reply, From, ok}};
-                {error, Reason} ->
-                    ?LOG_WARNING("Stalled[~p, term ~p] failed to rename available snapshot ~p to ~p due to ~p",
-                        [Name, CurrentTerm, Root, Path, Reason], #{domain => [whatsapp, wa_raft]}),
-                    {keep_state_and_data, {reply, From, {error, Reason}}}
-            end;
+            ?LOG_NOTICE("Witness[~p, term ~p] accepting snapshot ~p:~p but not loading",
+                [Name, CurrentTerm, SnapshotIndex, SnapshotTerm], #{domain => [whatsapp, wa_raft]}),
+            {ok, View1} = wa_raft_log:reset(View0, SnapshotPos),
+            State1 = State0#raft_state{log_view = View1, last_applied = SnapshotIndex, commit_index = SnapshotIndex},
+            State2 = load_config(State1),
+            NewTerm = max(CurrentTerm, SnapshotTerm),
+            {next_state, witness, advance_term(NewTerm, State2), {reply, From, ok}};
         false ->
-            ?LOG_NOTICE("Stalled[~p, term ~p] ignoring available snapshot ~p:~p with index not past ours (~p)",
+            ?LOG_NOTICE("Witness[~p, term ~p] ignoring available snapshot ~p:~p with index not past ours (~p)",
                 [Name, CurrentTerm, SnapshotIndex, SnapshotTerm, LastApplied], #{domain => [whatsapp, wa_raft]}),
             {keep_state_and_data, {reply, From, {error, rejected}}}
     end;
@@ -1387,11 +1372,12 @@ code_change(_OldVsn, StateName, State, _Extra) ->
 -spec command(StateName :: state(), Type :: gen_statem:event_type(), Event :: term(), State :: #raft_state{}) ->
     gen_statem:event_handler_result(state()).
 %% [Commit] Non-leader nodes should fail commits with {error, not_leader}.
-command(StateName, cast, ?COMMIT_COMMAND({Ref, _}),
-        #raft_state{name = Name, current_term = CurrentTerm, storage = StoragePid, leader_id = LeaderId}) when StateName =/= leader ->
+command(StateName, Type, ?COMMIT_COMMAND({Ref, _}),
+        #raft_state{name = Name, current_term = CurrentTerm, storage = StoragePid, leader_id = LeaderId} = State0) when StateName =/= leader ->
     ?LOG_WARNING("~p[~p, term ~p] commit ~p fails. Leader is ~p.",
         [StateName, Name, CurrentTerm, Ref, LeaderId], #{domain => [whatsapp, wa_raft]}),
     wa_raft_storage:fulfill_op(StoragePid, Ref, {error, not_leader}),
+    reply(Type, undefined, {error, not_leader}, State0),
     keep_state_and_data;
 %% [Strong Read] Non-leader nodes are not eligible for strong reads.
 command(StateName, cast, ?READ_COMMAND({From, _}),
@@ -1770,6 +1756,11 @@ compute_quorum([_|_] = Values) ->
     lists:nth(Index, lists:sort(Values)).
 
 -spec apply_log(State0 :: #raft_state{}, CommitIndex :: wa_raft_log:log_index(), TrimIndex :: wa_raft_log:log_index() | infinity) -> State1 :: #raft_state{}.
+apply_log(#raft_state{last_applied = LastApplied, witness = true} = State0, CommitIndex, _) ->
+    % Update CommitIndex and LastAppliedIndex, but don't apply new log entries
+    LimitedIndex = erlang:min(CommitIndex, LastApplied + ?MAX_LOG_APPLY_BATCH_SIZE),
+    State1 = State0#raft_state{last_applied = LimitedIndex, commit_index = LimitedIndex},
+    State1;
 apply_log(#raft_state{log_view = View, counters = Counters, last_applied = LastApplied} = State0, CommitIndex, TrimIndex) when CommitIndex > LastApplied ->
     StartT = os:timestamp(),
     case check_apply_queue(State0) of
