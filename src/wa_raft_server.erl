@@ -666,12 +666,11 @@ leader(cast, ?READ_COMMAND({From, Command}),
     ReadIndex = max(CommitIndex, FirstLogIndex),
     Pending = wa_raft_log:pending(View0),
     LastLogIndex = wa_raft_log:last_index(View0),
+    ets:insert(?RAFT_PENDING_READS_TABLE(Table, Partition), {{ReadIndex + 1, make_ref()}, From, Command}),
     View2 = case ReadIndex < LastLogIndex orelse Pending > 0 of
                 true ->
-                    ets:insert(?RAFT_PENDING_READS_TABLE(Table, Partition), {{ReadIndex + 1, make_ref()}, From, Command}),
                     View0;
                 false ->
-                    ets:insert(?RAFT_PENDING_READS_TABLE(Table, Partition), {{ReadIndex + 1, make_ref()}, From, Command}),
                     {ok, View1} = wa_raft_log:submit(View0, {CurrentTerm, {?READ_OP, noop}}),
                     View1
             end,
