@@ -153,11 +153,10 @@
 -callback last_index(Log :: log()) -> undefined | log_index() | error().
 
 %% Fold over a range (inclusive) of log entries from the RAFT log by
-%% calling the provided accumuator function on successive log entries.
-%% The byte size provided to the accumulator function should be the
-%% Erlang external term size of the log entry. Since, implementations
-%% may have more efficient ways to compute this size it is provided
-%% as an argument.
+%% calling the provided accumulator function on successive log entries.
+%% The size of each entry is calculated as the external term size of
+%% {Term, Op} in bytes. The fold will stop once the provided size limit
+%% is reached (if one is given, otherwise will complete the range of entries).
 %% There is no expectation that the log entries folded over are complete,
 %% only that the accumulator is called on log entries with indices that
 %% are strictly increasing however implementations should try to call the
@@ -167,7 +166,8 @@
 -callback fold(Log :: log(),
                Start :: log_index(),
                End :: log_index(),
-               Func :: fun((Index :: log_index(), Entry :: log_entry(), Size :: non_neg_integer(), AccIn :: term()) -> AccOut :: term()),
+               SizeLimit :: non_neg_integer() | infinity,
+               Func :: fun((Index :: log_index(), Entry :: log_entry(), AccIn :: term()) -> AccOut :: term()),
                Acc0 :: term()) ->
     {ok, AccOut :: term()} | error().
 
@@ -363,7 +363,7 @@ last_index(Log) ->
            Acc0 :: term()) ->
     {ok, AccOut :: term()} | wa_raft:error().
 fold(Log, First, Last, Func, Acc) ->
-    fold_impl(Log, First, Last, fun (I, E, _S, A) -> Func(I, E, A) end, Acc).
+    fold(Log, First, Last, infinity, Func, Acc).
 
 %% Folds over the entries in the log view of raw entries from the log provider
 %% between the provided first and last log indices (inclusive) up until the
@@ -376,40 +376,22 @@ fold(Log, First, Last, Func, Acc) ->
 -spec fold(Log :: log() | view(),
            First :: log_index(),
            Last :: log_index() | infinity,
-           Limit :: non_neg_integer() | infinity,
+           SizeLimit :: non_neg_integer() | infinity,
            Func :: fun((Index :: log_index(), Entry :: log_entry(), AccIn :: term()) -> AccOut :: term()),
            Acc0 :: term()) ->
     {ok, AccOut :: term()} | wa_raft:error().
-fold(_Log, First, Last, _Limit, _Func, Acc) when First > Last ->
-    {ok, Acc};
-fold(Log, First, Last, Limit, Func, AccIn) ->
-    try
-        fold_impl(Log, First, Last,
-            fun
-                (Index, Entry, Bytes, {Acc, AccBytes}) when AccBytes =:= 0 orelse AccBytes + Bytes =< Limit ->
-                    {Func(Index, Entry, Acc), AccBytes + Bytes};
-                (_Index, _Entry, _Bytes, {Acc, _AccBytes}) ->
-                    throw({'$reached_bytes', Acc})
-            end, {AccIn, 0})
-    of
-        {ok, {AccOut, _}} -> {ok, AccOut};
-        {error, Reason}   -> {error, Reason}
-    catch
-        throw:{'$reached_bytes', Result} -> {ok, Result}
-    end.
-
-fold_impl(#log_view{log = Log, provider = Provider, first = LogFirst, last = LogLast}, First, Last, Func, Acc) ->
-    fold_impl(Provider, Log, max(First, LogFirst), min(Last, LogLast), Func, Acc);
-fold_impl(Log, First, Last, Func, Acc) ->
+fold(#log_view{log = Log, provider = Provider, first = LogFirst, last = LogLast}, First, Last, SizeLimit, Func, Acc) ->
+    fold_impl(Provider, Log, max(First, LogFirst), min(Last, LogLast), SizeLimit, Func, Acc);
+fold(Log, First, Last, SizeLimit, Func, Acc) ->
     Provider = provider(Log),
     LogFirst = Provider:first_index(Log),
     LogLast = Provider:last_index(Log),
-    fold_impl(Provider, Log, max(First, LogFirst), min(Last, LogLast), Func, Acc).
+    fold_impl(Provider, Log, max(First, LogFirst), min(Last, LogLast), SizeLimit, Func, Acc).
 
-fold_impl(Provider, Log, First, Last, Func, AccIn) ->
+fold_impl(Provider, Log, First, Last, SizeLimit, Func, AccIn) ->
     ?RAFT_COUNT('raft.log.fold'),
     ?RAFT_COUNTV('raft.log.fold.total', Last - First + 1),
-    case Provider:fold(Log, First, Last, Func, AccIn) of
+    case Provider:fold(Log, First, Last, SizeLimit, Func, AccIn) of
         {ok, AccOut} ->
             {ok, AccOut};
         {error, Reason} ->
@@ -447,10 +429,10 @@ get(Log, Index) ->
     Provider = provider(Log),
     Provider:get(Log, Index).
 
--spec get(View :: log() | view(), First :: log_index(), Limit :: non_neg_integer()) ->
+-spec get(View :: log() | view(), First :: log_index(), CountLimit :: non_neg_integer()) ->
     {ok, Entries :: [log_entry()]} | wa_raft:error().
-get(View, First, Limit) ->
-    get(View, First, Limit, infinity).
+get(View, First, CountLimit) ->
+    get(View, First, CountLimit, infinity).
 
 %% Gets a contiguous range of log entries starting at the provided log index,
 %% up to the specified maximum total number of bytes (based on external format).
@@ -458,11 +440,11 @@ get(View, First, Limit) ->
 %% returned no matter what total number of bytes is specified.
 %% When using a log view this function may not return all physically present
 %% log entries if those entries are outside of the log view.
--spec get(View :: log() | view(), First :: log_index(), Limit :: non_neg_integer(), Bytes :: non_neg_integer() | infinity) ->
+-spec get(View :: log() | view(), First :: log_index(), CountLimit :: non_neg_integer(), SizeLimit :: non_neg_integer() | infinity) ->
     {ok, Entries :: [log_entry()]} | wa_raft:error().
-get(View, First, Limit, Bytes) ->
+get(View, First, CountLimit, SizeLimit) ->
     try
-        fold(View, First, First + Limit - 1, Bytes,
+        fold(View, First, First + CountLimit - 1, SizeLimit,
             fun
                 (Index, Entry, {Index, Acc})            -> {Index + 1, [Entry | Acc]};
                 (_Index, _Entry, {ExpectedIndex, _Acc}) -> throw({missing, ExpectedIndex})
@@ -473,7 +455,7 @@ get(View, First, Limit, Bytes) ->
     catch
         throw:{missing, Index} ->
             ?LOG_WARNING("[~p] detected log is missing index ~p during get of ~p ~~ ~p",
-                [log(View), Index, First, First + Limit - 1], #{domain => [whatsapp, wa_raft]}),
+                [log(View), Index, First, First + CountLimit - 1], #{domain => [whatsapp, wa_raft]}),
             {error, corruption}
     end.
 
