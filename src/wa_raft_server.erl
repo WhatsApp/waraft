@@ -23,6 +23,7 @@
 %% API
 -export([
     make_config/1,
+    make_config/2,
     status/1,
     status/2,
     membership/1,
@@ -116,7 +117,8 @@
 -opaque config() ::
     #{
         version := integer(),
-        membership => membership()
+        membership => membership(),
+        witness => membership()
     }.
 
 -type status() :: [status_element()].
@@ -170,6 +172,14 @@ make_config(Membership) ->
     #{
         version => ?RAFT_CONFIG_CURRENT_VERSION,
         membership => Membership
+    }.
+
+-spec make_config(Membership :: membership(), Witness :: membership()) -> config().
+make_config(Membership, Witness) ->
+    #{
+        version => ?RAFT_CONFIG_CURRENT_VERSION,
+        membership => Membership,
+        witness => Witness
     }.
 
 %% Commit an op to the consensus group.
