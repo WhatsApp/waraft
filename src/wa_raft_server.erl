@@ -166,7 +166,6 @@ start_link(RaftArgs) ->
 %% ==================================================
 %%  RAFT Server Internal API
 %% ==================================================
-
 -spec make_config(Membership :: membership()) -> config().
 make_config(Membership) ->
     #{
@@ -1572,6 +1571,12 @@ config_membership(#{membership := Membership}) ->
 config_membership(_Config) ->
     error(membership_not_set).
 
+-spec config_witnesses(Config :: config()) -> Witnesses :: [peer()].
+config_witnesses(#{witness := Witnesses}) ->
+    Witnesses;
+config_witnesses(_Config) ->
+    [].
+
 %% Migration helper function for bridging RAFT state peer-based cluster membership
 %% and RAFT dynamic cluster membership.
 %% TODO(hsun324): Begin migrating uses of this function to use config directly as applicable.
@@ -1937,7 +1942,6 @@ reset_leader_state(#raft_state{id = RaftId, current_term = CurrentTerm, log_view
             State1#raft_state{log_view = View1, first_current_term_log_index = NewLastLogIndex}
     end.
 
-
 -spec heartbeat(node(), #raft_state{}) -> #raft_state{}.
 heartbeat(FollowerId, #raft_state{id = RaftId, name = Name, log_view = View, catchup = Catchup, current_term = CurrentTerm,
                                   commit_index = CommitIndex, next_index = NextIndex0, match_index = MatchIndex,
@@ -1952,6 +1956,7 @@ heartbeat(FollowerId, #raft_state{id = RaftId, name = Name, log_view = View, cat
     LastFollowerHeartbeatTs = maps:get(FollowerId, LastHeartbeatTs, undefined),
     State1 = State0#raft_state{last_heartbeat_ts = LastHeartbeatTs#{FollowerId => NowTs}, leader_heartbeat_ts = NowTs},
     LastIndex = wa_raft_log:last_index(View),
+    Witnesses = config_witnesses(config(State0)),
     case PrevLogTermRes =:= not_found orelse IsCatchingUp of %% catching up, or prep
         true ->
             {ok, LastTerm} = wa_raft_log:term(View, LastIndex),
@@ -1964,8 +1969,16 @@ heartbeat(FollowerId, #raft_state{id = RaftId, name = Name, log_view = View, cat
         false ->
             MaxLogEntries = ?RAFT_CONFIG(raft_max_log_entries_per_heartbeat, 15),
             MaxHeartbeatSize = ?RAFT_CONFIG(raft_max_heartbeat_size, 1 * 1024 * 1024),
+            Entries =
+                case lists:member({Name, FollowerId}, Witnesses) of
+                    true ->
+                        {ok, Terms} = wa_raft_log:get_terms(View, FollowerNextIndex, MaxLogEntries, MaxHeartbeatSize),
+                        [{Term, []} || Term <- Terms];
+                    _ ->
+                        {ok, Ret} = wa_raft_log:get(View, FollowerNextIndex, MaxLogEntries, MaxHeartbeatSize),
+                        Ret
+                    end,
             {ok, PrevLogTerm} = PrevLogTermRes,
-            {ok, Entries} = wa_raft_log:get(View, FollowerNextIndex, MaxLogEntries, MaxHeartbeatSize),
             ?RAFT_GATHER('raft.leader.heartbeat.size', length(Entries)),
             ?LOG_DEBUG("Leader[~p, term ~p] heartbeat to follower ~p from ~p(~p entries). Commit index ~p",
                 [Name, CurrentTerm, FollowerId, FollowerNextIndex, length(Entries), CommitIndex], #{domain => [whatsapp, wa_raft]}),

@@ -36,6 +36,7 @@
     get/2,
     get/3,
     get/4,
+    get_terms/4,
 
     config/1
 ]).
@@ -127,7 +128,7 @@
 -type log_index() :: non_neg_integer().
 -type log_term() :: non_neg_integer().
 -type log_pos() :: #raft_log_pos{}.
--type log_entry() :: {log_term(), undefined | wa_raft_acceptor:op()}.
+-type log_entry() :: {log_term(), undefined | wa_raft_acceptor:op() | []}.
 -type log_record() :: {log_index(), log_entry()}.
 
 %% A view of a RAFT log.
@@ -456,6 +457,25 @@ get(View, First, CountLimit, SizeLimit) ->
         throw:{missing, Index} ->
             ?LOG_WARNING("[~p] detected log is missing index ~p during get of ~p ~~ ~p",
                 [log(View), Index, First, First + CountLimit - 1], #{domain => [whatsapp, wa_raft]}),
+            {error, corruption}
+    end.
+
+-spec get_terms(View :: log() | view(), First :: log_index(), Limit :: non_neg_integer(), Bytes :: non_neg_integer() | infinity) ->
+    {ok, Entries :: [wa_raft_log:log_term()]} | wa_raft:error().
+get_terms(View, First, Limit, Bytes) ->
+    try
+        fold(View, First, First + Limit - 1, Bytes,
+            fun
+                (Index, {Term, _}, {Index, Acc})        -> {Index + 1, [Term | Acc]};
+                (_Index, _Entry, {ExpectedIndex, _Acc}) -> throw({missing, ExpectedIndex})
+            end, {First, []})
+    of
+        {ok, {_, TermsRev}} -> {ok, lists:reverse(TermsRev)};
+        {error, Reason} -> {error, Reason}
+    catch
+        throw:{missing, Index} ->
+            ?LOG_WARNING("[~p] detected log is missing index ~p during get of ~p ~~ ~p",
+                [log(View), Index, First, First + Limit - 1], #{domain => [whatsapp, wa_raft]}),
             {error, corruption}
     end.
 
