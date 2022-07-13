@@ -2005,9 +2005,10 @@ compute_handover_candidates(#raft_state{log_view = View, match_index = MatchInde
     MaxHandoverLogEntries = ?RAFT_MAX_HANDOVER_LOG_ENTRIES(),
     [Peer || {Peer, Match} <- maps:to_list(MatchIndex), LastLogIndex - Match =< MaxHandoverLogEntries].
 
--spec adjust_config(Action :: {add, peer()} | {remove, peer()} | {refresh, undefined}, Config :: config(), State :: #raft_state{}) -> {ok, NewConfig :: config()} | {error, Reason :: atom()}.
+-spec adjust_config(Action :: {add, peer()} | {remove, peer()} | {add_witness, peer()} | {remove_witness, peer()} | {refresh, undefined}, Config :: config(), State :: #raft_state{}) -> {ok, NewConfig :: config()} | {error, Reason :: atom()}.
 adjust_config(Action, Config, #raft_state{id = Id, name = Name}) ->
     Membership = config_membership(Config),
+    Witness = config_witnesses(Config),
     case Action of
         % The 'refresh' action is used to commit the current effective configuration to storage in the
         % case of upgrading from adhoc to stored configuration or to materialize changes to the format
@@ -2019,11 +2020,23 @@ adjust_config(Action, Config, #raft_state{id = Id, name = Name}) ->
                 true  -> {error, already_member};
                 false -> {ok, Config#{membership => [Peer | Membership]}}
             end;
+        {add_witness, Peer} ->
+            case {lists:member(Peer, Witness), lists:member(Peer, Membership)} of
+                {true, true}  -> {error, already_witness};
+                {true, _} -> {error, already_member};
+                {false, _} -> {ok, Config#{membership => [Peer | Membership], witness => [Peer | Witness]}}
+            end;
         {remove, Peer} ->
             case {Peer, lists:member(Peer, Membership)} of
                 {{Name, Id}, _} -> {error, cannot_remove_self};
                 {_, false}      -> {error, not_a_member};
-                {_, true}       -> {ok, Config#{membership => lists:delete(Peer, Membership)}}
+                {_, true}       -> {ok, Config#{membership => lists:delete(Peer, Membership), witness => lists:delete(Peer, Witness)}}
+            end;
+        {remove_witness, Peer} ->
+            case {Peer, lists:member(Peer, Witness)} of
+                {{Name, Id}, _} -> {error, cannot_remove_self};
+                {_, false}      -> {error, not_a_witness};
+                {_, true}       -> {ok, Config#{membership => lists:delete(Peer, Membership), witness => lists:delete(Peer, Witness)}}
             end
     end.
 
