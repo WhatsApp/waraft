@@ -32,7 +32,7 @@
 
 %% API
 -export([
-    catchup/5,
+    catchup/6,
     is_catching_up/2
 ]).
 
@@ -64,14 +64,14 @@ start_link(#{table := Table, partition := Partition} = Args) ->
 
 %% Start catchup for follower at index specified by FollowerLastIndex. Skip this request
 %% if a catchup has been scheduled.
--spec catchup(atom(), node(), wa_raft_log:log_index(), wa_raft_log:log_term(), wa_raft_log:log_index()) -> ok.
-catchup(Name, FollowerId, FollowerLastIndex, LeaderTerm, LeaderCommitIndex) ->
+-spec catchup(atom(), node(), wa_raft_log:log_index(), wa_raft_log:log_term(), wa_raft_log:log_index(), boolean()) -> ok.
+catchup(Name, FollowerId, FollowerLastIndex, LeaderTerm, LeaderCommitIndex, Witness) ->
     case is_catching_up(Name, FollowerId) of
         true ->
             ok; % skip if a catchup for the follower has already started
         false ->
             set_state(Name, FollowerId, queued),
-            gen_event:notify(Name, {catchup, FollowerId, FollowerLastIndex, LeaderTerm, LeaderCommitIndex})
+            gen_event:notify(Name, {catchup, FollowerId, FollowerLastIndex, LeaderTerm, LeaderCommitIndex, Witness})
     end.
 
 %% State of catchup: queued, sending, done
@@ -101,7 +101,7 @@ init([#{table := Table, partition := Partition}]) ->
     }.
 
 -spec handle_event(term(), #raft_catchup{}) -> {ok, #raft_catchup{}}.
-handle_event({catchup, FollowerId, FollowerLastIndex, LeaderTerm, LeaderCommitIndex}, #raft_catchup{name = Name, log = Log} = State) ->
+handle_event({catchup, FollowerId, FollowerLastIndex, LeaderTerm, LeaderCommitIndex, Witness}, #raft_catchup{name = Name, log = Log} = State) ->
     ?LOG_NOTICE("Leader[~p] catchup follower[~p] with last log index ~p. current leader term ~p",
          [Name, FollowerId, FollowerLastIndex, LeaderTerm], #{domain => [whatsapp, wa_raft]}),
     try
@@ -110,7 +110,7 @@ handle_event({catchup, FollowerId, FollowerLastIndex, LeaderTerm, LeaderCommitIn
                 % catchup by incremental logs
                 counter_wait_and_add(?RAFT_GLOBAL_COUNTER_LOG_CATCHUP, raft_max_log_catchup),
                 try
-                    send_logs(FollowerId, FollowerLastIndex, LeaderTerm, LeaderCommitIndex, State)
+                    send_logs(FollowerId, FollowerLastIndex, LeaderTerm, LeaderCommitIndex, State, Witness)
                 after
                     sub(?RAFT_GLOBAL_COUNTER_LOG_CATCHUP)
                 end;
@@ -118,8 +118,8 @@ handle_event({catchup, FollowerId, FollowerLastIndex, LeaderTerm, LeaderCommitIn
                 % catchup by a full snapshot
                 counter_wait_and_add(?RAFT_GLOBAL_COUNTER_SNAPSHOT_CATCHUP, raft_max_snapshot_catchup),
                 try
-                    {ok, #raft_log_pos{index = LastAppliedIndex}} = send_snapshot(FollowerId, State),
-                    send_logs(FollowerId, LastAppliedIndex, LeaderTerm, LeaderCommitIndex, State)
+                    {ok, #raft_log_pos{index = LastAppliedIndex}} = send_snapshot(FollowerId, State, Witness),
+                    send_logs(FollowerId, LastAppliedIndex, LeaderTerm, LeaderCommitIndex, State, Witness)
                 after
                     sub(?RAFT_GLOBAL_COUNTER_SNAPSHOT_CATCHUP)
                 end
@@ -158,12 +158,13 @@ terminate(Reason, #raft_catchup{name = Name}) ->
 has_log(Log, FollowerLastIndex) ->
     FollowerLastIndex > 0 andalso wa_raft_log:get(Log, FollowerLastIndex) =/= not_found.
 
--spec send_logs(node(), wa_raft_log:log_index(), wa_raft_log:log_term(), wa_raft_log:log_index(), #raft_catchup{}) -> no_return().
+-spec send_logs(node(), wa_raft_log:log_index(), wa_raft_log:log_term(), wa_raft_log:log_index(), #raft_catchup{}, boolean()) -> no_return().
 send_logs(FollowerId,
           FollowerEndIndex,
           LeaderTerm,
           LeaderCommitIndex,
-          #raft_catchup{name = Name} = State) ->
+          #raft_catchup{name = Name} = State,
+          Witness) ->
     set_state(Name, FollowerId, sending),
     set_progress(Name, FollowerId, total, (LeaderCommitIndex - FollowerEndIndex)),
     set_progress(Name, FollowerId, completed, 0),
@@ -171,20 +172,27 @@ send_logs(FollowerId,
         [Name, LeaderTerm, FollowerId, FollowerEndIndex, LeaderCommitIndex], #{domain => [whatsapp, wa_raft]}),
 
     StartT = os:timestamp(),
-    ok = send_logs_loop(FollowerId, FollowerEndIndex + 1, LeaderTerm, LeaderCommitIndex, State),
+    ok = send_logs_loop(FollowerId, FollowerEndIndex + 1, LeaderTerm, LeaderCommitIndex, State, Witness),
     ?LOG_NOTICE("[~p term ~p] finish sending logs to follower ~p", [Name, LeaderTerm, FollowerId], #{domain => [whatsapp, wa_raft]}),
     ?RAFT_GATHER('raft.leader.catchup.duration', timer:now_diff(os:timestamp(), StartT)).
 
-send_logs_loop(_FollowerId, NextIndex, _LeaderTerm, LeaderCommitIndex, _State) when NextIndex >= LeaderCommitIndex ->
+send_logs_loop(_FollowerId, NextIndex, _LeaderTerm, LeaderCommitIndex, _State, _Witness) when NextIndex >= LeaderCommitIndex ->
     ok;
 send_logs_loop(FollowerId, PrevLogIndex, LeaderTerm, LeaderCommitIndex,
-               #raft_catchup{name = Name, table = Table, partition = Partition, log = Log, id = Id} = State) ->
+               #raft_catchup{name = Name, table = Table, partition = Partition, log = Log, id = Id} = State, Witness) ->
     % Load a chunk of log entries starting at PrevLogIndex + 1.
     LogBatchEntries = ?RAFT_CONFIG(raft_catchup_log_batch_entries, 800),
     LogBatchBytes = ?RAFT_CONFIG(raft_catchup_log_batch_bytes, 4 * 1024 * 1024),
     Limit = min(LogBatchEntries, LeaderCommitIndex - PrevLogIndex),
     {ok, PrevLogTerm} = wa_raft_log:term(Log, PrevLogIndex),
-    {ok, Entries} = wa_raft_log:get(Log, PrevLogIndex + 1, Limit, LogBatchBytes),
+
+    {ok, Entries} = case Witness of
+        true ->
+            {ok, Terms} = wa_raft_log:get_terms(Log, PrevLogIndex + 1, Limit, LogBatchBytes),
+            [{Term, []} || Term <- Terms];
+        _ ->
+            wa_raft_log:get(Log, PrevLogIndex + 1, Limit, LogBatchBytes)
+        end,
     NumEntries = length(Entries),
 
     % Replicate the log entries to our peer.
@@ -197,14 +205,14 @@ send_logs_loop(FollowerId, PrevLogIndex, LeaderTerm, LeaderCommitIndex,
 
     % Continue onto the next iteration, starting from the new end index
     % reported by the follower.
-    send_logs_loop(FollowerId, FollowerEndIndex, LeaderTerm, LeaderCommitIndex, State).
+    send_logs_loop(FollowerId, FollowerEndIndex, LeaderTerm, LeaderCommitIndex, State, Witness).
 
 %% =======================================================================
 %% Private functions - Send snapshot to follower
 %%
 
--spec send_snapshot(node(), #raft_catchup{}) -> any().
-send_snapshot(FollowerId, #raft_catchup{name = Name, table = Table, partition = Partition} = State) ->
+-spec send_snapshot(node(), #raft_catchup{}, boolean()) -> any().
+send_snapshot(FollowerId, #raft_catchup{name = Name, table = Table, partition = Partition} = State, Witness) ->
     LastCompletionTs = update_progress(Name, FollowerId, completion_ts, 0),
     erlang:system_time(second) - LastCompletionTs < ?RAFT_CONFIG(raft_catchup_min_interval_s, 20) andalso throw(interval_too_short),
 
@@ -215,7 +223,16 @@ send_snapshot(FollowerId, #raft_catchup{name = Name, table = Table, partition = 
         case wa_raft_storage:create_snapshot(StoragePid) of
             {ok, #raft_log_pos{index = Index, term = Term} = LogPos} ->
                 SnapName = ?SNAPSHOT_NAME(Index, Term),
+                Root = ?ROOT_DIR(Table, Partition),
                 try
+                    case Witness of
+                        false ->
+                            send_snapshot_transport(FollowerId, State, LogPos);
+                        _ ->
+                            % If node is a witness, we can bypass the transport process since we don't have to
+                            % send the full log.  Thus, we can run snapshot_available() here directly
+                            wa_raft_server:snapshot_available({StoragePid, FollowerId}, Root, LogPos)
+                    end,
                     send_snapshot_transport(FollowerId, State, LogPos)
                 after
                     wa_raft_storage:delete_snapshot(StoragePid, SnapName)

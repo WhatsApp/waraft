@@ -225,7 +225,7 @@ stop(Pid) ->
     gen_statem:stop(Pid).
 
 % An API that uses storage timeout since it interacts with storage layer directly
--spec snapshot_available(Pid :: atom() | pid(), Root :: string(), Pos :: wa_raft_log:log_pos()) -> ok | wa_raft:error().
+-spec snapshot_available(Pid :: atom() | pid() | {atom(), atom()}, Root :: string(), Pos :: wa_raft_log:log_pos()) -> ok | wa_raft:error().
 snapshot_available(Pid, Root, Pos) ->
     gen_server:call(Pid, ?SNAPSHOT_AVAILABLE_COMMAND(Root, Pos), ?STORAGE_CALL_TIMEOUT_MS).
 
@@ -2282,5 +2282,7 @@ catchup_follower(FollowerId, FollowerEndIndex,
     MatchIndex1 = maps:put(FollowerId, FollowerEndIndex, MatchIndex0),
     NextIndex1 = maps:put(FollowerId, FollowerEndIndex + 1, NextIndex0),
     State1 = State0#raft_state{match_index = MatchIndex1, next_index = NextIndex1},
-    wa_raft_catchup:catchup(CatchupProcess, FollowerId, FollowerEndIndex, CurrentTerm, CommitIndex),
+    Witnesses = config_witnesses(config(State1)),
+    Witness = lists:member({Name, FollowerId}, Witnesses),
+    wa_raft_catchup:catchup(CatchupProcess, FollowerId, FollowerEndIndex, CurrentTerm, CommitIndex, Witness),
     State1.
