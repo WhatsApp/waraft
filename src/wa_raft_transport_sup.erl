@@ -42,7 +42,7 @@ child_spec() ->
         modules => [?MODULE]
     }.
 
--spec start_link() -> {ok, Pid :: pid()} | ignore | wa_raft:error().
+-spec start_link() -> supervisor:startlink_ret().
 start_link() ->
     supervisor:start_link({local, ?MODULE}, ?MODULE, []).
 

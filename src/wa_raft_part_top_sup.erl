@@ -38,7 +38,7 @@ child_spec(RaftArgs) ->
         modules => [?MODULE]
     }.
 
--spec start_link([term()]) -> {ok, Pid :: pid()} | ignore | wa_raft:error().
+-spec start_link([term()]) -> supervisor:startlink_ret().
 start_link(RaftArgs) ->
     case supervisor:start_link({local, ?MODULE}, ?MODULE, []) of
         {ok, _} = Result ->

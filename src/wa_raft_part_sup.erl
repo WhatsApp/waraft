@@ -45,7 +45,7 @@ child_spec(#{table := Table, partition := Partition} = RaftArgs) ->
         modules => [?MODULE]
     }.
 
--spec start_link(atom(), [term()]) -> {ok, Pid :: pid()} | ignore | wa_raft:error().
+-spec start_link(atom(), [term()]) -> supervisor:startlink_ret().
 start_link(Name, RaftSpec) ->
     supervisor:start_link({local, Name}, ?MODULE, [RaftSpec]).
 
