@@ -47,7 +47,7 @@ child_spec(Number) ->
         modules => [?MODULE]
     }.
 
--spec start_link(Number :: non_neg_integer()) -> {ok, Pid :: pid()} | wa_raft:error().
+-spec start_link(Number :: non_neg_integer()) -> gen_server:start_ret().
 start_link(Number) ->
     gen_server:start_link(?MODULE, [Number], []).
 
