@@ -142,7 +142,7 @@ child_spec() ->
         modules => [?MODULE]
     }.
 
--spec start_link() -> gen_server:start_ret().
+-spec start_link() -> {ok, Pid :: pid()} | ignore | {error, Reason :: term()}.
 start_link() ->
     gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
 

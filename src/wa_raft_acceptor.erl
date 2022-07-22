@@ -110,7 +110,7 @@ child_spec(Config) ->
 }.
 
 %% Public API
--spec start_link(RaftArgs :: wa_raft:args()) -> gen_server:start_ret().
+-spec start_link(RaftArgs :: wa_raft:args()) -> {ok, Pid :: pid()} | ignore | wa_raft:error().
 start_link(#{table := Table, partition := Partition} = RaftArgs) ->
     Name = ?RAFT_ACCEPTOR_NAME(Table, Partition),
     gen_server:start_link({local, Name}, ?MODULE, [RaftArgs], []).

@@ -282,7 +282,7 @@ child_spec(RaftArgs) ->
         modules => [?MODULE]
     }.
 
--spec start_link(RaftArgs :: wa_raft:args()) -> gen_server:start_ret().
+-spec start_link(RaftArgs :: wa_raft:args()) -> {ok, Pid :: pid()} | ignore | {error, Reason :: term()}.
 start_link(#{table := Table, partition := Partition} = RaftArgs) ->
     gen_server:start_link({local, ?RAFT_LOG_NAME(Table, Partition)}, ?MODULE, [RaftArgs], []).
 
