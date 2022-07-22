@@ -1967,14 +1967,15 @@ heartbeat(FollowerId, #raft_state{id = RaftId, name = Name, log_view = View, cat
             LastFollowerHeartbeatTs =/= undefined andalso ?RAFT_GATHER('raft.leader.heartbeat.interval_ms', erlang:system_time(millisecond) - LastFollowerHeartbeatTs),
             State1;
         false ->
-            MaxLogEntries = ?RAFT_CONFIG(raft_max_log_entries_per_heartbeat, 15),
             MaxHeartbeatSize = ?RAFT_CONFIG(raft_max_heartbeat_size, 1 * 1024 * 1024),
             Entries =
                 case lists:member({Name, FollowerId}, Witnesses) of
                     true ->
-                        {ok, Terms} = wa_raft_log:get_terms(View, FollowerNextIndex, MaxLogEntries, MaxHeartbeatSize),
+                        MaxWitnessLogEntries = ?RAFT_CONFIG(raft_max_witness_log_entries_per_heartbeat, 250),
+                        {ok, Terms} = wa_raft_log:get_terms(View, FollowerNextIndex, MaxWitnessLogEntries, MaxHeartbeatSize),
                         [{Term, []} || Term <- Terms];
                     _ ->
+                        MaxLogEntries = ?RAFT_CONFIG(raft_max_log_entries_per_heartbeat, 15),
                         {ok, Ret} = wa_raft_log:get(View, FollowerNextIndex, MaxLogEntries, MaxHeartbeatSize),
                         Ret
                     end,
