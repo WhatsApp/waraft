@@ -422,6 +422,10 @@ stalled(_Type, ?RAFT_RPC(RPCType, CurrentTerm, SenderId, _Payload),
         [Name, CurrentTerm, RPCType, SenderId], #{domain => [whatsapp, wa_raft]}),
     keep_state_and_data;
 
+%% [Downgrade] Node receives RPC with SenderName that was not handled
+stalled(Type, ?RAFT_NAMED_RPC(RPC, Term, _SenderName, SenderNode, Payload), State) ->
+    ?FUNCTION_NAME(Type, ?RAFT_RPC(RPC, Term, SenderNode, Payload), State);
+
 stalled({call, From}, ?SNAPSHOT_AVAILABLE_COMMAND(Root, #raft_log_pos{index = SnapshotIndex, term = SnapshotTerm} = SnapshotPos),
         #raft_state{name = Name, data_dir = DataDir, log_view = View0, storage = StoragePid,
                     current_term = CurrentTerm, last_applied = LastApplied} = State0) ->
@@ -620,6 +624,10 @@ leader(_Type, ?RAFT_RPC(RPCType, CurrentTerm, SenderId, _Payload),
     ?LOG_WARNING("Leader[~p, term ~p] receives unrecognized RPC ~p from ~p.",
         [Name, CurrentTerm, RPCType, SenderId], #{domain => [whatsapp, wa_raft]}),
     keep_state_and_data;
+
+%% [Downgrade] Node receives RPC with SenderName that was not handled
+leader(Type, ?RAFT_NAMED_RPC(RPC, Term, _SenderName, SenderNode, Payload), State) ->
+    ?FUNCTION_NAME(Type, ?RAFT_RPC(RPC, Term, SenderNode, Payload), State);
 
 %% Periodical Heartbeat to followers
 leader(state_timeout = Type, Event, #raft_state{name = Name, current_term = CurrentTerm, handover = {Peer, _Ref, Timeout}} = State) ->
@@ -986,6 +994,10 @@ follower(_Type, ?RAFT_RPC(RPCType, CurrentTerm, SenderId, _Payload),
         [Name, CurrentTerm, RPCType, SenderId], #{domain => [whatsapp, wa_raft]}),
     keep_state_and_data;
 
+%% [Downgrade] Node receives RPC with SenderName that was not handled
+follower(Type, ?RAFT_NAMED_RPC(RPC, Term, _SenderName, SenderNode, Payload), State) ->
+    ?FUNCTION_NAME(Type, ?RAFT_RPC(RPC, Term, SenderNode, Payload), State);
+
 %% [Follower] handle timeout
 %% follower doesn't receive any heartbeat. starting a new election
 follower(state_timeout, _,
@@ -1140,6 +1152,10 @@ candidate(_Type, ?RAFT_RPC(RPCType, CurrentTerm, SenderId, _Payload),
         [Name, CurrentTerm, RPCType, SenderId], #{domain => [whatsapp, wa_raft]}),
     keep_state_and_data;
 
+%% [Downgrade] Node receives RPC with SenderName that was not handled
+candidate(Type, ?RAFT_NAMED_RPC(RPC, Term, _SenderName, SenderNode, Payload), State) ->
+    ?FUNCTION_NAME(Type, ?RAFT_RPC(RPC, Term, SenderNode, Payload), State);
+
 %% [Candidate] Handle Election Timeout (5.2)
 %% Candidate doesn't get enough votes after a period of time, restart election.
 candidate(state_timeout, _,
@@ -1231,6 +1247,10 @@ disabled(_Type, ?RAFT_RPC(RPCType, CurrentTerm, SenderId, _Payload),
     ?LOG_WARNING("Disabled[~p, term ~p] receives unrecognized RPC ~p from ~p.",
         [Name, CurrentTerm, RPCType, SenderId], #{domain => [whatsapp, wa_raft]}),
     keep_state_and_data;
+
+%% [Downgrade] Node receives RPC with SenderName that was not handled
+disabled(Type, ?RAFT_NAMED_RPC(RPC, Term, _SenderName, SenderNode, Payload), State) ->
+    ?FUNCTION_NAME(Type, ?RAFT_RPC(RPC, Term, SenderNode, Payload), State);
 
 disabled({call, From}, ?PROMOTE_COMMAND(_Term, _Force, _Config), #raft_state{name = Name, current_term = CurrentTerm}) ->
     ?LOG_WARNING("Disabled[~p, term ~p] cannot be promoted.", [Name, CurrentTerm], #{domain => [whatsapp, wa_raft]}),
@@ -1330,6 +1350,17 @@ witness(_Type, ?HANDOVER_FAILED_RPC(CurrentTerm, NodeId, _Ref),
     ?LOG_WARNING("Witness[~p, term ~p] got conflicting handover failed from ~p.",
         [Name, CurrentTerm, NodeId], #{domain => [whatsapp, wa_raft]}),
     keep_state_and_data;
+
+%% [Fallback] Node receives unrecognized RPC
+witness(_Type, ?RAFT_RPC(RPCType, CurrentTerm, SenderId, _Payload),
+       #raft_state{name = Name, current_term = CurrentTerm}) ->
+    ?LOG_WARNING("Witness[~p, term ~p] receives unrecognized RPC ~p from ~p.",
+        [Name, CurrentTerm, RPCType, SenderId], #{domain => [whatsapp, wa_raft]}),
+    keep_state_and_data;
+
+%% [Downgrade] Node receives RPC with SenderName that was not handled
+witness(Type, ?RAFT_NAMED_RPC(RPC, Term, _SenderName, SenderNode, Payload), State) ->
+    ?FUNCTION_NAME(Type, ?RAFT_RPC(RPC, Term, SenderNode, Payload), State);
 
 witness({call, From}, ?SNAPSHOT_AVAILABLE_COMMAND(_, #raft_log_pos{index = SnapshotIndex, term = SnapshotTerm} = SnapshotPos),
         #raft_state{log_view = View0, name = Name, current_term = CurrentTerm, last_applied = LastApplied} = State0) ->
@@ -2142,9 +2173,16 @@ reply(info, _Node, _Message, _State) ->
 -spec cast(node(), term(), #raft_state{}) -> ok | {error, term()}.
 cast(DestId, Message, #raft_state{name = Name, offline_peers = OfflinePeers}) when OfflinePeers =:= [] ->
     try
+        % TODO(hsun324): T112326686 - upgrade clause to add assumed name to RPCs without SenderName
+        AdjustedMessage =
+            case {?RAFT_CONFIG(upgrade_rpc_with_name, false), Message} of
+                {true, ?RAFT_RPC(Type, Term, SenderId, Payload)} -> ?RAFT_NAMED_RPC(Type, Term, Name, SenderId, Payload);
+                _                                                -> Message
+            end,
+
         % TODO(hsun324): For the time being, assume that all members of the cluster use the same server name.
         DestAddr = {Name, DestId},
-        ok = ?RAFT_DISTRIBUTION_MODULE:cast(DestAddr, Message)
+        ok = ?RAFT_DISTRIBUTION_MODULE:cast(DestAddr, AdjustedMessage)
     catch
         _:E ->
             ?RAFT_COUNT({'raft.server.cast.error', E}),

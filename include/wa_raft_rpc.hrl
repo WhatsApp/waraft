@@ -9,6 +9,7 @@
 -author('hsun324@fb.com').
 
 -define(RAFT_RPC(Type, Term, SenderId, Payload), {rpc, Type, Term, SenderId, Payload}).
+-define(RAFT_NAMED_RPC(Type, Term, SenderName, SenderNode, Payload), {rpc, Type, Term, SenderName, SenderNode, Payload}).
 
 -define(APPEND_ENTRIES_RPC(Term, SenderId, PrevLogIndex, PrevLogTerm, Entries, CommitIndex, TrimIndex),
     ?RAFT_RPC(append_entries, Term, SenderId, {PrevLogIndex, PrevLogTerm, Entries, CommitIndex, TrimIndex})).
