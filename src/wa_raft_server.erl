@@ -383,11 +383,11 @@ stalled(Type, ?REQUEST_VOTE_RPC(_Term, _SenderId, normal, _LastLogIndex, _LastLo
     filter_vote_request(?FUNCTION_NAME, Type, Event, State);
 
 %% [General Rules] Discard any incoming RPCs with a term older than the current term
-stalled(Type, ?RAFT_RPC(RPCType, Term, SenderId, _Payload),
+stalled(_Type, ?RAFT_RPC(RPCType, Term, SenderId, _Payload),
         #raft_state{id = RaftId, name = Name, current_term = CurrentTerm} = State) when Term < CurrentTerm ->
     ?LOG_NOTICE("Stalled[~p, term ~p] received stale ~p from ~p with old term ~p. Dropping.",
         [Name, CurrentTerm, RPCType, SenderId, Term], #{domain => [whatsapp, wa_raft]}),
-    reply(Type, SenderId, ?NOTIFY_TERM_RPC(CurrentTerm, RaftId), State),
+    ?MODULE:cast(SenderId, ?NOTIFY_TERM_RPC(CurrentTerm, RaftId), State),
     {keep_state, State};
 %% [General Rules] Advance to the newer term and reset state when seeing a newer term in an incoming RPC
 stalled(Type, ?RAFT_RPC(RPCType, Term, SenderId, _Payload) = Event,
@@ -397,18 +397,18 @@ stalled(Type, ?RAFT_RPC(RPCType, Term, SenderId, _Payload) = Event,
     {repeat_state, advance_term(Term, State), {next_event, Type, Event}};
 
 %% [AppendEntries] If we haven't discovered leader for this term, record it
-stalled(Type, ?APPEND_ENTRIES_RPC(CurrentTerm, LeaderId, PrevLogIndex, _PrevLogTerm, _Entries, _LeaderCommit, _TrimIndex),
+stalled(_Type, ?APPEND_ENTRIES_RPC(CurrentTerm, LeaderId, PrevLogIndex, _PrevLogTerm, _Entries, _LeaderCommit, _TrimIndex),
         #raft_state{id = RaftId, current_term = CurrentTerm, leader_id = undefined} = State) ->
     NewState = State#raft_state{leader_id = LeaderId, leader_heartbeat_ts = erlang:system_time(millisecond)},
     notify_leader_change(NewState),
-    reply(Type, LeaderId, ?APPEND_ENTRIES_RESPONSE_RPC(CurrentTerm, RaftId, PrevLogIndex, false, 0), NewState),
+    ?MODULE:cast(LeaderId, ?APPEND_ENTRIES_RESPONSE_RPC(CurrentTerm, RaftId, PrevLogIndex, false, 0), NewState),
     {keep_state, NewState};
 
 %% [AppendEntries] Otherwise, stalled nodes always discard AppendEntries
-stalled(Type, ?APPEND_ENTRIES_RPC(CurrentTerm, LeaderId, PrevLogIndex, _PrevLogTerm, _Entries, _LeaderCommit, _TrimIndex),
+stalled(_Type, ?APPEND_ENTRIES_RPC(CurrentTerm, LeaderId, PrevLogIndex, _PrevLogTerm, _Entries, _LeaderCommit, _TrimIndex),
         #raft_state{id = RaftId, current_term = CurrentTerm} = State) ->
     NewState = State#raft_state{leader_heartbeat_ts = erlang:system_time(millisecond)},
-    reply(Type, LeaderId, ?APPEND_ENTRIES_RESPONSE_RPC(CurrentTerm, RaftId, PrevLogIndex, false, 0), NewState),
+    ?MODULE:cast(LeaderId, ?APPEND_ENTRIES_RESPONSE_RPC(CurrentTerm, RaftId, PrevLogIndex, false, 0), NewState),
     {keep_state, NewState};
 
 %% [NotifyTerm] Drop NotifyTerm RPCs with matching term
@@ -461,10 +461,10 @@ stalled({call, From}, ?SNAPSHOT_AVAILABLE_COMMAND(Root, #raft_log_pos{index = Sn
 stalled(Type, ?RAFT_COMMAND(_COMMAND, _Payload) = Event, State) ->
     command(?FUNCTION_NAME, Type, Event, State);
 
-stalled(Type, Event, #raft_state{name = Name, current_term = CurrentTerm} = State) ->
+stalled(Type, Event, #raft_state{name = Name, current_term = CurrentTerm}) ->
     ?LOG_WARNING("Stalled[~p, term ~p] receives unknown ~p event ~p",
         [Name, CurrentTerm, Type, Event], #{domain => [whatsapp, wa_raft]}),
-    reply(Type, undefined, {error, unsupported}, State),
+    reply(Type, {error, unsupported}),
     keep_state_and_data.
 
 %% [RAFT Core]
@@ -494,11 +494,11 @@ leader(Type, ?REQUEST_VOTE_RPC(_Term, _SenderId, normal, _LastLogIndex, _LastLog
     filter_vote_request(?FUNCTION_NAME, Type, Event, State);
 
 %% [General Rules] Discard any incoming RPCs with a term older than the current term
-leader(Type, ?RAFT_RPC(RPCType, Term, SenderId, _Payload),
+leader(_Type, ?RAFT_RPC(RPCType, Term, SenderId, _Payload),
         #raft_state{id = RaftId, name = Name, current_term = CurrentTerm} = State) when Term < CurrentTerm ->
     ?LOG_NOTICE("Leader[~p, term ~p] received stale ~p from ~p with old term ~p. Dropping.",
         [Name, CurrentTerm, RPCType, SenderId, Term], #{domain => [whatsapp, wa_raft]}),
-    reply(Type, SenderId, ?NOTIFY_TERM_RPC(CurrentTerm, RaftId), State),
+    ?MODULE:cast(SenderId, ?NOTIFY_TERM_RPC(CurrentTerm, RaftId), State),
     {keep_state, State};
 %% [General Rules] Advance to the newer term and reset state when seeing a newer term in an incoming RPC
 leader(Type, ?RAFT_RPC(RPCType, Term, SenderId, _Payload) = Event,
@@ -510,11 +510,11 @@ leader(Type, ?RAFT_RPC(RPCType, Term, SenderId, _Payload) = Event,
 %% [Leader] Handle AppendEntries RPC (5.1, 5.2)
 %% [AppendEntries] We are leader for the current term, so we should never see an
 %%                 AppendEntries RPC from another node for this term
-leader(Type, ?APPEND_ENTRIES_RPC(CurrentTerm, SenderId, PrevLogIndex, _PrevLogTerm, _Entries, _LeaderCommit, _TrimIndex),
+leader(_Type, ?APPEND_ENTRIES_RPC(CurrentTerm, SenderId, PrevLogIndex, _PrevLogTerm, _Entries, _LeaderCommit, _TrimIndex),
        #raft_state{current_term = CurrentTerm, id = RaftId, name = Name, commit_index = CommitIndex} = State) ->
     ?LOG_ERROR("Leader[~p, term ~p] got invalid heartbeat from conflicting leader ~p.",
         [Name, CurrentTerm, SenderId], #{domain => [whatsapp, wa_raft]}),
-    reply(Type, SenderId, ?APPEND_ENTRIES_RESPONSE_RPC(CurrentTerm, RaftId, PrevLogIndex, false, CommitIndex), State),
+    ?MODULE:cast(SenderId, ?APPEND_ENTRIES_RESPONSE_RPC(CurrentTerm, RaftId, PrevLogIndex, false, CommitIndex), State),
     keep_state_and_data;
 
 %% [Leader] Handle AppendEntries RPC responses (5.2, 5.3, 7).
@@ -581,9 +581,9 @@ leader(cast, ?APPEND_ENTRIES_RESPONSE_RPC(CurrentTerm, FollowerId, _PrevIndex, f
     {keep_state, maybe_heartbeat(NewState), ?HEARTBEAT_TIMEOUT};
 
 %% [RequestVote RPC] We are already leader for the current term, so always decline votes (5.1, 5.2)
-leader(Type, ?REQUEST_VOTE_RPC(CurrentTerm, CandidateId, _ElectionType, _LastLogIndex, _LastLogTerm),
+leader(_Type, ?REQUEST_VOTE_RPC(CurrentTerm, CandidateId, _ElectionType, _LastLogIndex, _LastLogTerm),
        #raft_state{id = RaftId, current_term = CurrentTerm} = State) ->
-    reply(Type, CandidateId, ?VOTE_RPC(CurrentTerm, RaftId, false), State),
+    ?MODULE:cast(CandidateId, ?VOTE_RPC(CurrentTerm, RaftId, false), State),
     keep_state_and_data;
 
 %% [Vote RPC] We are already leader, so we don't need to consider any more votes (5.1)
@@ -593,11 +593,11 @@ leader(_Type, ?VOTE_RPC(CurrentTerm, VoterId, Vote), #raft_state{name = Name, cu
     keep_state_and_data;
 
 %% [Handover RPC] We are already leader so ignore any handover requests.
-leader(Type, ?HANDOVER_RPC(CurrentTerm, NodeId, Ref, _PrevLogIndex, _PrevLogTerm, _LogEntries),
+leader(_Type, ?HANDOVER_RPC(CurrentTerm, NodeId, Ref, _PrevLogIndex, _PrevLogTerm, _LogEntries),
        #raft_state{id = RaftId, name = Name, current_term = CurrentTerm} = State) ->
     ?LOG_WARNING("Leader[~p, term ~p] got orphan handover request from ~p while leader.",
         [Name, CurrentTerm, NodeId], #{domain => [whatsapp, wa_raft]}),
-    reply(Type, NodeId, ?HANDOVER_FAILED_RPC(CurrentTerm, RaftId, Ref), State),
+    ?MODULE:cast(NodeId, ?HANDOVER_FAILED_RPC(CurrentTerm, RaftId, Ref), State),
     keep_state_and_data;
 
 %% [Handover Failed RPC] Our handover failed, so clear the handover status.
@@ -699,7 +699,7 @@ leader(Type, ?RESIGN_COMMAND, #raft_state{name = Name, current_term = CurrentTer
     ?LOG_NOTICE("Leader[~p, term ~p] resigns.", [Name, CurrentTerm], #{domain => [whatsapp, wa_raft]}),
     State1 = State0#raft_state{leader_id = undefined},
     notify_leader_change(State1),
-    reply(Type, undefined, ok, State1),
+    reply(Type, ok),
     {next_state, follower, State1};
 
 %% [Adjust Membership] Leader attempts to commit a single-node membership change.
@@ -727,7 +727,7 @@ leader(Type, ?ADJUST_MEMBERSHIP_COMMAND(Action, Peer),
                         true ->
                             ?LOG_NOTICE("Leader[~p, term ~p] rejecting request to ~p peer ~p because it has a pending reconfiguration (storage: ~p, log: ~p).",
                                 [Name, CurrentTerm, Action, Peer, StorageConfigIndex, LogConfigIndex], #{domain => [whatsapp, wa_raft]}),
-                            reply(Type, undefined, {error, rejected}, State0),
+                            reply(Type, {error, rejected}),
                             {keep_state, State0};
                         false ->
                             % Now that we have completed all the required checks, the leader is free to
@@ -740,19 +740,19 @@ leader(Type, ?ADJUST_MEMBERSHIP_COMMAND(Action, Peer),
                             State1 = State0#raft_state{log_view = View1},
                             State2 = apply_single_node_cluster(State1),
                             State3 = append_entries_to_followers(State2),
-                            reply(Type, undefined, {ok, #raft_log_pos{index = LogIndex, term = CurrentTerm}}, State3),
+                            reply(Type, {ok, #raft_log_pos{index = LogIndex, term = CurrentTerm}}),
                             {keep_state, State3, ?HEARTBEAT_TIMEOUT}
                     end;
                 {ok, _OtherTerm} ->
                     ?LOG_NOTICE("Leader[~p, term ~p] rejecting request to ~p peer ~p because it has not established current term commit quorum.",
                         [Name, CurrentTerm, Action, Peer], #{domain => [whatsapp, wa_raft]}),
-                    reply(Type, undefined, {error, rejected}, State0),
+                    reply(Type, {error, rejected}),
                     {keep_state, State0}
             end;
         {error, Reason} ->
             ?LOG_NOTICE("Leader[~p, term ~p] refusing invalid membership adjustment ~0p on configuration ~0p due to ~0p.",
                 [Name, CurrentTerm, {Action, Peer}, Config, Reason], #{domain => [whatsapp, wa_raft]}),
-            reply(Type, undefined, {error, invalid}, State0),
+            reply(Type, {error, invalid}),
             {keep_state, State0}
     end;
 
@@ -770,7 +770,7 @@ leader(Type, ?HANDOVER_COMMAND(undefined), #raft_state{name = Name, current_term
         [] ->
             ?LOG_NOTICE("Leader[~p, term ~p] has no valid peer to handover to",
                 [Name, CurrentTerm], #{domain => [whatsapp, wa_raft]}),
-            reply(Type, undefined, {error, no_valid_peer}, State),
+            reply(Type, {error, no_valid_peer}),
             keep_state_and_data;
         Candidates ->
             Peer = lists:nth(rand:uniform(length(Candidates)), Candidates),
@@ -781,7 +781,7 @@ leader(Type, ?HANDOVER_COMMAND(undefined), #raft_state{name = Name, current_term
 leader(Type, ?HANDOVER_COMMAND(RaftId), #raft_state{id = RaftId, name = Name, current_term = CurrentTerm} = State) ->
     ?LOG_WARNING("Leader[~p, term ~p] dropping handover to self.",
         [Name, CurrentTerm], #{domain => [whatsapp, wa_raft]}),
-    reply(Type, undefined, {error, badarg}, State),
+    reply(Type, {error, badarg}),
     {keep_state, State};
 
 %% [Handover] Attempt to start a handover to the specified peer
@@ -793,7 +793,7 @@ leader(Type, ?HANDOVER_COMMAND(Peer),
         false ->
             ?LOG_WARNING("Leader[~p, term ~p] dropping handover to unknown peer ~p.",
                 [Name, CurrentTerm, Peer], #{domain => [whatsapp, wa_raft]}),
-            reply(Type, undefined, {error, badarg}, State0),
+            reply(Type, {error, badarg}),
             keep_state_and_data;
         true ->
             PeerMatchIndex = maps:get(Peer, State0#raft_state.match_index, 0),
@@ -822,20 +822,20 @@ leader(Type, ?HANDOVER_COMMAND(Peer),
                     case PrevLogIndex + length(LogEntries) of
                         LastIndex ->
                             ?MODULE:cast(Peer, ?HANDOVER_RPC(CurrentTerm, RaftId, Ref, PrevLogIndex, PrevLogTerm, LogEntries), State1),
-                            reply(Type, undefined, {ok, Peer}, State1),
+                            reply(Type, {ok, Peer}),
                             {keep_state, State1};
                         _ ->
                             ?RAFT_COUNT('raft.leader.handover.oversize'),
                             ?LOG_WARNING("Leader[~p, term ~p] handover to peer ~p would require an oversized RPC.",
                                 [Name, CurrentTerm, Peer], #{domain => [whatsapp, wa_raft]}),
-                            reply(Type, undefined, {error, oversize}, State0),
+                            reply(Type, {error, oversize}),
                             keep_state_and_data
                     end;
                 false ->
                     ?RAFT_COUNT('raft.leader.handover.peer_lagging'),
                     ?LOG_WARNING("Leader[~p, term ~p] determines that peer ~p is not eligible for handover because it is ~p entries behind.",
                         [Name, CurrentTerm, Peer, LastIndex - PeerSendIndex], #{domain => [whatsapp, wa_raft]}),
-                    reply(Type, undefined, {error, peer_lagging}, State0),
+                    reply(Type, {error, peer_lagging}),
                     keep_state_and_data
             end
     end;
@@ -850,10 +850,10 @@ leader(Type, ?RAFT_COMMAND(_COMMAND, _Payload) = Event, State) ->
     command(?FUNCTION_NAME, Type, Event, State);
 
 %% Leader receives unknown event
-leader(Type, Event, #raft_state{name = Name, current_term = CurrentTerm} = State) ->
+leader(Type, Event, #raft_state{name = Name, current_term = CurrentTerm}) ->
     ?LOG_WARNING("Leader[~p, term ~p] receives unknown ~p event ~p",
         [Name, CurrentTerm, Type, Event], #{domain => [whatsapp, wa_raft]}),
-    reply(Type, undefined, {error, unsupported}, State),
+    reply(Type, {error, unsupported}),
     keep_state_and_data.
 
 -spec follower(Type :: atom(), Event :: term(), State0 :: #raft_state{}) -> gen_statem:state_enter_result(state()).
@@ -888,11 +888,11 @@ follower(Type, ?REQUEST_VOTE_RPC(_Term, _SenderId, normal, _LastLogIndex, _LastL
     filter_vote_request(?FUNCTION_NAME, Type, Event, State);
 
 %% [General Rules] Discard any incoming RPCs with a term older than the current term
-follower(Type, ?RAFT_RPC(RPCType, Term, SenderId, _Payload),
+follower(_Type, ?RAFT_RPC(RPCType, Term, SenderId, _Payload),
         #raft_state{id = RaftId, name = Name, current_term = CurrentTerm} = State) when Term < CurrentTerm ->
     ?LOG_NOTICE("Follower[~p, term ~p] received stale ~p from ~p with old term ~p. Dropping.",
         [Name, CurrentTerm, RPCType, SenderId, Term], #{domain => [whatsapp, wa_raft]}),
-    reply(Type, SenderId, ?NOTIFY_TERM_RPC(CurrentTerm, RaftId), State),
+    ?MODULE:cast(SenderId, ?NOTIFY_TERM_RPC(CurrentTerm, RaftId), State),
     {keep_state, State};
 %% [General Rules] Advance to the newer term and reset state when seeing a newer term in an incoming RPC
 follower(Type, ?RAFT_RPC(RPCType, Term, SenderId, _Payload) = Event,
@@ -917,7 +917,9 @@ follower(Type, ?APPEND_ENTRIES_RPC(CurrentTerm, LeaderId, PrevLogIndex, PrevLogT
             end,
             LastIndex = wa_raft_log:last_index(View),
             NewCommitIndex = erlang:min(LeaderCommitIndex, LastIndex),
-            reply(Type, LeaderId, ?APPEND_ENTRIES_RESPONSE_RPC(CurrentTerm, RaftId, PrevLogIndex, Result =:= ok, LastIndex), State2),
+            Response = ?APPEND_ENTRIES_RESPONSE_RPC(CurrentTerm, RaftId, PrevLogIndex, Result =:= ok, LastIndex),
+            ?MODULE:cast(LeaderId, Response, State2),
+            reply(Type, Response),
             State3 = case Result of
                 ok -> apply_log(State2, NewCommitIndex, TrimIndex);
                 _  -> State2
@@ -950,7 +952,7 @@ follower(_Type, ?VOTE_RPC(CurrentTerm, VoterId, Voted),
     keep_state_and_data;
 
 %% [Handover Extension] Another leader is asking for this follower to take over
-follower(Type, ?HANDOVER_RPC(CurrentTerm, NodeId, Ref, PrevLogIndex, PrevLogTerm, LogEntries),
+follower(_Type, ?HANDOVER_RPC(CurrentTerm, NodeId, Ref, PrevLogIndex, PrevLogTerm, LogEntries),
          #raft_state{id = RaftId, name = Name, current_term = CurrentTerm} = State0) ->
     ?RAFT_COUNT('wa_raft.follower.handover'),
     ?LOG_NOTICE("Follower[~p, term ~p] evaluating handover RPC from ~p.",
@@ -959,7 +961,7 @@ follower(Type, ?HANDOVER_RPC(CurrentTerm, NodeId, Ref, PrevLogIndex, PrevLogTerm
         0 ->
             ?LOG_NOTICE("Follower[~p, term ~p] not considering handover RPC due to election weight 0.",
                 [Name, CurrentTerm], #{domain => [whatsapp, wa_raft]}),
-            reply(Type, NodeId, ?HANDOVER_FAILED_RPC(CurrentTerm, RaftId, Ref), State0),
+            ?MODULE:cast(NodeId, ?HANDOVER_FAILED_RPC(CurrentTerm, RaftId, Ref), State0),
             {keep_state, State0};
         _ ->
             case append_entries(CurrentTerm, NodeId, PrevLogIndex, PrevLogTerm, LogEntries, State0) of
@@ -971,7 +973,7 @@ follower(Type, ?HANDOVER_RPC(CurrentTerm, NodeId, Ref, PrevLogIndex, PrevLogTerm
                     ?RAFT_COUNT('wa.raft.follower.handover.failed'),
                     ?LOG_WARNING("Follower[~p, term ~p] failing handover request due to non-ok append result of ~p",
                         [Name, CurrentTerm, Error], #{domain => [whatsapp, wa_raft]}),
-                    reply(Type, NodeId, ?HANDOVER_FAILED_RPC(CurrentTerm, RaftId, Ref), State1),
+                    ?MODULE:cast(NodeId, ?HANDOVER_FAILED_RPC(CurrentTerm, RaftId, Ref), State1),
                     {keep_state, State1}
             end
     end;
@@ -1022,10 +1024,10 @@ follower(state_timeout, _,
 follower(Type, ?RAFT_COMMAND(_COMMAND, _Payload) = Event, State) ->
     command(?FUNCTION_NAME, Type, Event, State);
 
-follower(Type, Event, #raft_state{name = Name, current_term = CurrentTerm} = State) ->
+follower(Type, Event, #raft_state{name = Name, current_term = CurrentTerm}) ->
     ?LOG_WARNING("Follower[~p, term ~p] receives unknown ~p event ~p",
         [Name, CurrentTerm, Type, Event], #{domain => [whatsapp, wa_raft]}),
-    reply(Type, undefined, {error, unsupported}, State),
+    reply(Type, {error, unsupported}),
     keep_state_and_data.
 
 -spec candidate(Type :: atom(), Event :: term(), State0 :: #raft_state{}) -> gen_statem:state_enter_result(state()).
@@ -1058,7 +1060,7 @@ candidate(enter, _PreviousState,
         false -> ?REQUEST_VOTE_RPC_OLD(CurrentTerm + 1, RaftId, LastLogIndex, LastLogTerm)
     end,
     broadcast(RequestVote, State3),
-    reply(cast, RaftId, ?VOTE_RPC(CurrentTerm + 1, RaftId, true), State3),
+    ?MODULE:cast(RaftId, ?VOTE_RPC(CurrentTerm + 1, RaftId, true), State3),
 
     {keep_state, State3, ?ELECTION_TIMEOUT};
 
@@ -1070,11 +1072,11 @@ candidate(Type, ?REQUEST_VOTE_RPC(_Term, _SenderId, normal, _LastLogIndex, _Last
     filter_vote_request(?FUNCTION_NAME, Type, Event, State);
 
 %% [General Rules] Discard any incoming RPCs with a term older than the current term
-candidate(Type, ?RAFT_RPC(RPCType, Term, SenderId, _Payload),
+candidate(_Type, ?RAFT_RPC(RPCType, Term, SenderId, _Payload),
         #raft_state{id = RaftId, name = Name, current_term = CurrentTerm} = State) when Term < CurrentTerm ->
     ?LOG_NOTICE("Candidate[~p, term ~p] received stale ~p from ~p with old term ~p. Dropping.",
         [Name, CurrentTerm, RPCType, SenderId, Term], #{domain => [whatsapp, wa_raft]}),
-    reply(Type, SenderId, ?NOTIFY_TERM_RPC(CurrentTerm, RaftId), State),
+    ?MODULE:cast(SenderId, ?NOTIFY_TERM_RPC(CurrentTerm, RaftId), State),
     {keep_state, State};
 %% [General Rules] Advance to the newer term and reset state when seeing a newer term in an incoming RPC
 candidate(Type, ?RAFT_RPC(RPCType, Term, SenderId, _Payload) = Event,
@@ -1091,9 +1093,9 @@ candidate(Type, ?APPEND_ENTRIES_RPC(CurrentTerm, LeaderId, _PrevLogIndex, _PrevL
     {next_state, follower, State, {next_event, Type, Event}};
 
 %% [RequestVote RPC] Candidate has always voted for itself, so vote false on anyone else (5.2)
-candidate(Type, ?REQUEST_VOTE_RPC(CurrentTerm, CandidateId, _ElectionType, _LastLogIndex, _LastLogTerm),
+candidate(_Type, ?REQUEST_VOTE_RPC(CurrentTerm, CandidateId, _ElectionType, _LastLogIndex, _LastLogTerm),
           #raft_state{id = RaftId, current_term = CurrentTerm} = State) ->
-    reply(Type, CandidateId, ?VOTE_RPC(CurrentTerm, RaftId, false), State),
+    ?MODULE:cast(CandidateId, ?VOTE_RPC(CurrentTerm, RaftId, false), State),
     keep_state_and_data;
 
 %% [Vote RPC] Candidate receives an affirmative vote (5.2)
@@ -1166,10 +1168,10 @@ candidate(state_timeout, _,
 candidate(Type, ?RAFT_COMMAND(_COMMAND, _Payload) = Event, State) ->
     command(?FUNCTION_NAME, Type, Event, State);
 
-candidate(Type, Event, #raft_state{name = Name, current_term = CurrentTerm} = State) ->
+candidate(Type, Event, #raft_state{name = Name, current_term = CurrentTerm}) ->
     ?LOG_WARNING("Candidate[~p, term ~p] receives unknown ~p event ~p",
         [Name, CurrentTerm, Type, Event], #{domain => [whatsapp, wa_raft]}),
-    reply(Type, undefined, {error, unsupported}, State),
+    reply(Type, {error, unsupported}),
     keep_state_and_data.
 
 -spec disabled(Type :: atom(), Event :: term(), State :: #raft_state{}) -> gen_statem:state_enter_result(state()).
@@ -1266,10 +1268,10 @@ disabled({call, From}, ?ENABLE_COMMAND, #raft_state{name = Name, current_term = 
 disabled(Type, ?RAFT_COMMAND(_COMMAND, _Payload) = Event, State) ->
     command(?FUNCTION_NAME, Type, Event, State);
 
-disabled(Type, Event, #raft_state{name = Name, current_term = CurrentTerm} = State) ->
+disabled(Type, Event, #raft_state{name = Name, current_term = CurrentTerm}) ->
     ?LOG_WARNING("Disabled[~p, term ~p] receives unknown ~p event ~p",
         [Name, CurrentTerm, Type, Event], #{domain => [whatsapp, wa_raft]}),
-    reply(Type, undefined, {error, unsupported}, State),
+    reply(Type, {error, unsupported}),
     keep_state_and_data.
 
 %% [Witness] State functions
@@ -1288,11 +1290,11 @@ witness(enter, FromState, #raft_state{name = Name, current_term = CurrentTerm} =
     wa_raft_durable_state:store(State2),
     {keep_state, State2};
 
-witness(Type, ?RAFT_RPC(RPCType, Term, SenderId, _Payload),
+witness(_Type, ?RAFT_RPC(RPCType, Term, SenderId, _Payload),
         #raft_state{id = RaftId, name = Name, current_term = CurrentTerm} = State) when Term < CurrentTerm ->
     ?LOG_NOTICE("Witness[~p, term ~p] received stale ~p from ~p with old term ~p. Dropping.",
         [Name, CurrentTerm, RPCType, SenderId, Term], #{domain => [whatsapp, wa_raft]}),
-    reply(Type, SenderId, ?NOTIFY_TERM_RPC(CurrentTerm, RaftId), State),
+    ?MODULE:cast(SenderId, ?NOTIFY_TERM_RPC(CurrentTerm, RaftId), State),
     {keep_state, State};
 
 witness(Type, ?RAFT_RPC(RPCType, Term, SenderId, _Payload) = Event,
@@ -1317,7 +1319,9 @@ witness(Type, ?APPEND_ENTRIES_RPC(CurrentTerm, LeaderId, PrevLogIndex, PrevLogTe
             end,
             LastIndex = wa_raft_log:last_index(View),
             NewCommitIndex = erlang:min(LeaderCommitIndex, LastIndex),
-            reply(Type, LeaderId, ?APPEND_ENTRIES_RESPONSE_RPC(CurrentTerm, RaftId, PrevLogIndex, Result =:= ok, LastIndex), State2),
+            Response = ?APPEND_ENTRIES_RESPONSE_RPC(CurrentTerm, RaftId, PrevLogIndex, Result =:= ok, LastIndex),
+            ?MODULE:cast(LeaderId, Response, State2),
+            reply(Type, Response),
             State3 = case Result of
                 ok -> apply_log(State2, NewCommitIndex, TrimIndex);
                 _  -> State2
@@ -1335,11 +1339,11 @@ witness(_Type, ?APPEND_ENTRIES_RESPONSE_RPC(CurrentTerm, SenderId, _PrevLogIndex
     keep_state_and_data;
 
 % [Witness] Witnesses ignore any handover requests.
-witness(Type, ?HANDOVER_RPC(CurrentTerm, NodeId, Ref, _PrevLogIndex, _PrevLogTerm, _LogEntries),
+witness(_Type, ?HANDOVER_RPC(CurrentTerm, NodeId, Ref, _PrevLogIndex, _PrevLogTerm, _LogEntries),
        #raft_state{id = RaftId, name = Name, current_term = CurrentTerm} = State) ->
     ?LOG_WARNING("Witness[~p, term ~p] got orphan handover request from ~p while witness.",
         [Name, CurrentTerm, NodeId], #{domain => [whatsapp, wa_raft]}),
-    reply(Type, NodeId, ?HANDOVER_FAILED_RPC(CurrentTerm, RaftId, Ref), State),
+    ?MODULE:cast(NodeId, ?HANDOVER_FAILED_RPC(CurrentTerm, RaftId, Ref), State),
     keep_state_and_data;
 
 witness(_Type, ?NOTIFY_TERM_RPC(CurrentTerm, _SenderId), #raft_state{current_term = CurrentTerm}) ->
@@ -1384,10 +1388,10 @@ witness(Type, ?RAFT_COMMAND(_COMMAND, _Payload) = Event, State) ->
     command(?FUNCTION_NAME, Type, Event, State);
 
 %% [Witness] Witness receives unknown event
-witness(Type, Event, #raft_state{name = Name, current_term = CurrentTerm} = State) ->
+witness(Type, Event, #raft_state{name = Name, current_term = CurrentTerm}) ->
     ?LOG_WARNING("Witness[~p, term ~p] receives unknown ~p event ~p",
         [Name, CurrentTerm, Type, Event], #{domain => [whatsapp, wa_raft]}),
-    reply(Type, undefined, {error, unsupported}, State),
+    reply(Type, {error, unsupported}),
     keep_state_and_data.
 
 
@@ -1412,11 +1416,11 @@ code_change(_OldVsn, StateName, State, _Extra) ->
     gen_statem:event_handler_result(state()).
 %% [Commit] Non-leader nodes should fail commits with {error, not_leader}.
 command(StateName, Type, ?COMMIT_COMMAND({Ref, _}),
-        #raft_state{name = Name, current_term = CurrentTerm, storage = StoragePid, leader_id = LeaderId} = State0) when StateName =/= leader ->
+        #raft_state{name = Name, current_term = CurrentTerm, storage = StoragePid, leader_id = LeaderId}) when StateName =/= leader ->
     ?LOG_WARNING("~p[~p, term ~p] commit ~p fails. Leader is ~p.",
         [StateName, Name, CurrentTerm, Ref, LeaderId], #{domain => [whatsapp, wa_raft]}),
     wa_raft_storage:fulfill_op(StoragePid, Ref, {error, not_leader}),
-    reply(Type, undefined, {error, not_leader}, State0),
+    reply(Type, {error, not_leader}),
     keep_state_and_data;
 %% [Strong Read] Non-leader nodes are not eligible for strong reads.
 command(StateName, cast, ?READ_COMMAND({From, _}),
@@ -1528,7 +1532,7 @@ command(StateName, {call, From}, ?RESIGN_COMMAND, #raft_state{name = Name, curre
 command(StateName, Type, ?ADJUST_MEMBERSHIP_COMMAND(Action, Peer), #raft_state{name = Name, current_term = CurrentTerm} = State) when StateName =/= leader ->
     ?LOG_NOTICE("~p[~p, term ~p] cannot ~p peer ~p because we are not leader.",
         [StateName, Name, CurrentTerm, Action, Peer], #{domain => [whatsapp, wa_raft]}),
-    reply(Type, undefined, {error, not_leader}, State),
+    reply(Type, {error, not_leader}),
     {keep_state, State};
 %% [Snapshot Available] Follower and candidate nodes might switch to stalled to install snapshot.
 command(StateName, {call, From} = Type, ?SNAPSHOT_AVAILABLE_COMMAND(_Root, #raft_log_pos{index = SnapshotIndex}) = Event,
@@ -1552,10 +1556,10 @@ command(StateName, {call, From}, ?HANDOVER_CANDIDATES_COMMAND,
     {keep_state_and_data, {reply, From, {error, not_leader}}};
 %% [Handover] Non-leader nodes cannot serve handovers.
 command(StateName, Type, ?HANDOVER_COMMAND(_Peer),
-        #raft_state{name = Name, current_term = CurrentTerm} = State) when StateName =/= leader ->
+        #raft_state{name = Name, current_term = CurrentTerm}) when StateName =/= leader ->
     ?LOG_NOTICE("~p[~p, term ~p] rejecting handover request because we are not leader.",
         [StateName, Name, CurrentTerm], #{domain => [whatsapp, wa_raft]}),
-    reply(Type, undefined, {error, not_leader}, State),
+    reply(Type, {error, not_leader}),
     keep_state_and_data;
 %% [Enable] Non-disabled nodes are already enabled.
 command(StateName, {call, From}, ?ENABLE_COMMAND, #raft_state{name = Name, current_term = CurrentTerm}) when StateName =/= disabled ->
@@ -2160,14 +2164,12 @@ notify_leader_change(#raft_state{table = Table, partition = Partition, leader_id
     wa_raft_info:set_leader(Table, Partition, LeaderId).
 
 %% Generic reply function that operates based on event type.
--spec reply(Type :: cast | {call, From :: term()} | info, Node :: undefined | node(), Message :: term(), State :: #raft_state{}) -> ok | wa_raft:error().
-reply(cast, undefined, _Message, _State) ->
+-spec reply(Type :: cast | {call, From :: gen_statem:from()} | info, Message :: term()) -> ok | wa_raft:error().
+reply(cast, _Message) ->
     ok;
-reply(cast, Node, Message, State) ->
-    ?MODULE:cast(Node, Message, State);
-reply({call, From}, _Node, Message, _State) ->
-    gen_server:reply(From, Message);
-reply(info, _Node, _Message, _State) ->
+reply({call, From}, Message) ->
+    gen_statem:reply(From, Message);
+reply(info, _Message) ->
     ok.
 
 -spec cast(node(), term(), #raft_state{}) -> ok | {error, term()}.
