@@ -17,7 +17,11 @@
 
 -include("wa_raft.hrl").
 
--type dest_addr() :: {Name :: atom(), Node :: atom()}.
+-type dest_addr() :: {Name :: atom(), Node :: node()}.
+
+-export_type([
+    dest_addr/0
+]).
 
 %%% ------------------------------------------------------------------------
 %%%  Behaviour callbacks
