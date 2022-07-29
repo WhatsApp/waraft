@@ -251,7 +251,7 @@ resign(Pid) ->
 refresh_config(Name) ->
     gen_server:call(Name, ?ADJUST_MEMBERSHIP_COMMAND(refresh, undefined), ?RPC_CALL_TIMEOUT_MS).
 
--spec adjust_membership(Name :: atom() | pid(), Action :: add | remove, Peer :: peer()) -> {ok, Pos :: wa_raft_log:log_pos()} | wa_raft:error().
+-spec adjust_membership(Name :: atom() | pid(), Action :: add | remove | add_witness | remove_witness, Peer :: peer()) -> {ok, Pos :: wa_raft_log:log_pos()} | wa_raft:error().
 adjust_membership(Name, Action, Peer) ->
     gen_server:call(Name, ?ADJUST_MEMBERSHIP_COMMAND(Action, Peer), ?RPC_CALL_TIMEOUT_MS).
 
