@@ -303,7 +303,6 @@ init([#{table := Table, partition := Partition, counters := Counters} = RaftArgs
     process_flag(trap_exit, true),
     ?LOG_NOTICE("Starting raft server ~w", [RaftArgs], #{domain => [whatsapp, wa_raft]}),
     Name = ?RAFT_SERVER_NAME(Table, Partition),
-    Id = node(),
     Witness = maps:get(witness, RaftArgs, false),
     %% Here, supervisor should have already started wa_raft_storage.
     StoragePid = whereis(?RAFT_STORAGE_NAME(Table, Partition)),
@@ -318,7 +317,6 @@ init([#{table := Table, partition := Partition, counters := Counters} = RaftArgs
     {ok, View} = wa_raft_log:open(?RAFT_LOG_NAME(Table, Partition), Last),
     DataDir = ?ROOT_DIR(Table, Partition),
     State0 = #raft_state{
-        id = Id,
         table = Table,
         partition = Partition,
         name = Name,
@@ -384,10 +382,10 @@ stalled(Type, ?REQUEST_VOTE_RPC(_Term, _SenderId, normal, _LastLogIndex, _LastLo
 
 %% [General Rules] Discard any incoming RPCs with a term older than the current term
 stalled(_Type, ?RAFT_RPC(RPCType, Term, SenderId, _Payload),
-        #raft_state{id = RaftId, name = Name, current_term = CurrentTerm} = State) when Term < CurrentTerm ->
+        #raft_state{name = Name, current_term = CurrentTerm} = State) when Term < CurrentTerm ->
     ?LOG_NOTICE("Stalled[~p, term ~p] received stale ~p from ~p with old term ~p. Dropping.",
         [Name, CurrentTerm, RPCType, SenderId, Term], #{domain => [whatsapp, wa_raft]}),
-    ?MODULE:cast(SenderId, ?NOTIFY_TERM_RPC(CurrentTerm, RaftId), State),
+    ?MODULE:cast(SenderId, ?NOTIFY_TERM_RPC(CurrentTerm, node()), State),
     {keep_state, State};
 %% [General Rules] Advance to the newer term and reset state when seeing a newer term in an incoming RPC
 stalled(Type, ?RAFT_RPC(RPCType, Term, SenderId, _Payload) = Event,
@@ -398,17 +396,17 @@ stalled(Type, ?RAFT_RPC(RPCType, Term, SenderId, _Payload) = Event,
 
 %% [AppendEntries] If we haven't discovered leader for this term, record it
 stalled(_Type, ?APPEND_ENTRIES_RPC(CurrentTerm, LeaderId, PrevLogIndex, _PrevLogTerm, _Entries, _LeaderCommit, _TrimIndex),
-        #raft_state{id = RaftId, current_term = CurrentTerm, leader_id = undefined} = State) ->
+        #raft_state{current_term = CurrentTerm, leader_id = undefined} = State) ->
     NewState = State#raft_state{leader_id = LeaderId, leader_heartbeat_ts = erlang:system_time(millisecond)},
     notify_leader_change(NewState),
-    ?MODULE:cast(LeaderId, ?APPEND_ENTRIES_RESPONSE_RPC(CurrentTerm, RaftId, PrevLogIndex, false, 0), NewState),
+    ?MODULE:cast(LeaderId, ?APPEND_ENTRIES_RESPONSE_RPC(CurrentTerm, node(), PrevLogIndex, false, 0), NewState),
     {keep_state, NewState};
 
 %% [AppendEntries] Otherwise, stalled nodes always discard AppendEntries
 stalled(_Type, ?APPEND_ENTRIES_RPC(CurrentTerm, LeaderId, PrevLogIndex, _PrevLogTerm, _Entries, _LeaderCommit, _TrimIndex),
-        #raft_state{id = RaftId, current_term = CurrentTerm} = State) ->
+        #raft_state{current_term = CurrentTerm} = State) ->
     NewState = State#raft_state{leader_heartbeat_ts = erlang:system_time(millisecond)},
-    ?MODULE:cast(LeaderId, ?APPEND_ENTRIES_RESPONSE_RPC(CurrentTerm, RaftId, PrevLogIndex, false, 0), NewState),
+    ?MODULE:cast(LeaderId, ?APPEND_ENTRIES_RESPONSE_RPC(CurrentTerm, node(), PrevLogIndex, false, 0), NewState),
     {keep_state, NewState};
 
 %% [NotifyTerm] Drop NotifyTerm RPCs with matching term
@@ -495,10 +493,10 @@ leader(Type, ?REQUEST_VOTE_RPC(_Term, _SenderId, normal, _LastLogIndex, _LastLog
 
 %% [General Rules] Discard any incoming RPCs with a term older than the current term
 leader(_Type, ?RAFT_RPC(RPCType, Term, SenderId, _Payload),
-        #raft_state{id = RaftId, name = Name, current_term = CurrentTerm} = State) when Term < CurrentTerm ->
+        #raft_state{name = Name, current_term = CurrentTerm} = State) when Term < CurrentTerm ->
     ?LOG_NOTICE("Leader[~p, term ~p] received stale ~p from ~p with old term ~p. Dropping.",
         [Name, CurrentTerm, RPCType, SenderId, Term], #{domain => [whatsapp, wa_raft]}),
-    ?MODULE:cast(SenderId, ?NOTIFY_TERM_RPC(CurrentTerm, RaftId), State),
+    ?MODULE:cast(SenderId, ?NOTIFY_TERM_RPC(CurrentTerm, node()), State),
     {keep_state, State};
 %% [General Rules] Advance to the newer term and reset state when seeing a newer term in an incoming RPC
 leader(Type, ?RAFT_RPC(RPCType, Term, SenderId, _Payload) = Event,
@@ -511,10 +509,10 @@ leader(Type, ?RAFT_RPC(RPCType, Term, SenderId, _Payload) = Event,
 %% [AppendEntries] We are leader for the current term, so we should never see an
 %%                 AppendEntries RPC from another node for this term
 leader(_Type, ?APPEND_ENTRIES_RPC(CurrentTerm, SenderId, PrevLogIndex, _PrevLogTerm, _Entries, _LeaderCommit, _TrimIndex),
-       #raft_state{current_term = CurrentTerm, id = RaftId, name = Name, commit_index = CommitIndex} = State) ->
+       #raft_state{current_term = CurrentTerm, name = Name, commit_index = CommitIndex} = State) ->
     ?LOG_ERROR("Leader[~p, term ~p] got invalid heartbeat from conflicting leader ~p.",
         [Name, CurrentTerm, SenderId], #{domain => [whatsapp, wa_raft]}),
-    ?MODULE:cast(SenderId, ?APPEND_ENTRIES_RESPONSE_RPC(CurrentTerm, RaftId, PrevLogIndex, false, CommitIndex), State),
+    ?MODULE:cast(SenderId, ?APPEND_ENTRIES_RESPONSE_RPC(CurrentTerm, node(), PrevLogIndex, false, CommitIndex), State),
     keep_state_and_data;
 
 %% [Leader] Handle AppendEntries RPC responses (5.2, 5.3, 7).
@@ -582,8 +580,8 @@ leader(cast, ?APPEND_ENTRIES_RESPONSE_RPC(CurrentTerm, FollowerId, _PrevIndex, f
 
 %% [RequestVote RPC] We are already leader for the current term, so always decline votes (5.1, 5.2)
 leader(_Type, ?REQUEST_VOTE_RPC(CurrentTerm, CandidateId, _ElectionType, _LastLogIndex, _LastLogTerm),
-       #raft_state{id = RaftId, current_term = CurrentTerm} = State) ->
-    ?MODULE:cast(CandidateId, ?VOTE_RPC(CurrentTerm, RaftId, false), State),
+       #raft_state{current_term = CurrentTerm} = State) ->
+    ?MODULE:cast(CandidateId, ?VOTE_RPC(CurrentTerm, node(), false), State),
     keep_state_and_data;
 
 %% [Vote RPC] We are already leader, so we don't need to consider any more votes (5.1)
@@ -594,10 +592,10 @@ leader(_Type, ?VOTE_RPC(CurrentTerm, VoterId, Vote), #raft_state{name = Name, cu
 
 %% [Handover RPC] We are already leader so ignore any handover requests.
 leader(_Type, ?HANDOVER_RPC(CurrentTerm, NodeId, Ref, _PrevLogIndex, _PrevLogTerm, _LogEntries),
-       #raft_state{id = RaftId, name = Name, current_term = CurrentTerm} = State) ->
+       #raft_state{name = Name, current_term = CurrentTerm} = State) ->
     ?LOG_WARNING("Leader[~p, term ~p] got orphan handover request from ~p while leader.",
         [Name, CurrentTerm, NodeId], #{domain => [whatsapp, wa_raft]}),
-    ?MODULE:cast(NodeId, ?HANDOVER_FAILED_RPC(CurrentTerm, RaftId, Ref), State),
+    ?MODULE:cast(NodeId, ?HANDOVER_FAILED_RPC(CurrentTerm, node(), Ref), State),
     keep_state_and_data;
 
 %% [Handover Failed RPC] Our handover failed, so clear the handover status.
@@ -778,7 +776,7 @@ leader(Type, ?HANDOVER_COMMAND(undefined), #raft_state{name = Name, current_term
     end;
 
 %% [Handover] Do not allow handover to self
-leader(Type, ?HANDOVER_COMMAND(RaftId), #raft_state{id = RaftId, name = Name, current_term = CurrentTerm} = State) ->
+leader(Type, ?HANDOVER_COMMAND(Peer), #raft_state{name = Name, current_term = CurrentTerm} = State) when Peer =:= node() ->
     ?LOG_WARNING("Leader[~p, term ~p] dropping handover to self.",
         [Name, CurrentTerm], #{domain => [whatsapp, wa_raft]}),
     reply(Type, {error, badarg}),
@@ -786,7 +784,7 @@ leader(Type, ?HANDOVER_COMMAND(RaftId), #raft_state{id = RaftId, name = Name, cu
 
 %% [Handover] Attempt to start a handover to the specified peer
 leader(Type, ?HANDOVER_COMMAND(Peer),
-       #raft_state{id = RaftId, name = Name, log_view = View,
+       #raft_state{name = Name, log_view = View,
                    current_term = CurrentTerm, handover = undefined} = State0) ->
     % TODO(hsun324): For the time being, assume that all members of the cluster use the same server name.
     case member({Name, Peer}, config(State0)) of
@@ -821,7 +819,7 @@ leader(Type, ?HANDOVER_COMMAND(Peer),
                     % before initiating a handover.
                     case PrevLogIndex + length(LogEntries) of
                         LastIndex ->
-                            ?MODULE:cast(Peer, ?HANDOVER_RPC(CurrentTerm, RaftId, Ref, PrevLogIndex, PrevLogTerm, LogEntries), State1),
+                            ?MODULE:cast(Peer, ?HANDOVER_RPC(CurrentTerm, node(), Ref, PrevLogIndex, PrevLogTerm, LogEntries), State1),
                             reply(Type, {ok, Peer}),
                             {keep_state, State1};
                         _ ->
@@ -889,10 +887,10 @@ follower(Type, ?REQUEST_VOTE_RPC(_Term, _SenderId, normal, _LastLogIndex, _LastL
 
 %% [General Rules] Discard any incoming RPCs with a term older than the current term
 follower(_Type, ?RAFT_RPC(RPCType, Term, SenderId, _Payload),
-        #raft_state{id = RaftId, name = Name, current_term = CurrentTerm} = State) when Term < CurrentTerm ->
+        #raft_state{name = Name, current_term = CurrentTerm} = State) when Term < CurrentTerm ->
     ?LOG_NOTICE("Follower[~p, term ~p] received stale ~p from ~p with old term ~p. Dropping.",
         [Name, CurrentTerm, RPCType, SenderId, Term], #{domain => [whatsapp, wa_raft]}),
-    ?MODULE:cast(SenderId, ?NOTIFY_TERM_RPC(CurrentTerm, RaftId), State),
+    ?MODULE:cast(SenderId, ?NOTIFY_TERM_RPC(CurrentTerm, node()), State),
     {keep_state, State};
 %% [General Rules] Advance to the newer term and reset state when seeing a newer term in an incoming RPC
 follower(Type, ?RAFT_RPC(RPCType, Term, SenderId, _Payload) = Event,
@@ -904,7 +902,7 @@ follower(Type, ?RAFT_RPC(RPCType, Term, SenderId, _Payload) = Event,
 %% [Follower] Handle AppendEntries RPC (5.2, 5.3)
 %% Follower receives AppendEntries from leader
 follower(Type, ?APPEND_ENTRIES_RPC(CurrentTerm, LeaderId, PrevLogIndex, PrevLogTerm, Entries, LeaderCommitIndex, LeaderTrimIndex),
-         #raft_state{id = RaftId, current_term = CurrentTerm} = State0) ->
+         #raft_state{current_term = CurrentTerm} = State0) ->
     case append_entries(CurrentTerm, LeaderId, PrevLogIndex, PrevLogTerm, Entries, State0) of
         {{disable, Reason}, State1} ->
             State2 = State1#raft_state{disable_reason = Reason},
@@ -917,7 +915,7 @@ follower(Type, ?APPEND_ENTRIES_RPC(CurrentTerm, LeaderId, PrevLogIndex, PrevLogT
             end,
             LastIndex = wa_raft_log:last_index(View),
             NewCommitIndex = erlang:min(LeaderCommitIndex, LastIndex),
-            Response = ?APPEND_ENTRIES_RESPONSE_RPC(CurrentTerm, RaftId, PrevLogIndex, Result =:= ok, LastIndex),
+            Response = ?APPEND_ENTRIES_RESPONSE_RPC(CurrentTerm, node(), PrevLogIndex, Result =:= ok, LastIndex),
             ?MODULE:cast(LeaderId, Response, State2),
             reply(Type, Response),
             State3 = case Result of
@@ -953,7 +951,7 @@ follower(_Type, ?VOTE_RPC(CurrentTerm, VoterId, Voted),
 
 %% [Handover Extension] Another leader is asking for this follower to take over
 follower(_Type, ?HANDOVER_RPC(CurrentTerm, NodeId, Ref, PrevLogIndex, PrevLogTerm, LogEntries),
-         #raft_state{id = RaftId, name = Name, current_term = CurrentTerm} = State0) ->
+         #raft_state{name = Name, current_term = CurrentTerm} = State0) ->
     ?RAFT_COUNT('wa_raft.follower.handover'),
     ?LOG_NOTICE("Follower[~p, term ~p] evaluating handover RPC from ~p.",
         [Name, CurrentTerm, NodeId], #{domain => [whatsapp, wa_raft]}),
@@ -961,7 +959,7 @@ follower(_Type, ?HANDOVER_RPC(CurrentTerm, NodeId, Ref, PrevLogIndex, PrevLogTer
         0 ->
             ?LOG_NOTICE("Follower[~p, term ~p] not considering handover RPC due to election weight 0.",
                 [Name, CurrentTerm], #{domain => [whatsapp, wa_raft]}),
-            ?MODULE:cast(NodeId, ?HANDOVER_FAILED_RPC(CurrentTerm, RaftId, Ref), State0),
+            ?MODULE:cast(NodeId, ?HANDOVER_FAILED_RPC(CurrentTerm, node(), Ref), State0),
             {keep_state, State0};
         _ ->
             case append_entries(CurrentTerm, NodeId, PrevLogIndex, PrevLogTerm, LogEntries, State0) of
@@ -973,7 +971,7 @@ follower(_Type, ?HANDOVER_RPC(CurrentTerm, NodeId, Ref, PrevLogIndex, PrevLogTer
                     ?RAFT_COUNT('wa.raft.follower.handover.failed'),
                     ?LOG_WARNING("Follower[~p, term ~p] failing handover request due to non-ok append result of ~p",
                         [Name, CurrentTerm, Error], #{domain => [whatsapp, wa_raft]}),
-                    ?MODULE:cast(NodeId, ?HANDOVER_FAILED_RPC(CurrentTerm, RaftId, Ref), State1),
+                    ?MODULE:cast(NodeId, ?HANDOVER_FAILED_RPC(CurrentTerm, node(), Ref), State1),
                     {keep_state, State1}
             end
     end;
@@ -1033,7 +1031,7 @@ follower(Type, Event, #raft_state{name = Name, current_term = CurrentTerm}) ->
 -spec candidate(Type :: atom(), Event :: term(), State0 :: #raft_state{}) -> gen_statem:state_enter_result(state()).
 %% [Enter] Node starts a new election upon entering the candidate state.
 candidate(enter, _PreviousState,
-          #raft_state{id = RaftId, name = Name, current_term = CurrentTerm,
+          #raft_state{name = Name, current_term = CurrentTerm,
                       log_view = View, next_election_type = ElectionType} = State0) ->
     ?RAFT_COUNT('raft.leader.election_started'),
     wa_raft_info:set_state(State0#raft_state.table, State0#raft_state.partition, ?FUNCTION_NAME),
@@ -1041,7 +1039,7 @@ candidate(enter, _PreviousState,
     % Entering the candidate state means that we are starting a new election, thus
     % advance the term and set VotedFor to the current node. (Candidates always
     % implicitly vote for themselves.)
-    State1 = advance_term(CurrentTerm + 1, RaftId, State0),
+    State1 = advance_term(CurrentTerm + 1, node(), State0),
 
     LastLogIndex = wa_raft_log:last_index(View),
     {ok, LastLogTerm} = wa_raft_log:term(View, LastLogIndex),
@@ -1056,11 +1054,11 @@ candidate(enter, _PreviousState,
     % Broadcast vote requests and also send a vote-for-self.
     % (Candidates always implicitly vote for themselves.)
     RequestVote = case ?RAFT_CONFIG(send_request_vote_with_type, false) of
-        true  -> ?REQUEST_VOTE_RPC(CurrentTerm + 1, RaftId, ElectionType, LastLogIndex, LastLogTerm);
-        false -> ?REQUEST_VOTE_RPC_OLD(CurrentTerm + 1, RaftId, LastLogIndex, LastLogTerm)
+        true  -> ?REQUEST_VOTE_RPC(CurrentTerm + 1, node(), ElectionType, LastLogIndex, LastLogTerm);
+        false -> ?REQUEST_VOTE_RPC_OLD(CurrentTerm + 1, node(), LastLogIndex, LastLogTerm)
     end,
     broadcast(RequestVote, State3),
-    ?MODULE:cast(RaftId, ?VOTE_RPC(CurrentTerm + 1, RaftId, true), State3),
+    ?MODULE:cast(node(), ?VOTE_RPC(CurrentTerm + 1, node(), true), State3),
 
     {keep_state, State3, ?ELECTION_TIMEOUT};
 
@@ -1073,10 +1071,10 @@ candidate(Type, ?REQUEST_VOTE_RPC(_Term, _SenderId, normal, _LastLogIndex, _Last
 
 %% [General Rules] Discard any incoming RPCs with a term older than the current term
 candidate(_Type, ?RAFT_RPC(RPCType, Term, SenderId, _Payload),
-        #raft_state{id = RaftId, name = Name, current_term = CurrentTerm} = State) when Term < CurrentTerm ->
+        #raft_state{name = Name, current_term = CurrentTerm} = State) when Term < CurrentTerm ->
     ?LOG_NOTICE("Candidate[~p, term ~p] received stale ~p from ~p with old term ~p. Dropping.",
         [Name, CurrentTerm, RPCType, SenderId, Term], #{domain => [whatsapp, wa_raft]}),
-    ?MODULE:cast(SenderId, ?NOTIFY_TERM_RPC(CurrentTerm, RaftId), State),
+    ?MODULE:cast(SenderId, ?NOTIFY_TERM_RPC(CurrentTerm, node()), State),
     {keep_state, State};
 %% [General Rules] Advance to the newer term and reset state when seeing a newer term in an incoming RPC
 candidate(Type, ?RAFT_RPC(RPCType, Term, SenderId, _Payload) = Event,
@@ -1094,8 +1092,8 @@ candidate(Type, ?APPEND_ENTRIES_RPC(CurrentTerm, LeaderId, _PrevLogIndex, _PrevL
 
 %% [RequestVote RPC] Candidate has always voted for itself, so vote false on anyone else (5.2)
 candidate(_Type, ?REQUEST_VOTE_RPC(CurrentTerm, CandidateId, _ElectionType, _LastLogIndex, _LastLogTerm),
-          #raft_state{id = RaftId, current_term = CurrentTerm} = State) ->
-    ?MODULE:cast(CandidateId, ?VOTE_RPC(CurrentTerm, RaftId, false), State),
+          #raft_state{current_term = CurrentTerm} = State) ->
+    ?MODULE:cast(CandidateId, ?VOTE_RPC(CurrentTerm, node(), false), State),
     keep_state_and_data;
 
 %% [Vote RPC] Candidate receives an affirmative vote (5.2)
@@ -1222,19 +1220,19 @@ disabled(Type, ?RAFT_RPC(RPCType, Term, SenderId, _Payload) = Event,
         [Name, CurrentTerm, RPCType, SenderId, Term], #{domain => [whatsapp, wa_raft]}),
     {repeat_state, advance_term(Term, State), {next_event, Type, Event}};
 
-disabled(_Type, ?APPEND_ENTRIES_RPC(CurrentTerm, RaftId, _PrevLogIndex, _PrevLogTerm, _Entries, _CommitIndex, _TrimIndex),
+disabled(_Type, ?APPEND_ENTRIES_RPC(CurrentTerm, SenderId, _PrevLogIndex, _PrevLogTerm, _Entries, _CommitIndex, _TrimIndex),
          #raft_state{current_term = CurrentTerm, leader_id = undefined} = State0) ->
     %% When we detect the leader for the current term, then set cache so that we can handle redirects.
-    State1 = State0#raft_state{leader_id = RaftId},
+    State1 = State0#raft_state{leader_id = SenderId},
     notify_leader_change(State1),
     {keep_state, State1};
 
-disabled(_Type, ?APPEND_ENTRIES_RPC(CurrentTerm, _RaftId, _PrevLogIndex, _PrevLogTerm, _Entries, _CommitIndex, _TrimIndex),
+disabled(_Type, ?APPEND_ENTRIES_RPC(CurrentTerm, _SenderId, _PrevLogIndex, _PrevLogTerm, _Entries, _CommitIndex, _TrimIndex),
          #raft_state{current_term = CurrentTerm}) ->
     %% Ignore any other AppendEntries RPC calls because a disabled node should be invisible to the cluster.
     keep_state_and_data;
 
-disabled(_Type, ?REQUEST_VOTE_RPC(CurrentTerm, _RaftId, _ElectionType, _LastLogIndex, _LastLogTerm),
+disabled(_Type, ?REQUEST_VOTE_RPC(CurrentTerm, _SenderId, _ElectionType, _LastLogIndex, _LastLogTerm),
          #raft_state{current_term = CurrentTerm}) ->
     %% Ignore any RequestVote RPC calls because a disabled node should be invisible to the cluster.
     keep_state_and_data;
@@ -1291,10 +1289,10 @@ witness(enter, FromState, #raft_state{name = Name, current_term = CurrentTerm} =
     {keep_state, State2};
 
 witness(_Type, ?RAFT_RPC(RPCType, Term, SenderId, _Payload),
-        #raft_state{id = RaftId, name = Name, current_term = CurrentTerm} = State) when Term < CurrentTerm ->
+        #raft_state{name = Name, current_term = CurrentTerm} = State) when Term < CurrentTerm ->
     ?LOG_NOTICE("Witness[~p, term ~p] received stale ~p from ~p with old term ~p. Dropping.",
         [Name, CurrentTerm, RPCType, SenderId, Term], #{domain => [whatsapp, wa_raft]}),
-    ?MODULE:cast(SenderId, ?NOTIFY_TERM_RPC(CurrentTerm, RaftId), State),
+    ?MODULE:cast(SenderId, ?NOTIFY_TERM_RPC(CurrentTerm, node()), State),
     {keep_state, State};
 
 witness(Type, ?RAFT_RPC(RPCType, Term, SenderId, _Payload) = Event,
@@ -1306,7 +1304,7 @@ witness(Type, ?RAFT_RPC(RPCType, Term, SenderId, _Payload) = Event,
 %% [Witness] Handle AppendEntries RPC (5.2, 5.3)
 %% Witness receives AppendEntries from leader
 witness(Type, ?APPEND_ENTRIES_RPC(CurrentTerm, LeaderId, PrevLogIndex, PrevLogTerm, Entries, LeaderCommitIndex, LeaderTrimIndex),
-         #raft_state{id = RaftId, current_term = CurrentTerm} = State0) ->
+         #raft_state{current_term = CurrentTerm} = State0) ->
     case append_entries(CurrentTerm, LeaderId, PrevLogIndex, PrevLogTerm, Entries, State0) of
         {{disable, Reason}, State1} ->
             State2 = State1#raft_state{disable_reason = Reason},
@@ -1319,7 +1317,7 @@ witness(Type, ?APPEND_ENTRIES_RPC(CurrentTerm, LeaderId, PrevLogIndex, PrevLogTe
             end,
             LastIndex = wa_raft_log:last_index(View),
             NewCommitIndex = erlang:min(LeaderCommitIndex, LastIndex),
-            Response = ?APPEND_ENTRIES_RESPONSE_RPC(CurrentTerm, RaftId, PrevLogIndex, Result =:= ok, LastIndex),
+            Response = ?APPEND_ENTRIES_RESPONSE_RPC(CurrentTerm, node(), PrevLogIndex, Result =:= ok, LastIndex),
             ?MODULE:cast(LeaderId, Response, State2),
             reply(Type, Response),
             State3 = case Result of
@@ -1340,10 +1338,10 @@ witness(_Type, ?APPEND_ENTRIES_RESPONSE_RPC(CurrentTerm, SenderId, _PrevLogIndex
 
 % [Witness] Witnesses ignore any handover requests.
 witness(_Type, ?HANDOVER_RPC(CurrentTerm, NodeId, Ref, _PrevLogIndex, _PrevLogTerm, _LogEntries),
-       #raft_state{id = RaftId, name = Name, current_term = CurrentTerm} = State) ->
+       #raft_state{name = Name, current_term = CurrentTerm} = State) ->
     ?LOG_WARNING("Witness[~p, term ~p] got orphan handover request from ~p while witness.",
         [Name, CurrentTerm, NodeId], #{domain => [whatsapp, wa_raft]}),
-    ?MODULE:cast(NodeId, ?HANDOVER_FAILED_RPC(CurrentTerm, RaftId, Ref), State),
+    ?MODULE:cast(NodeId, ?HANDOVER_FAILED_RPC(CurrentTerm, node(), Ref), State),
     keep_state_and_data;
 
 witness(_Type, ?NOTIFY_TERM_RPC(CurrentTerm, _SenderId), #raft_state{current_term = CurrentTerm}) ->
@@ -1433,7 +1431,7 @@ command(StateName, {call, From}, ?STATUS_COMMAND, State) ->
     Counters = State#raft_state.counters,
     Status = [
         {state, StateName},
-        {id, State#raft_state.id},
+        {id, node()},
         {partition, State#raft_state.partition},
         {data_dir, State#raft_state.data_dir},
         {current_term, State#raft_state.current_term},
@@ -1616,9 +1614,9 @@ config_witnesses(_Config) ->
 %% and RAFT dynamic cluster membership.
 %% TODO(hsun324): Begin migrating uses of this function to use config directly as applicable.
 -spec config_peers(Config :: config(), State :: #raft_state{}) -> Peers :: [{atom(), {atom(), node()}}].
-config_peers(#{membership := Members}, #raft_state{id = Id}) ->
+config_peers(#{membership := Members}, _State) ->
     % Currently, we use the node name as the RAFT id.
-    [{Node, {Name, Node}} || {Name, Node} <- Members, Node =/= Id];
+    [{Node, {Name, Node}} || {Name, Node} <- Members, Node =/= node()];
 config_peers(_Config, _State) ->
     error(membership_not_set).
 
@@ -1724,10 +1722,10 @@ filter_vote_request(StateName, Type, ?REQUEST_VOTE_RPC(Term, SenderId, normal, L
     end.
 
 -spec apply_single_node_cluster(State0 :: #raft_state{}) -> State1 :: #raft_state{}.
-apply_single_node_cluster(#raft_state{id = RaftId, name = Name, log_view = View0} = State0) ->
+apply_single_node_cluster(#raft_state{name = Name, log_view = View0} = State0) ->
     % TODO(hsun324) T112326686: Review after RAFT RPC id changes.
     case config_membership(config(State0)) of
-        [{Name, RaftId}] ->
+        [{Name, Node}] when Node =:= node() ->
             View1 = case wa_raft_log:sync(View0) of
                 {ok, L} -> L;
                 _       -> View0
@@ -1740,7 +1738,7 @@ apply_single_node_cluster(#raft_state{id = RaftId, name = Name, log_view = View0
 
 %% Leader - check quorum and apply logs if necessary
 -spec maybe_apply(EndIndex :: wa_raft_log:log_index(), State0 :: #raft_state{}) -> State1 :: #raft_state{}.
-maybe_apply(EndIndex, #raft_state{id = RaftId, name = Name, log_view = View, current_term = CurrentTerm,
+maybe_apply(EndIndex, #raft_state{name = Name, log_view = View, current_term = CurrentTerm,
                                   match_index = MatchIndex, commit_index = LastCommitIndex, last_applied = LastAppliedIndex} = State0) when EndIndex > LastCommitIndex ->
     % Raft paper section 5.4.3 - Only log entries from the leader’s current term are committed
     % by counting replicas; once an entry from the current term has been committed in this way,
@@ -1753,7 +1751,7 @@ maybe_apply(EndIndex, #raft_state{id = RaftId, name = Name, log_view = View, cur
             case wa_raft_log:term(View, CommitIndex) of
                 {ok, CurrentTerm} ->
                     % log entry is same term of current leader node
-                    TrimIndex = lists:min(to_member_list(MatchIndex#{RaftId => LastAppliedIndex}, 0, Config)),
+                    TrimIndex = lists:min(to_member_list(MatchIndex#{node() => LastAppliedIndex}, 0, Config)),
                     apply_log(State0, CommitIndex, TrimIndex);
                 {ok, Term} when Term < CurrentTerm ->
                     % Raft paper section 5.4.3 - as a leader, don't commit entries from previous term if no log entry of current term has applied yet
@@ -1868,7 +1866,7 @@ apply_op(LogIndex, Entry, #raft_state{name = Name}) ->
     exit({invalid_op, LogIndex, Entry}).
 
 -spec append_entries_to_followers(State0 :: #raft_state{}) -> State1 :: #raft_state{}.
-append_entries_to_followers(#raft_state{id = RaftId, name = Name, log_view = View0, storage = StoragePid} = State0) ->
+append_entries_to_followers(#raft_state{name = Name, log_view = View0, storage = StoragePid} = State0) ->
     State1 = case wa_raft_log:sync(View0) of
         {ok, View1} ->
             State0#raft_state{log_view = View1};
@@ -1884,7 +1882,7 @@ append_entries_to_followers(#raft_state{id = RaftId, name = Name, log_view = Vie
     end,
     %% TODO(hsun324): Fix assumption about name when we support multi-partition cluster
     lists:foldl(
-        fun ({_Name, FollowerId}, StateN) when FollowerId =:= RaftId -> StateN;
+        fun ({_Name, FollowerId}, StateN) when FollowerId =:= node() -> StateN;
             ({_Name, FollowerId}, StateN)                            -> heartbeat(FollowerId, StateN)
         end, State1, config_membership(config(State1))).
 
@@ -1917,12 +1915,12 @@ vote(CandidateId, LastLogIndex, LastLogTerm, State) ->
     NewState.
 
 -spec cast_vote(node(), boolean(), #raft_state{}) -> ok.
-cast_vote(CandidateId, Vote, #raft_state{name = Name, id = Id, current_term = CurrentTerm, log_view = View} = State) ->
+cast_vote(CandidateId, Vote, #raft_state{name = Name, current_term = CurrentTerm, log_view = View} = State) ->
     MyLastIndex = wa_raft_log:last_index(View),
     {ok, MyLastTerm} = wa_raft_log:term(View, MyLastIndex),
     ?LOG_NOTICE("~p vote ~p to candidate ~p in term ~p. Current last log ~p:~p",
         [Name, Vote, CandidateId, CurrentTerm, MyLastIndex, MyLastTerm], #{domain => [whatsapp, wa_raft]}),
-    ?MODULE:cast(CandidateId, ?VOTE_RPC(CurrentTerm, Id, Vote), State).
+    ?MODULE:cast(CandidateId, ?VOTE_RPC(CurrentTerm, node(), Vote), State).
 
 -spec reset_state(#raft_state{}) -> #raft_state{}.
 reset_state(#raft_state{log_view = View0} = State) ->
@@ -1956,9 +1954,9 @@ advance_term(NewTerm, VotedFor, #raft_state{name = Name, current_term = CurrentT
 
 %% Leader private functions
 -spec reset_leader_state(#raft_state{}) -> #raft_state{}.
-reset_leader_state(#raft_state{id = RaftId, current_term = CurrentTerm, log_view = View0} = State0) ->
+reset_leader_state(#raft_state{current_term = CurrentTerm, log_view = View0} = State0) ->
     % Reset state
-    State1 = State0#raft_state{next_index = #{}, match_index = #{}, leader_id = RaftId},
+    State1 = State0#raft_state{next_index = #{}, match_index = #{}, leader_id = node()},
     notify_leader_change(State1),
 
     % During promotion, we may add a config update operation to the end of the log.
@@ -1978,7 +1976,7 @@ reset_leader_state(#raft_state{id = RaftId, current_term = CurrentTerm, log_view
     end.
 
 -spec heartbeat(node(), #raft_state{}) -> #raft_state{}.
-heartbeat(FollowerId, #raft_state{id = RaftId, name = Name, log_view = View, catchup = Catchup, current_term = CurrentTerm,
+heartbeat(FollowerId, #raft_state{name = Name, log_view = View, catchup = Catchup, current_term = CurrentTerm,
                                   commit_index = CommitIndex, next_index = NextIndex0, match_index = MatchIndex,
                                   last_heartbeat_ts = LastHeartbeatTs, first_current_term_log_index = TermStartIndex} = State0) ->
     FollowerNextIndex = maps:get(FollowerId, NextIndex0, TermStartIndex),
@@ -1998,7 +1996,7 @@ heartbeat(FollowerId, #raft_state{id = RaftId, name = Name, log_view = View, cat
             ?LOG_DEBUG("Leader[~p term ~p last log ~p] send empty heartbeat to follower ~p(prev ~p, catching-up ~p)",
                 [Name, CurrentTerm, LastIndex, FollowerId, PrevLogIndex, IsCatchingUp], #{domain => [whatsapp, wa_raft]}),
             % Send append entries request.
-            ?MODULE:cast(FollowerId, ?APPEND_ENTRIES_RPC(CurrentTerm, RaftId, LastIndex, LastTerm, [], CommitIndex, 0), State1),
+            ?MODULE:cast(FollowerId, ?APPEND_ENTRIES_RPC(CurrentTerm, node(), LastIndex, LastTerm, [], CommitIndex, 0), State1),
             LastFollowerHeartbeatTs =/= undefined andalso ?RAFT_GATHER('raft.leader.heartbeat.interval_ms', erlang:system_time(millisecond) - LastFollowerHeartbeatTs),
             State1;
         false ->
@@ -2019,9 +2017,9 @@ heartbeat(FollowerId, #raft_state{id = RaftId, name = Name, log_view = View, cat
             ?LOG_DEBUG("Leader[~p, term ~p] heartbeat to follower ~p from ~p(~p entries). Commit index ~p",
                 [Name, CurrentTerm, FollowerId, FollowerNextIndex, length(Entries), CommitIndex], #{domain => [whatsapp, wa_raft]}),
             % Compute trim index.
-            TrimIndex = lists:min(to_member_list(MatchIndex#{RaftId => LastIndex}, 0, config(State1))),
+            TrimIndex = lists:min(to_member_list(MatchIndex#{node() => LastIndex}, 0, config(State1))),
             % Send append entries request.
-            CastResult = ?MODULE:cast(FollowerId, ?APPEND_ENTRIES_RPC(CurrentTerm, RaftId, PrevLogIndex, PrevLogTerm, Entries, CommitIndex, TrimIndex), State1),
+            CastResult = ?MODULE:cast(FollowerId, ?APPEND_ENTRIES_RPC(CurrentTerm, node(), PrevLogIndex, PrevLogTerm, Entries, CommitIndex, TrimIndex), State1),
             NextIndex1 =
                 case CastResult of
                     ok ->
@@ -2042,7 +2040,8 @@ compute_handover_candidates(#raft_state{log_view = View, match_index = MatchInde
     [Peer || {Peer, Match} <- maps:to_list(MatchIndex), LastLogIndex - Match =< MaxHandoverLogEntries].
 
 -spec adjust_config(Action :: {add, peer()} | {remove, peer()} | {add_witness, peer()} | {remove_witness, peer()} | {refresh, undefined}, Config :: config(), State :: #raft_state{}) -> {ok, NewConfig :: config()} | {error, Reason :: atom()}.
-adjust_config(Action, Config, #raft_state{id = Id, name = Name}) ->
+adjust_config(Action, Config, #raft_state{name = Name}) ->
+    Node = node(),
     Membership = config_membership(Config),
     Witness = config_witnesses(Config),
     case Action of
@@ -2064,15 +2063,15 @@ adjust_config(Action, Config, #raft_state{id = Id, name = Name}) ->
             end;
         {remove, Peer} ->
             case {Peer, lists:member(Peer, Membership)} of
-                {{Name, Id}, _} -> {error, cannot_remove_self};
-                {_, false}      -> {error, not_a_member};
-                {_, true}       -> {ok, Config#{membership => lists:delete(Peer, Membership), witness => lists:delete(Peer, Witness)}}
+                {{Name, Node}, _} -> {error, cannot_remove_self};
+                {_, false}        -> {error, not_a_member};
+                {_, true}         -> {ok, Config#{membership => lists:delete(Peer, Membership), witness => lists:delete(Peer, Witness)}}
             end;
         {remove_witness, Peer} ->
             case {Peer, lists:member(Peer, Witness)} of
-                {{Name, Id}, _} -> {error, cannot_remove_self};
-                {_, false}      -> {error, not_a_witness};
-                {_, true}       -> {ok, Config#{membership => lists:delete(Peer, Membership), witness => lists:delete(Peer, Witness)}}
+                {{Name, Node}, _} -> {error, cannot_remove_self};
+                {_, false}        -> {error, not_a_witness};
+                {_, true}         -> {ok, Config#{membership => lists:delete(Peer, Membership), witness => lists:delete(Peer, Witness)}}
             end
     end.
 
@@ -2191,8 +2190,8 @@ cast(DestId, Message, #raft_state{name = Name, offline_peers = OfflinePeers}) wh
             ?LOG_DEBUG("Cast to ~p error ~100p", [DestId, E], #{domain => [whatsapp, wa_raft]}),
             {error, E}
     end;
-cast(DestId, Message, #raft_state{id = Id, offline_peers = OfflinePeers} = State) ->
-    case lists:member(Id, OfflinePeers) orelse lists:member(DestId, OfflinePeers) of
+cast(DestId, Message, #raft_state{offline_peers = OfflinePeers} = State) ->
+    case lists:member(node(), OfflinePeers) orelse lists:member(DestId, OfflinePeers) of
         true ->
             ?RAFT_COUNT('raft.server.cast.error.not_online'),
             ?LOG_DEBUG("Cast to ~p error not_online", [DestId], #{domain => [whatsapp, wa_raft]}),

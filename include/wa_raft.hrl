@@ -104,8 +104,6 @@
 
 %% Raft runtime state
 -record(raft_state, {
-    % Current node id
-    id :: node(),
     % Service name
     name :: atom(),
     % Table name
