@@ -337,22 +337,19 @@ init([#{table := Table, partition := Partition, counters := Counters} = RaftArgs
     rand:seed(exsp, {erlang:monotonic_time(), erlang:time_offset(), erlang:unique_integer()}),
     % TODO(hsun324): When we have proper error handling for data corruption vs. stalled server
     %                then handle {error, Reason} type returns from load_state.
-    case wa_raft_durable_state:load(State1) of
-        {ok, State2} ->
-            % If we successfully loaded a state file, then immediately join the cluster.
-            % Begin as witness or disabled if respective messages are defined
-            case State2#raft_state.disable_reason of
-                undefined when Witness -> {ok, witness, State2};
-                undefined -> {ok, follower, State2};
-                _         -> {ok, disabled, State2}
-            end;
-        _ ->
-            % If no state file was found, then stall if we don't have data in underlying storage.
-            case State1#raft_state.current_term of
-                _ when Witness -> {ok, witness, State1};
-                0 -> {ok, stalled, State1};
-                _ -> {ok, follower, State1}
-            end
+    State2 = case wa_raft_durable_state:load(State1) of
+        {ok, NewState} -> NewState;
+        _              -> State1
+    end,
+    % 1. Begin as disabled if a disable reason is set
+    % 2. Begin as witness if configured
+    % 3. Begin as stalled if there is no data
+    % 4. Begin as follower otherwise
+    case {State2#raft_state.last_applied, State2#raft_state.disable_reason, Witness} of
+        {_, undefined, true} -> {ok, witness, State2};
+        {0, undefined, _}    -> {ok, stalled, State2};
+        {_, undefined, _}    -> {ok, follower, State2};
+        {_, _, _}            -> {ok, disabled, State2}
     end.
 
 -spec callback_mode() -> gen_statem:callback_mode_result().
