@@ -1288,6 +1288,13 @@ witness(enter, FromState, #raft_state{name = Name, current_term = CurrentTerm} =
     wa_raft_durable_state:store(State2),
     {keep_state, State2};
 
+%% [RequestVote RPC] MIGRATION - add ElectionType (type force has previous behavior) to RequestVote RPCs
+witness(Type, ?REQUEST_VOTE_RPC_OLD(Term, SenderId, LastLogIndex, LastLogTerm), State) ->
+    ?FUNCTION_NAME(Type, ?REQUEST_VOTE_RPC(Term, SenderId, force, LastLogIndex, LastLogTerm), State);
+%% [RequestVote RPC] Discard normal RequestVote RPCs when we have an active leader.
+witness(Type, ?REQUEST_VOTE_RPC(_Term, _SenderId, normal, _LastLogIndex, _LastLogTerm) = Event, State) ->
+    filter_vote_request(?FUNCTION_NAME, Type, Event, State);
+
 witness(_Type, ?RAFT_RPC(RPCType, Term, SenderId, _Payload),
         #raft_state{name = Name, current_term = CurrentTerm} = State) when Term < CurrentTerm ->
     ?LOG_NOTICE("Witness[~p, term ~p] received stale ~p from ~p with old term ~p. Dropping.",

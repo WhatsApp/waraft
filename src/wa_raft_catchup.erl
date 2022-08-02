@@ -220,6 +220,7 @@ send_snapshot(FollowerId, #raft_catchup{name = Name, table = Table, partition = 
     StartT = os:timestamp(),
     try
         StoragePid = whereis(?RAFT_STORAGE_NAME(Table, Partition)),
+        StorageName = ?RAFT_STORAGE_NAME(Table, Partition),
         case wa_raft_storage:create_snapshot(StoragePid) of
             {ok, #raft_log_pos{index = Index, term = Term} = LogPos} ->
                 SnapName = ?SNAPSHOT_NAME(Index, Term),
@@ -231,7 +232,7 @@ send_snapshot(FollowerId, #raft_catchup{name = Name, table = Table, partition = 
                         _ ->
                             % If node is a witness, we can bypass the transport process since we don't have to
                             % send the full log.  Thus, we can run snapshot_available() here directly
-                            wa_raft_server:snapshot_available({StoragePid, FollowerId}, Root, LogPos)
+                            wa_raft_server:snapshot_available({StorageName, FollowerId}, Root, LogPos)
                     end,
                     send_snapshot_transport(FollowerId, State, LogPos)
                 after
