@@ -120,6 +120,7 @@
 %% Send a file to the target peer.
 -callback transport_send(ID :: transport_id(), FileID :: file_id(), State :: term()) ->
     {ok, NewState :: term()} |
+    {continue, NewState :: term()} |
     {stop, Reason :: term(), NewState :: term()}.
 
 %% Optional callback for performing any shutdown operations.

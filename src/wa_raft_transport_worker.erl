@@ -27,9 +27,14 @@
     terminate/2
 ]).
 
+-define(CONTINUE_TIMEOUT, 0).
+
 -record(state, {
     number :: non_neg_integer(),
-    states = #{} :: #{module() => term()}
+    table :: ets:tid(),
+
+    states = #{} :: #{module() => term()},
+    marker :: undefined | 0 | reference()
 }).
 -type state() :: #state{}.
 
@@ -55,63 +60,82 @@ start_link(Number) ->
 %%%  gen_server callbacks
 %%%
 
--spec init(Args :: term()) -> {ok, State :: state()}.
+-spec init(Args :: term()) -> {ok, State :: state(), Timeout :: timeout()}.
 init([Number]) ->
-    {ok, #state{number = Number}}.
-
+    Table = ets:new(?MODULE, [ordered_set, public]),
+    {ok, #state{number = Number, table = Table}, ?CONTINUE_TIMEOUT}.
 
 -spec handle_call(Request :: term(), From :: {Pid :: pid(), Tag :: term()}, State :: state()) ->
-    {noreply, NewState :: state()}.
+    {noreply, NewState :: state(), Timeout :: timeout()}.
 handle_call(Request, From, #state{number = Number} = State) ->
     ?LOG_WARNING("[~p] received unrecognized call ~p from ~p",
         [Number, Request, From], #{domain => [whatsapp, wa_raft]}),
-    {noreply, State}.
+    {noreply, State, ?CONTINUE_TIMEOUT}.
 
-
--spec handle_cast(Request :: term(), State :: state()) -> {noreply, NewState :: state()}.
-handle_cast({send, ID, FileID}, #state{number = Number, states = States} = State) ->
+-spec handle_cast(Request :: term(), State :: state()) -> {noreply, NewState :: state(), Timeout :: timeout()}.
+handle_cast({send, ID, FileID}, #state{table = Table} = State) ->
     ?RAFT_COUNT('raft.transport.send'),
-    case wa_raft_transport:transport_info(ID) of
-        {ok, #{module := Module}} ->
-            {Result, NewState} =
-                try get_module_state(Module, State) of
-                    {ok, ModuleState0} ->
-                        try Module:transport_send(ID, FileID, ModuleState0) of
-                            {ok, ModuleState1} ->
-                                {ok, State#state{states = States#{Module => ModuleState1}}};
-                            {stop, Reason, ModuleState1} ->
-                                {{stop, Reason}, State#state{states = States#{Module => ModuleState1}}}
-                        catch
-                            T:E:S ->
-                                ?LOG_WARNING("[~p] module ~p failed to send file ~p:~p due to ~p ~p: ~n~p",
-                                    [Number, Module, ID, FileID, T, E, S], #{domain => [whatsapp, wa_raft]}),
-                                {{T, E}, State}
-                        end;
-                    {stop, Reason} ->
-                        {{stop, Reason}, State}
-                catch
-                    T:E:S ->
-                        ?LOG_WARNING("[~p] module ~p failed to get/init module state due to ~p ~p: ~n~p",
-                            [Number, Module, T, E, S], #{domain => [whatsapp, wa_raft]}),
-                        {{T, E}, State}
-                end,
-            wa_raft_transport:complete(ID, FileID, Result, self()),
-            {noreply, NewState};
-        _ ->
-            ?LOG_WARNING("[~p] got send request for unknown transfer ~p",
-                [Number, ID], #{domain => [whatsapp, wa_raft]}),
-            {noreply, State}
-    end;
+    true = ets:insert_new(Table, {make_ref(), ID, FileID}),
+    {noreply, State, ?CONTINUE_TIMEOUT};
 handle_cast(Request, #state{number = Number} = State) ->
     ?LOG_WARNING("[~p] received unrecognized cast ~p",
         [Number, Request], #{domain => [whatsapp, wa_raft]}),
-    {noreply, State}.
+    {noreply, State, ?CONTINUE_TIMEOUT}.
 
--spec handle_info(Info :: term(), State :: state()) -> {noreply, NewState :: state()}.
+-spec handle_info(Info :: term(), State :: state()) ->
+      {noreply, NewState :: state()}
+    | {noreply, NewState :: state(), Timeout :: timeout()}.
+handle_info(timeout, #state{table = Table, marker = undefined} = State) ->
+    case ets:first(Table) of
+        '$end_of_table' -> {noreply, State};                                 % table is empty so wait until there is work
+        _FirstKey       -> {noreply, State#state{marker = 0}, ?CONTINUE_TIMEOUT} % 0 compares smaller than any ref
+    end;
+handle_info(timeout, #state{number = Number, table = Table, states = States, marker = Marker} = State) ->
+    case ets:next(Table, Marker) of
+        '$end_of_table' ->
+            {noreply, State#state{marker = undefined}, ?CONTINUE_TIMEOUT};
+        NextKey ->
+            [{NextKey, ID, FileID}] = ets:lookup(Table, NextKey),
+            {Result, NewState} = case wa_raft_transport:transport_info(ID) of
+                {ok, #{module := Module}} ->
+                    try get_module_state(Module, State) of
+                        {ok, ModuleState0} ->
+                            try Module:transport_send(ID, FileID, ModuleState0) of
+                                {ok, ModuleState1} ->
+                                    {ok, State#state{states = States#{Module => ModuleState1}}};
+                                {continue, ModuleState1} ->
+                                    {continue, State#state{states = States#{Module => ModuleState1}}};
+                                {stop, Reason, ModuleState1} ->
+                                    {{stop, Reason}, State#state{states = States#{Module => ModuleState1}}}
+                            catch
+                                T:E:S ->
+                                    ?LOG_WARNING("[~p] module ~p failed to send file ~p:~p due to ~p ~p: ~p",
+                                        [Number, Module, ID, FileID, T, E, S], #{domain => [whatsapp, wa_raft]}),
+                                    {{T, E}, State}
+                            end;
+                        {stop, Reason} ->
+                            {{stop, Reason}, State}
+                    catch
+                        T:E:S ->
+                            ?LOG_WARNING("[~p] module ~p failed to get/init module state due to ~p ~p: ~p",
+                                [Number, Module, T, E, S], #{domain => [whatsapp, wa_raft]}),
+                            {{T, E}, State}
+                    end;
+                _ ->
+                    ?LOG_WARNING("[~p] trying to send for unknown transfer ~p",
+                        [Number, ID], #{domain => [whatsapp, wa_raft]}),
+                    {{stop, invalid_transport}, State}
+            end,
+            Result =/= continue andalso begin
+                ets:delete(Table, NextKey),
+                wa_raft_transport:complete(ID, FileID, Result, self())
+            end,
+            {noreply, NewState#state{marker = NextKey}, ?CONTINUE_TIMEOUT}
+    end;
 handle_info(Info, #state{number = Number} = State) ->
     ?LOG_WARNING("[~p] received unrecognized info ~p",
         [Number, Info], #{domain => [whatsapp, wa_raft]}),
-    {noreply, State}.
+    {noreply, State, ?CONTINUE_TIMEOUT}.
 
 -spec terminate(term(), state()) -> ok.
 terminate(Reason, #state{states = States}) ->
