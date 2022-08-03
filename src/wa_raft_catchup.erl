@@ -186,12 +186,13 @@ send_logs_loop(FollowerId, PrevLogIndex, LeaderTerm, LeaderCommitIndex,
     Limit = min(LogBatchEntries, LeaderCommitIndex - PrevLogIndex),
     {ok, PrevLogTerm} = wa_raft_log:term(Log, PrevLogIndex),
 
-    {ok, Entries} = case Witness of
+    Entries = case Witness of
         true ->
             {ok, Terms} = wa_raft_log:get_terms(Log, PrevLogIndex + 1, Limit, LogBatchBytes),
             [{Term, []} || Term <- Terms];
         _ ->
-            wa_raft_log:get(Log, PrevLogIndex + 1, Limit, LogBatchBytes)
+            {ok, Ret} = wa_raft_log:get(Log, PrevLogIndex + 1, Limit, LogBatchBytes),
+            Ret
         end,
     NumEntries = length(Entries),
 
@@ -220,7 +221,6 @@ send_snapshot(FollowerId, #raft_catchup{name = Name, table = Table, partition = 
     StartT = os:timestamp(),
     try
         StoragePid = whereis(?RAFT_STORAGE_NAME(Table, Partition)),
-        StorageName = ?RAFT_STORAGE_NAME(Table, Partition),
         case wa_raft_storage:create_snapshot(StoragePid) of
             {ok, #raft_log_pos{index = Index, term = Term} = LogPos} ->
                 SnapName = ?SNAPSHOT_NAME(Index, Term),
@@ -232,9 +232,9 @@ send_snapshot(FollowerId, #raft_catchup{name = Name, table = Table, partition = 
                         _ ->
                             % If node is a witness, we can bypass the transport process since we don't have to
                             % send the full log.  Thus, we can run snapshot_available() here directly
-                            wa_raft_server:snapshot_available({StorageName, FollowerId}, Root, LogPos)
-                    end,
-                    send_snapshot_transport(FollowerId, State, LogPos)
+                            ServerName = ?RAFT_SERVER_NAME(Table, Partition),
+                            wa_raft_server:snapshot_available({ServerName, FollowerId}, Root, LogPos)
+                    end
                 after
                     wa_raft_storage:delete_snapshot(StoragePid, SnapName)
                 end;
