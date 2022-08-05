@@ -1328,7 +1328,7 @@ witness(Type, ?APPEND_ENTRIES_RPC(CurrentTerm, LeaderId, PrevLogIndex, PrevLogTe
                 ok -> apply_log(State2, NewCommitIndex, TrimIndex);
                 _  -> State2
             end,
-            {keep_state, State3, ?ELECTION_TIMEOUT}
+            {keep_state, State3}
     end;
 
 %% [Witness] Handle AppendEntries RPC response (5.2)
@@ -2164,12 +2164,14 @@ notify_leader_change(#raft_state{table = Table, partition = Partition, leader_id
     wa_raft_info:set_leader(Table, Partition, LeaderId).
 
 %% Generic reply function that operates based on event type.
--spec reply(Type :: cast | {call, From :: gen_statem:from()} | info, Message :: term()) -> ok | wa_raft:error().
+-spec reply(Type :: gen_statem:event_type(), Message :: term()) -> ok | wa_raft:error().
 reply(cast, _Message) ->
     ok;
 reply({call, From}, Message) ->
     gen_statem:reply(From, Message);
-reply(info, _Message) ->
+reply(Type, Message) ->
+    ?LOG_WARNING("Attempted to reply to non-reply event type ~p with message ~0P.",
+        [Type, Message, 100], #{domain => [whatsapp, wa_raft]}),
     ok.
 
 -spec cast(node(), term(), #raft_state{}) -> ok | {error, term()}.
