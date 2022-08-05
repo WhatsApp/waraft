@@ -1328,7 +1328,6 @@ witness(Type, ?APPEND_ENTRIES_RPC(CurrentTerm, LeaderId, PrevLogIndex, PrevLogTe
                 ok -> apply_log(State2, NewCommitIndex, TrimIndex);
                 _  -> State2
             end,
-            check_follower_lagging(LeaderCommitIndex, State3),
             {keep_state, State3, ?ELECTION_TIMEOUT}
     end;
 
@@ -1807,11 +1806,9 @@ compute_quorum([_|_] = Values) ->
     lists:nth(Index, lists:sort(Values)).
 
 -spec apply_log(State0 :: #raft_state{}, CommitIndex :: wa_raft_log:log_index(), TrimIndex :: wa_raft_log:log_index() | infinity) -> State1 :: #raft_state{}.
-apply_log(#raft_state{last_applied = LastApplied, witness = true} = State0, CommitIndex, _) ->
+apply_log(#raft_state{witness = true} = State0, CommitIndex, _) ->
     % Update CommitIndex and LastAppliedIndex, but don't apply new log entries
-    LimitedIndex = erlang:min(CommitIndex, LastApplied + ?MAX_LOG_APPLY_BATCH_SIZE),
-    State1 = State0#raft_state{last_applied = LimitedIndex, commit_index = LimitedIndex},
-    State1;
+    State0#raft_state{last_applied = CommitIndex, commit_index = CommitIndex};
 apply_log(#raft_state{log_view = View, counters = Counters, last_applied = LastApplied} = State0, CommitIndex, TrimIndex) when CommitIndex > LastApplied ->
     StartT = os:timestamp(),
     case check_apply_queue(State0) of
