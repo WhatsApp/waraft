@@ -7,7 +7,6 @@
 
 -module(wa_raft_info).
 -compile(warn_missing_spec).
--author('gbhaska@fb.com').
 
 -export([
     init_tables/0,

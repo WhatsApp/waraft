@@ -8,8 +8,6 @@
 
 -module(wa_raft_transport_sup).
 -compile(warn_missing_spec).
--author("hsun324@whatsapp.com").
-
 -behaviour(supervisor).
 
 %% OTP supervision callbacks

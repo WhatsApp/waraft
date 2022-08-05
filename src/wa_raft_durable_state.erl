@@ -7,7 +7,6 @@
 
 -module(wa_raft_durable_state).
 -compile(warn_missing_spec).
--author('hsun324@fb.com').
 
 -include_lib("kernel/include/logger.hrl").
 -include("wa_raft.hrl").

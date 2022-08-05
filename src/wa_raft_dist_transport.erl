@@ -7,10 +7,8 @@
 
 -module(wa_raft_dist_transport).
 -compile(warn_missing_spec).
--author('hsun324@fb.com').
-
--behaviour(wa_raft_transport).
 -behaviour(gen_server).
+-behaviour(wa_raft_transport).
 
 -export([
     child_spec/0,

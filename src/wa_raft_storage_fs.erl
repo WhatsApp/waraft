@@ -13,9 +13,7 @@
 
 -module(wa_raft_storage_fs).
 -compile(warn_missing_spec).
--author('huiliu@fb.com').
-
--behavior(wa_raft_storage).
+-behaviour(wa_raft_storage).
 
 %% Mandatory callbacks
 -export([

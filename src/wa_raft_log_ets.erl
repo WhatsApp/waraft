@@ -11,8 +11,6 @@
 
 -module(wa_raft_log_ets).
 -compile(warn_missing_spec).
--author('hsun324@fb.com').
-
 -behaviour(wa_raft_log).
 
 %% RAFT log provider interface for accessing log data

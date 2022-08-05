@@ -9,8 +9,6 @@
 
 -module(wa_raft_part_top_sup).
 -compile(warn_missing_spec).
--author("gbhaska@fb.com").
-
 -behaviour(supervisor).
 
 -export([

@@ -13,8 +13,6 @@
 
 -module(wa_raft_storage).
 -compile(warn_missing_spec).
--author('huiliu@fb.com').
-
 -behaviour(gen_server).
 
 %% OTP supervisor

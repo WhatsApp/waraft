@@ -8,7 +8,6 @@
 
 -module(wa_raft_metrics).
 -compile(warn_missing_spec).
--author('huiliu@fb.com').
 
 -export([
   count/1,

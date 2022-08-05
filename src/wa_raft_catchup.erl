@@ -7,9 +7,7 @@
 
 -module(wa_raft_catchup).
 -compile(warn_missing_spec).
--author(['huiliu@fb.com']).
-
--behavior(gen_event).
+-behaviour(gen_event).
 
 -include_lib("kernel/include/logger.hrl").
 -include("wa_raft.hrl").

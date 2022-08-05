@@ -7,7 +7,6 @@
 
 -module(wa_raft).
 -compile(warn_missing_spec).
--author("jaherrero@fb.com").
 
 -export_type([
     table/0,

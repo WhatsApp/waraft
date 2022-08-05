@@ -8,7 +8,6 @@
 
 -module(wa_raft_distribution).
 -compile(warn_missing_spec).
--author('jaherrero@fb.com').
 
 -export([
     cast/2,

@@ -5,8 +5,6 @@
 
 -module(wa_raft_transport_worker).
 -compile(warn_missing_spec).
--author('hsun324@fb.com').
-
 -behaviour(gen_server).
 
 -include_lib("kernel/include/logger.hrl").

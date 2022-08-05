@@ -9,8 +9,6 @@
 
 -module(wa_raft_storage_ets).
 -compile(warn_missing_spec).
--author('huiliu@fb.com').
-
 -behaviour(wa_raft_storage).
 
 %% Callbacks

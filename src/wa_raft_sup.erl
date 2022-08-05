@@ -7,8 +7,6 @@
 
 -module(wa_raft_sup).
 -compile(warn_missing_spec).
--author("shobhitg@fb.com").
-
 -behaviour(supervisor).
 
 %% API

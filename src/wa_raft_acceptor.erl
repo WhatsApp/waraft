@@ -7,8 +7,6 @@
 
 -module(wa_raft_acceptor).
 -compile(warn_missing_spec).
--author('jaherrero@fb.com').
-
 -behaviour(gen_server).
 
 %% OTP supervisor

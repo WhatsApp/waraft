@@ -8,8 +8,6 @@
 
 -module(wa_raft_log).
 -compile(warn_missing_spec).
--author('hsun324@fb.com').
-
 -behaviour(gen_server).
 
 %% OTP supervision
