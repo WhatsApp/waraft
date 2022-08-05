@@ -75,6 +75,8 @@ handle_call(Request, From, #state{number = Number} = State) ->
 -spec handle_cast(Request :: term(), State :: state()) -> {noreply, NewState :: state(), Timeout :: timeout()}.
 handle_cast({send, ID, FileID}, #state{table = Table} = State) ->
     ?RAFT_COUNT('raft.transport.send'),
+    wa_raft_transport:update_file_info(ID, FileID,
+        fun (Info) -> Info#{start_ts => erlang:system_time(millisecond)} end),
     true = ets:insert_new(Table, {make_ref(), ID, FileID}),
     {noreply, State, ?CONTINUE_TIMEOUT};
 handle_cast(Request, #state{number = Number} = State) ->

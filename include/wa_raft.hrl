@@ -72,6 +72,14 @@
 %% Name of ETS table for holding pending strong-read references
 -define(RAFT_PENDING_READS_TABLE(Table, Partition), ?TO_ATOM("raft_pending_reads_table_", Table, Partition)).
 
+
+%% [Transport] Atomics - field index for update timestamp
+-define(RAFT_TRANSPORT_ATOMICS_UPDATED_TS, 1).
+%% [Transport] Transport atomics - field count
+-define(RAFT_TRANSPORT_TRANSPORT_ATOMICS_COUNT, 1).
+%% [Transport] File atomics - field count
+-define(RAFT_TRANSPORT_FILE_ATOMICS_COUNT, 1).
+
 -define(READ_OP, '$read').
 
 %% Raft minimum election timeout

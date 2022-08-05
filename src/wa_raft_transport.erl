@@ -73,6 +73,7 @@
 -type transport_info() :: #{
     type := sender | receiver,
     status := requested | running | completed | cancelled | timed_out | failed,
+    atomics := atomics:atomics_ref(),
 
     peer := atom(),
     module := module(),
@@ -82,7 +83,6 @@
     root := string(),
 
     start_ts := Millis :: integer(),
-    last_update_ts := Millis :: integer(),
     end_ts => Millis :: integer(),
 
     total_files := non_neg_integer(),
@@ -95,9 +95,15 @@
 -type file_id() :: pos_integer().
 -type file_info() :: #{
     status := requested | sending | receiving | completed | cancelled | failed,
+    atomics := {Transport :: atomics:atomics_ref(), File :: atomics:atomics_ref()},
+
     name := string(),
     path := string(),
     mtime => integer(),
+
+    start_ts => Millis :: integer(),
+    end_ts => Millis :: integer(),
+
     total_bytes := non_neg_integer(),
     completed_bytes := non_neg_integer(),
 
@@ -217,16 +223,18 @@ transport_info(ID, Item) ->
 % This function should only be called from the "factory" process since it does not
 % provide any atomicity guarantees.
 -spec set_transport_info(ID :: transport_id(), Info :: transport_info()) -> any().
-set_transport_info(ID, Info) ->
-    true = ets:insert(?MODULE, {?INFO_KEY(ID), Info}).
+set_transport_info(ID, #{atomics := TransportAtomics} = Info) ->
+    true = ets:insert(?MODULE, {?INFO_KEY(ID), Info}),
+    ok = atomics:put(TransportAtomics, ?RAFT_TRANSPORT_ATOMICS_UPDATED_TS, erlang:system_time(millisecond)).
 
 % This function should only be called from the "factory" process since it does not
 % provide any atomicity guarantees.
 -spec update_transport_info(ID :: transport_id(), Fun :: fun((Info :: transport_info()) -> NewInfo :: transport_info())) -> ok | not_found.
 update_transport_info(ID, Fun) ->
     case transport_info(ID) of
-        {ok, Info} ->
+        {ok, #{atomics := TransportAtomics} = Info} ->
             true = ets:insert(?MODULE, {?INFO_KEY(ID), Fun(Info)}),
+            ok = atomics:put(TransportAtomics, ?RAFT_TRANSPORT_ATOMICS_UPDATED_TS, erlang:system_time(millisecond)),
             ok;
         not_found ->
             not_found
@@ -242,16 +250,22 @@ file_info(ID, FileID) ->
 % This function should only be called from the "worker" process responsible for the
 % transport of the specified file since it does not provide any atomicity guarantees.
 -spec set_file_info(ID :: transport_id(), FileID :: file_id(), Info :: file_info()) -> any().
-set_file_info(ID, FileID, Info) ->
-    true = ets:insert(?MODULE, {?FILE_KEY(ID, FileID), Info}).
+set_file_info(ID, FileID, #{atomics := {TransportAtomics, FileAtomics}} = Info) ->
+    true = ets:insert(?MODULE, {?FILE_KEY(ID, FileID), Info}),
+    NowMillis = erlang:system_time(millisecond),
+    ok = atomics:put(TransportAtomics, ?RAFT_TRANSPORT_ATOMICS_UPDATED_TS, NowMillis),
+    ok = atomics:put(FileAtomics, ?RAFT_TRANSPORT_ATOMICS_UPDATED_TS, NowMillis).
 
 % This function should only be called from the "worker" process responsible for the
 % transport of the specified file since it does not provide any atomicity guarantees.
 -spec update_file_info(ID :: transport_id(), FileID :: file_id(), Fun :: fun((Info :: file_info()) -> NewInfo :: file_info())) -> ok | not_found.
 update_file_info(ID, FileID, Fun) ->
     case file_info(ID, FileID) of
-        {ok, Info} ->
+        {ok, #{atomics := {TransportAtomics, FileAtomics}} = Info} ->
             true = ets:insert(?MODULE, {?FILE_KEY(ID, FileID), Fun(Info)}),
+            NowMillis = erlang:system_time(millisecond),
+            ok = atomics:put(TransportAtomics, ?RAFT_TRANSPORT_ATOMICS_UPDATED_TS, NowMillis),
+            ok = atomics:put(FileAtomics, ?RAFT_TRANSPORT_ATOMICS_UPDATED_TS, NowMillis),
             ok;
         not_found ->
             not_found
@@ -287,8 +301,9 @@ handle_call({transport, ID, Peer, Module, Meta, Files}, From, #state{} = State) 
                 ?LOG_NOTICE("wa_raft_transport starting transport receive for ~p",
                     [ID], #{domain => [whatsapp, wa_raft]}),
 
-                NowMillis = erlang:system_time(millisecond),
+                TransportAtomics = atomics:new(?RAFT_TRANSPORT_TRANSPORT_ATOMICS_COUNT, []),
                 RootDir = transport_destination(ID),
+                NowMillis = erlang:system_time(millisecond),
                 TotalFiles = length(Files),
 
                 % Force the receiving directory to always exist
@@ -298,24 +313,27 @@ handle_call({transport, ID, Peer, Module, Meta, Files}, From, #state{} = State) 
                 set_transport_info(ID, #{
                     type => receiver,
                     status => running,
+                    atomics => TransportAtomics,
                     peer => Peer,
                     module => Module,
                     meta => Meta,
                     root => RootDir,
                     start_ts => NowMillis,
-                    last_update_ts => NowMillis,
                     total_files => TotalFiles,
                     completed_files => 0
                 }),
                 [
-                    set_file_info(ID, FileID, #{
-                        status => requested,
-                        name => RelativePath,
-                        path => filename:join(RootDir, RelativePath),
-                        total_bytes => Size,
-                        completed_bytes => 0
-                    })
-                    || {FileID, RelativePath, Size} <- Files
+                    begin
+                        FileAtomics = atomics:new(?RAFT_TRANSPORT_FILE_ATOMICS_COUNT, []),
+                        set_file_info(ID, FileID, #{
+                            status => requested,
+                            atomics => {TransportAtomics, FileAtomics},
+                            name => RelativePath,
+                            path => filename:join(RootDir, RelativePath),
+                            total_bytes => Size,
+                            completed_bytes => 0
+                        })
+                    end || {FileID, RelativePath, Size} <- Files
                 ],
 
                 TotalFiles =:= 0 andalso
@@ -335,7 +353,7 @@ handle_call({transport, ID, Peer, Module, Meta, Files}, From, #state{} = State) 
             ?RAFT_COUNT('raft.transport.receive.error'),
             ?LOG_WARNING("wa_raft_transport failed to accept transport ~p due to ~p ~p: ~n~p",
                 [ID, T, E, S], #{domain => [whatsapp, wa_raft]}),
-            update_transport_info(ID, fun (Info) -> Info#{status => failed, error => {receive_failed, {T, E, S}}} end),
+            update_transport_info(ID, fun (Info) -> Info#{status => failed, end_ts => erlang:system_time(millisecond), error => {receive_failed, {T, E, S}}} end),
             {reply, {error, failed}, State}
     end;
 handle_call({cancel, ID, Reason}, _From, #state{} = State) ->
@@ -378,11 +396,12 @@ handle_call(Request, _From, #state{} = State) ->
 -spec handle_cast(Request :: term(), State :: state()) -> {noreply, NewState :: state()}.
 handle_cast({complete, ID, FileID, Status, Pid}, #state{} = State) ->
     ?RAFT_COUNT('raft.transport.file.complete'),
+    NowMillis = erlang:system_time(millisecond),
     Result0 = update_file_info(ID, FileID,
         fun (Info) ->
             case Status of
-                ok -> Info#{status => completed};
-                _  -> Info#{status => failed, error => Status}
+                ok -> Info#{status => completed, end_ts => NowMillis};
+                _  -> Info#{status => failed, end_ts => NowMillis, error => Status}
             end
         end),
     Result0 =:= not_found andalso
@@ -391,8 +410,7 @@ handle_cast({complete, ID, FileID, Status, Pid}, #state{} = State) ->
     Result1 = update_transport_info(ID,
         fun
             (#{status := running, type := Type, completed_files := CompletedFiles, total_files := TotalFiles} = Info0) ->
-                NowMillis = erlang:system_time(millisecond),
-                Info1 = Info0#{last_update_ts => NowMillis, completed_files => CompletedFiles + 1},
+                Info1 = Info0#{completed_files => CompletedFiles + 1},
                 Info2 = case CompletedFiles + 1 of
                     TotalFiles -> Info1#{status => completed, end_ts => NowMillis};
                     _          -> Info1
@@ -478,6 +496,7 @@ start_transport(From, Peer, Meta, Root) ->
 
     try
         Files = collect_files(Root),
+        TransportAtomics = atomics:new(?RAFT_TRANSPORT_TRANSPORT_ATOMICS_COUNT, []),
         Module = ?RAFT_TRANSPORT_MODULE(),
         TotalFiles = length(Files),
         NowMillis = erlang:system_time(millisecond),
@@ -486,25 +505,28 @@ start_transport(From, Peer, Meta, Root) ->
         set_transport_info(ID, #{
             type => sender,
             status => requested,
+            atomics => TransportAtomics,
             peer => Peer,
             module => Module,
             meta => Meta,
             root => Root,
             start_ts => NowMillis,
-            last_update_ts => NowMillis,
             total_files => TotalFiles,
             completed_files => 0
         }),
         [
-            set_file_info(ID, FileID, #{
-                status => requested,
-                name => Filename,
-                path => Path,
-                mtime => MTime,
-                total_bytes => Size,
-                completed_bytes => 0
-            })
-            || {FileID, Filename, Path, MTime, Size} <- Files
+            begin
+                FileAtomics = atomics:new(?RAFT_TRANSPORT_FILE_ATOMICS_COUNT, []),
+                set_file_info(ID, FileID, #{
+                    status => requested,
+                    atomics => {TransportAtomics, FileAtomics},
+                    name => Filename,
+                    path => Path,
+                    mtime => MTime,
+                    total_bytes => Size,
+                    completed_bytes => 0
+                })
+            end || {FileID, Filename, Path, MTime, Size} <- Files
         ],
 
         % Notify peer node of incoming transport
@@ -532,7 +554,7 @@ start_transport(From, Peer, Meta, Root) ->
                 ?RAFT_COUNT('raft.transport.rejected'),
                 ?LOG_WARNING("wa_raft_transport peer ~p rejected transport ~p with error ~p",
                     [Peer, ID, Error], #{domain => [whatsapp, wa_raft]}),
-                update_transport_info(ID, fun (Info) -> Info#{status => failed, error => {rejected, Error}} end),
+                update_transport_info(ID, fun (Info) -> Info#{status => failed, end_ts => NowMillis, error => {rejected, Error}} end),
                 {error, rejected}
         end
     catch
@@ -540,7 +562,7 @@ start_transport(From, Peer, Meta, Root) ->
             ?RAFT_COUNT('raft.transport.start.error'),
             ?LOG_WARNING("wa_raft_transport failed to start transport ~p due to ~p ~p: ~n~p",
                 [ID, T, E, S], #{domain => [whatsapp, wa_raft]}),
-            update_transport_info(ID, fun (Info) -> Info#{status => failed, error => {start, {T, E, S}}} end),
+            update_transport_info(ID, fun (Info) -> Info#{status => failed, end_ts => erlang:system_time(millisecond), error => {start, {T, E, S}}} end),
             {error, failed}
     end.
 
@@ -602,8 +624,8 @@ maybe_cleanup(#state{pins = Pins}) ->
                     case maps:get(ID, Pins, 0) of
                         0 ->
                             case transport_info(ID) of
-                                {ok, #{last_update_ts := LastUpdateTs}} when NowMillis - LastUpdateTs > RetainMillis ->
-                                    ?LOG_NOTICE("wa_raft_transport deleting ~p due to expiring after idle",
+                                {ok, #{end_ts := EndTs}} when NowMillis - EndTs > RetainMillis ->
+                                    ?LOG_NOTICE("wa_raft_transport deleting ~p due to expiring after transport ended",
                                         [Filename], #{domain => [whatsapp, wa_raft]}),
                                     cleanup(ID, Path);
                                 {ok, _Info} ->
@@ -677,11 +699,12 @@ maybe_notify(ID, #{status := Status, notify := Notify} = Info) when Status =/= r
 maybe_notify(_ID, Info) ->
     Info.
 
--spec scan_transport(non_neg_integer(), map()) -> map().
-scan_transport(ID, #{status := running, last_update_ts := LastUpdateTs} = Info) ->
-    Idle = erlang:system_time(millisecond) - LastUpdateTs,
-    case Idle >= ?RAFT_TRANSPORT_MAX_IDLE_SECS() * 1000 of
-        true  -> maybe_notify(ID, Info#{status := timed_out});
+-spec scan_transport(non_neg_integer(), transport_info()) -> transport_info().
+scan_transport(ID, #{status := running, atomics := TransportAtomics} = Info) ->
+    LastUpdateTs = atomics:get(TransportAtomics, ?RAFT_TRANSPORT_ATOMICS_UPDATED_TS),
+    NowMillis = erlang:system_time(millisecond),
+    case NowMillis - LastUpdateTs >= ?RAFT_TRANSPORT_MAX_IDLE_SECS() * 1000 of
+        true  -> maybe_notify(ID, Info#{status := timed_out, end_ts => NowMillis});
         false -> Info
     end;
 scan_transport(_ID, Info) ->
