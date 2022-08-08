@@ -6,8 +6,6 @@
 %%% This file contains macros defining the form of all RPCs and API
 %%% calls used as part of the RAFT protocol and RAFT server and storage API.
 
--author('hsun324@fb.com').
-
 -define(RAFT_RPC(Type, Term, SenderId, Payload), {rpc, Type, Term, SenderId, Payload}).
 -define(RAFT_NAMED_RPC(Type, Term, SenderName, SenderNode, Payload), {rpc, Type, Term, SenderName, SenderNode, Payload}).
 

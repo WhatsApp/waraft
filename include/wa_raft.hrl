@@ -5,8 +5,6 @@
 %%%
 %%% This file defines general macros and data structures shared across modules.
 
--author('huiliu@fb.com').
-
 -define(APP, wa_raft).
 
 %% Get global config

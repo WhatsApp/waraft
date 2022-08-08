@@ -8,7 +8,6 @@
 %%%
 -module(kvstore_client).
 -compile(warn_missing_spec).
--author("huiliu@fb.com").
 
 -export([
     read/1,

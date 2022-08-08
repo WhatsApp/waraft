@@ -8,7 +8,6 @@
 %%%
 -module(kvstore_sup).
 -compile(warn_missing_spec).
--author("huiliu@fb.com").
 
 -behaviour(supervisor).
 

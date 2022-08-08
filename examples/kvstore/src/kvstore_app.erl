@@ -5,7 +5,6 @@
 
 -module(kvstore_app).
 -compile(warn_missing_spec).
--author("huiliu@fb.com").
 
 %% API
 -export([

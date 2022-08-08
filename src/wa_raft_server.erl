@@ -87,6 +87,7 @@
 
 %% Section 5.2. Randomized election timeout for fast election and to avoid split votes
 -define(ELECTION_TIMEOUT, {state_timeout, random_election_timeout(), election}).
+-define(WITNESS_TIMEOUT, ?ELECTION_TIMEOUT).
 %% Heartbeat interval in ms. Leader sends periodic heartbeats to maintain authority
 -define(HEARTBEAT_TIMEOUT, {state_timeout, ?RAFT_CONFIG(raft_heartbeat_interval_ms, 120), heartbeat}).
 -define(COMMIT_BATCH_TIMEOUT, {state_timeout, ?RAFT_CONFIG(raft_commit_batch_interval_ms, 2), batch_commit}).
@@ -1270,7 +1271,7 @@ disabled(Type, Event, #raft_state{name = Name, current_term = CurrentTerm}) ->
 
 %% [Witness] State functions
 -spec witness(Type :: atom(), Event :: term(), State :: #raft_state{}) -> gen_statem:state_enter_result(state()).
-witness(enter, FromState, #raft_state{witness= false} = State) ->
+witness(enter, FromState, #raft_state{witness = false} = State) ->
     witness(enter, FromState, State#raft_state{witness = true});
 
 % [Witness] Enters witness state after being in any other state
@@ -1282,7 +1283,22 @@ witness(enter, FromState, #raft_state{name = Name, current_term = CurrentTerm} =
     State1 = reset_state(State0),
     State2 = State1#raft_state{voted_for = undefined, next_index = #{}, match_index = #{}},
     wa_raft_durable_state:store(State2),
-    {keep_state, State2};
+    {keep_state, State2, ?WITNESS_TIMEOUT};
+
+%% [Witness] handle timeout
+%% Witness doesn't receive any heartbeat. Update staleness state.
+witness(state_timeout, _,
+         #raft_state{name = Name, current_term = CurrentTerm, leader_id = LeaderId,
+                     log_view = View, leader_heartbeat_ts = HeartbeatTs} = State) ->
+    WaitingMs = case HeartbeatTs of
+        undefined -> undefined;
+        _         -> erlang:system_time(millisecond) - HeartbeatTs
+    end,
+    ?LOG_NOTICE("Witness[~p, term ~p] times out after ~p ms. Last leader ~p. Max log index ~p.",
+        [Name, CurrentTerm, WaitingMs, LeaderId, wa_raft_log:last_index(View)], #{domain => [whatsapp, wa_raft]}),
+    ?RAFT_COUNT('raft.witness.timeout'),
+    wa_raft_info:set_stale(true, State),
+    {keep_state, State, ?WITNESS_TIMEOUT};
 
 %% [RequestVote RPC] MIGRATION - add ElectionType (type force has previous behavior) to RequestVote RPCs
 witness(Type, ?REQUEST_VOTE_RPC_OLD(Term, SenderId, LastLogIndex, LastLogTerm), State) ->
@@ -1307,7 +1323,7 @@ witness(Type, ?RAFT_RPC(RPCType, Term, SenderId, _Payload) = Event,
 %% [Witness] Handle AppendEntries RPC (5.2, 5.3)
 %% Witness receives AppendEntries from leader
 witness(Type, ?APPEND_ENTRIES_RPC(CurrentTerm, LeaderId, PrevLogIndex, PrevLogTerm, Entries, LeaderCommitIndex, LeaderTrimIndex),
-         #raft_state{current_term = CurrentTerm} = State0) ->
+        #raft_state{current_term = CurrentTerm} = State0) ->
     case append_entries(CurrentTerm, LeaderId, PrevLogIndex, PrevLogTerm, Entries, State0) of
         {{disable, Reason}, State1} ->
             State2 = State1#raft_state{disable_reason = Reason},
@@ -1327,7 +1343,8 @@ witness(Type, ?APPEND_ENTRIES_RPC(CurrentTerm, LeaderId, PrevLogIndex, PrevLogTe
                 ok -> apply_log(State2, NewCommitIndex, TrimIndex);
                 _  -> State2
             end,
-            {keep_state, State3}
+            check_follower_lagging(LeaderCommitIndex, State3),
+            {keep_state, State3, ?WITNESS_TIMEOUT}
     end;
 
 %% [Witness] Handle AppendEntries RPC response (5.2)
@@ -2039,7 +2056,8 @@ compute_handover_candidates(#raft_state{log_view = View, match_index = MatchInde
     MaxHandoverLogEntries = ?RAFT_MAX_HANDOVER_LOG_ENTRIES(),
     [Peer || {Peer, Match} <- maps:to_list(MatchIndex), LastLogIndex - Match =< MaxHandoverLogEntries].
 
--spec adjust_config(Action :: {add, peer()} | {remove, peer()} | {add_witness, peer()} | {remove_witness, peer()} | {refresh, undefined}, Config :: config(), State :: #raft_state{}) -> {ok, NewConfig :: config()} | {error, Reason :: atom()}.
+-spec adjust_config(Action :: {add, peer()} | {remove, peer()} | {add_witness, peer()} | {remove_witness, peer()} | {refresh, undefined},
+                    Config :: config(), State :: #raft_state{}) -> {ok, NewConfig :: config()} | {error, Reason :: atom()}.
 adjust_config(Action, Config, #raft_state{name = Name}) ->
     Node = node(),
     Membership = config_membership(Config),
@@ -2252,7 +2270,7 @@ check_follower_stale(FSMState, #raft_state{name = Name, table = Table, partition
             wa_raft_info:set_stale(Stale, State)
     end.
 
-%% Check follower state due to log entry lag and change stale flag if needed
+%% Check follower/witness state due to log entry lag and change stale flag if needed
 -spec check_follower_lagging(pos_integer(), #raft_state{}) -> ok.
 check_follower_lagging(LeaderCommit, #raft_state{table = Table, partition = Partition, last_applied = LastApplied} = State) ->
     Lagging = LeaderCommit - LastApplied,
