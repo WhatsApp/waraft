@@ -41,7 +41,6 @@
 ]).
 
 -export_type([
-    read_options/0,
     command/0,
     op/0
 ]).
@@ -95,16 +94,6 @@ child_spec(Config) ->
         shutdown => 30000,
         modules => [?MODULE]
     }.
-
--type read_options() :: #{
-    % Call timeout / Cast ttl. Default is 5000 for call, 'infinity' for cast.
-    timeout => timeout(),
-    % Expected log index for a command.
-    % undefined means any log index works.
-    % infinity means to read from leader node
-    % {error, stale} is returned if current log index of the data doesn't match
-    expected_version => infinity | undefined | wa_raft_log:log_index()
-}.
 
 %% Public API
 -spec start_link(RaftArgs :: wa_raft:args()) -> {ok, Pid :: pid()} | ignore | wa_raft:error().
