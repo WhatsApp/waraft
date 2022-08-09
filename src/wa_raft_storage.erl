@@ -25,7 +25,6 @@
 -export([
     apply_op/3,
     fulfill_op/3,
-    read_op/3,
     cancel/1
 ]).
 
@@ -161,10 +160,6 @@ apply_op(Pid, LogRecord, ServerTerm) ->
 fulfill_op(Pid, OpRef, Return) ->
     gen_server:cast(Pid, {fulfill, OpRef, Return}).
 
--spec read_op(Pid :: pid(), ExpectedLogPos :: non_neg_integer(), {From :: {pid(), term()}, Command :: term()}) -> ok.
-read_op(Pid, ExpectedLogPos, {From, Command}) ->
-    gen_server:cast(Pid, {read, ExpectedLogPos, From, Command}).
-
 -spec cancel(pid()) -> ok.
 cancel(Pid) ->
     gen_server:cast(Pid, cancel).
@@ -292,11 +287,6 @@ handle_cast({apply, {LogIndex, {LogTerm, _}} = LogRecord, ServerTerm}, #raft_sto
     State1 = apply_impl(LogRecord, ServerTerm, State0),
     {noreply, State1};
 
-handle_cast({read, ExpectedLogPos, From, Command}, #raft_storage{name = Name} = State0) ->
-    ?LOG_DEBUG("[~p] read ~p", [Name, ExpectedLogPos], #{domain => [whatsapp, wa_raft]}),
-    State1 = read_impl(ExpectedLogPos, From, Command, State0),
-    {noreply, State1};
-
 handle_cast({snapshot_delete, SnapName}, #raft_storage{name = Name, module = Module} = State) ->
     Result = Module:storage_delete_snapshot(SnapName, State),
     ?LOG_NOTICE("~100p delete snapshot ~p. result ~p", [Name, SnapName, Result], #{domain => [whatsapp, wa_raft]}),
@@ -351,29 +341,6 @@ apply_impl({LogIndex, {LogTerm, {Ref, _} = Op}}, ServerTerm,
             ?LOG_ERROR("[~p] received out-of-order apply with index ~p. (expected index ~p, op ~0P)", [Name, LogIndex, LastAppliedIndex, Op, 30], #{domain => [whatsapp, wa_raft]}),
             error(out_of_order_apply)
     end.
-
--spec read_impl(ExpectedLogIndex :: wa_raft_log:log_index(), From :: {pid(), term()}, Command :: term(), State :: #raft_storage{})
-    -> NewState :: #raft_storage{}.
-read_impl(ExpectedLogIndex, From, Command, #raft_storage{last_applied = LogPos} = State) ->
-    {Res, NewState} = execute(Command, LogPos, State),
-    Result = case Res of
-            ok -> % noop
-                ok;
-            {ok, {CurValue, Header, CurLogIndex}} when ExpectedLogIndex =:= undefined orelse (CurLogIndex =/= undefined andalso CurLogIndex > ExpectedLogIndex) ->
-                {ok, {CurValue, Header, CurLogIndex}};
-            {ok, {CurValue, Header, CurLogIndex}} when CurLogIndex =:= ExpectedLogIndex ->
-                {ok, {CurValue, Header, CurLogIndex}};
-            {ok, {_CurValue, _Header, CurLogIndex}} ->
-                ?LOG_WARNING("Stale Read ~p. Expected log index ~p vs current ~p. ", [Command, ExpectedLogIndex, CurLogIndex], #{domain => [whatsapp, wa_raft]}),
-                ?RAFT_COUNT('raft.storage.read.error.stale'),
-                {error, {stale, CurLogIndex}};
-            {error, _} = Error ->
-                ?RAFT_COUNT('raft.storage.read.error'),
-                ?LOG_WARNING("Read ~p error ~p", [Command, Error], #{domain => [whatsapp, wa_raft]}),
-                Error
-        end,
-    gen_server:reply(From, Result),
-    NewState.
 
 -spec storage_apply(wa_raft_log:log_pos(), wa_raft_acceptor:op(), #raft_storage{}) -> {term(), #raft_storage{}}.
 storage_apply(LogPos, {_Ref, Command}, State) ->

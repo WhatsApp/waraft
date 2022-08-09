@@ -20,7 +20,6 @@
     commit/2,
     commit/3,
     read/2,
-    read/3,
     queue_full/2
 ]).
 
@@ -143,16 +142,9 @@ commit(Dest, From, Op) ->
     gen_server:cast(Dest, {commit, From, Op}).
 
 % Strong-read
--spec read(Dest :: pid() | Local :: atom() | {Service :: atom(), Node :: node()}, Command :: term())
-        -> {ok, {term(), map(), wa_raft_log:log_index() | undefined}} | wa_raft:error().
+-spec read(ServerRef :: gen_server:server_ref(), Command :: command()) -> {ok, Result :: term()} | wa_raft:error().
 read(Dest, Command) ->
-    read(Dest, Command, #{expected_version => infinity}).
-
--spec read(Dest :: pid() | Local :: atom() | {Service :: atom(), Node :: node()}, Command :: term(), Options :: read_options())
-        -> {ok, {term(), map(), wa_raft_log:log_index() | undefined}} | wa_raft:error().
-read(Dest, Command, Options) ->
-    Timeout = maps:get(timeout, Options, ?RPC_CALL_TIMEOUT_MS),
-    gen_server:call(Dest, {read, Command, Options}, Timeout).
+    gen_server:call(Dest, {read, Command}, ?RPC_CALL_TIMEOUT_MS).
 
 -spec queue_full(Table :: wa_raft:table(), Partition :: wa_raft:partition()) -> boolean().
 queue_full(Table, Partition) ->
@@ -197,10 +189,8 @@ handle_call({register_storage, StoragePid}, _From, #raft_acceptor{name = Name} =
     ?LOG_NOTICE("[~p] registering storage pid ~p", [Name, StoragePid], #{domain => [whatsapp, wa_raft]}),
     {reply, ok, State#raft_acceptor{storage_pid = StoragePid}};
 
-handle_call({read, Command, Options}, From, #raft_acceptor{table = Table} = State0) ->
-    Op = {read, Table, Command},
-    ExpectedLogIndex = maps:get(expected_version, Options, undefined),
-    State1 = read_impl(ExpectedLogIndex, From, Op, State0),
+handle_call({read, Command}, From, #raft_acceptor{} = State0) ->
+    State1 = read_impl(From, Command, State0),
     {noreply, State1};
 
 handle_call({commit, _Op}, From, #raft_acceptor{name = Name, server_pid = undefined} = State) ->
@@ -286,43 +276,33 @@ commit_impl(From, {Ref, _} = Op, #raft_acceptor{table = Table, partition = Parti
     ?RAFT_GATHER('raft.acceptor.commit.func', timer:now_diff(os:timestamp(), StartT)),
     State.
 
--spec read_impl(ExpectedLogIndex :: wa_raft_log:log_index() | infinity,
-                From :: {pid(), term()},
-                Command :: term(),
+-spec read_impl(From :: gen_server:from(),
+                Command :: command(),
                 State0 :: #raft_acceptor{}) -> State1 :: #raft_acceptor{}.
 %% Strongly-consistent read.
-read_impl(infinity, From, Command, #raft_acceptor{name = Name, server_pid = ServerPid, counters = Counters} = State) ->
+read_impl(From, Command, #raft_acceptor{name = Name, server_pid = ServerPid, counters = Counters} = State) ->
     StartT = os:timestamp(),
     ?LOG_DEBUG("[~p] read starts", [Name], #{domain => [whatsapp, wa_raft]}),
     NumPendingReads = counters:get(Counters, ?RAFT_LOCAL_COUNTER_READ),
     MaxPendingReads = ?RAFT_CONFIG(raft_max_pending_reads, 5000),
     NumPendingApplies = counters:get(Counters, ?RAFT_LOCAL_COUNTER_APPLY),
     MaxPendingApplies = ?RAFT_CONFIG(raft_apply_queue_max_size, 1000),
-    case NumPendingReads < MaxPendingReads andalso NumPendingApplies < MaxPendingApplies of
-        true ->
+    case {NumPendingReads >= MaxPendingReads, NumPendingApplies >= MaxPendingApplies} of
+        {true, _} ->
+            ?LOG_WARNING("[~p] Reject read request. Storage queue is full (read limit ~p)",
+                         [Name, MaxPendingReads], #{domain => [whatsapp, wa_raft]}),
+            ?RAFT_COUNT('raft.acceptor.error.strong_read.read_queue_full'),
+            gen_server:reply(From, {error, read_queue_full});
+        {_, true} ->
+            ?LOG_WARNING("[~p] Reject read request. Apply queue is full (apply limit ~p)",
+                         [Name, MaxPendingApplies], #{domain => [whatsapp, wa_raft]}),
+            ?RAFT_COUNT('raft.acceptor.error.strong_read.apply_queue_full'),
+            gen_server:reply(From, {error, apply_queue_full});
+        _ ->
             %% Increase number of pending strong-reads.
             counters:add(Counters, ?RAFT_LOCAL_COUNTER_READ, 1),
             wa_raft_server:read(ServerPid, {From, Command}),
-            ?RAFT_GATHER('raft.acceptor.strong_read.request.pending', NumPendingReads + 1);
-        _ ->
-            ?LOG_WARNING("[~p] Reject read request. Storage queue is full (read limit ~p, write limit ~p)",
-                         [Name, MaxPendingReads, MaxPendingApplies], #{domain => [whatsapp, wa_raft]}),
-            ?RAFT_COUNT('raft.acceptor.error.strong_read_queue_full'),
-            gen_server:reply(From, {error, read_queue_full})
+            ?RAFT_GATHER('raft.acceptor.strong_read.request.pending', NumPendingReads + 1)
     end,
     ?RAFT_GATHER('raft.acceptor.strong_read.func', timer:now_diff(os:timestamp(), StartT)),
-    State;
-%% Read-after-write. Expect to read from a location where minimal log index is applied
-read_impl(ExpectedLogIndex, From, Command, #raft_acceptor{name = Name, storage_pid = StoragePid, counters = Counters} = State) ->
-    NumPendingApplies = counters:get(Counters, ?RAFT_LOCAL_COUNTER_APPLY),
-    MaxPendingApplies = ?RAFT_CONFIG(raft_apply_queue_max_size, 1000),
-    case NumPendingApplies < MaxPendingApplies of
-        true ->
-            wa_raft_storage:read_op(StoragePid, ExpectedLogIndex, {From, Command});
-        _ ->
-            ?LOG_WARNING("[~p] Reject read request. Storage queue is full (queue limit ~p)",
-                         [Name, MaxPendingApplies], #{domain => [whatsapp, wa_raft]}),
-            ?RAFT_COUNT('raft.acceptor.error.strong_read_queue_full'),
-            gen_server:reply(From, {error, read_queue_full})
-    end,
     State.
