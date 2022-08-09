@@ -299,7 +299,7 @@ init([StateName, #raft_state{name = Name} = State]) when StateName =:= follower 
     {ok, StateName, State};
 
 %% Standard startup
-init([#{table := Table, partition := Partition, counters := Counters} = RaftArgs] ) ->
+init([#{table := Table, partition := Partition} = RaftArgs] ) ->
     process_flag(trap_exit, true),
     ?LOG_NOTICE("Starting raft server ~w", [RaftArgs], #{domain => [whatsapp, wa_raft]}),
     Name = ?RAFT_SERVER_NAME(Table, Partition),
@@ -323,7 +323,6 @@ init([#{table := Table, partition := Partition, counters := Counters} = RaftArgs
         storage = StoragePid,
         acceptor = AcceptorPid,
         log_view = View,
-        counters = Counters,
         last_applied = Last#raft_log_pos.index,
         commit_index = Last#raft_log_pos.index,
         current_term = Last#raft_log_pos.term,
@@ -659,7 +658,6 @@ leader(cast, ?COMMIT_COMMAND(Op), #raft_state{current_term = CurrentTerm, log_vi
     ExpectedLastIndex = wa_raft_log:last_index(View1) + wa_raft_log:pending(View1),
     State1 = apply_single_node_cluster(State0#raft_state{log_view = View1}), % apply immediately for single node cluster
 
-
     MaxNexIndex = maps:fold(fun(_NodeId, V, Acc) -> erlang:max(Acc, V) end, 0, NextIndex),
     case ?RAFT_CONFIG(raft_commit_batch_interval_ms, 2) > 0 andalso ExpectedLastIndex - MaxNexIndex < ?RAFT_CONFIG(raft_commit_batch_max, 15) of
         true ->
@@ -678,16 +676,14 @@ leader(cast, ?READ_COMMAND({From, Command}),
     ReadIndex = max(CommitIndex, FirstLogIndex),
     Pending = wa_raft_log:pending(View0),
     LastLogIndex = wa_raft_log:last_index(View0),
-    ets:insert(?RAFT_PENDING_READS_TABLE(Table, Partition), {{ReadIndex + 1, make_ref()}, From, Command}),
-    View2 = case ReadIndex < LastLogIndex orelse Pending > 0 of
-                true ->
-                    View0;
-                false ->
-                    {ok, View1} = wa_raft_log:submit(View0, {CurrentTerm, {?READ_OP, noop}}),
-                    View1
-            end,
-    State1 = State0#raft_state{log_view = View2},
-    {keep_state, State1};
+    ok = wa_raft_queue:submit_read(Table, Partition, ReadIndex + 1, From, Command),
+    {ok, View1} = case ReadIndex < LastLogIndex orelse Pending > 0 of
+        true  -> {ok, View0};
+        % TODO(hsun324): Try to reuse the commit code to deal with placeholder ops so we
+        % handle batching and timeout properly instead of relying on a previously set timeout.
+        false -> wa_raft_log:submit(View0, {CurrentTerm, {?READ_OP, noop}})
+    end,
+    {keep_state, State0#raft_state{log_view = View1}};
 
 %% [Resign] Leader resigns by switching to follower state.
 leader(Type, ?RESIGN_COMMAND, #raft_state{name = Name, current_term = CurrentTerm} = State0) ->
@@ -1441,16 +1437,17 @@ command(StateName, Type, ?COMMIT_COMMAND({Ref, _}),
     keep_state_and_data;
 %% [Strong Read] Non-leader nodes are not eligible for strong reads.
 command(StateName, cast, ?READ_COMMAND({From, _}),
-        #raft_state{name = Name, current_term = CurrentTerm, leader_id = LeaderId}) when StateName =/= leader ->
+        #raft_state{name = Name, table = Table, partition = Partition, current_term = CurrentTerm, leader_id = LeaderId}) when StateName =/= leader ->
     ?LOG_WARNING("~p[~p, term ~p] strong read fails. Leader is ~p.",
         [StateName, Name, CurrentTerm, LeaderId], #{domain => [whatsapp, wa_raft]}),
-    {keep_state_and_data, {reply, From, {error, not_leader}}};
+    wa_raft_queue:fulfill_read_early(Table, Partition, From, {error, not_leader}),
+    keep_state_and_data;
 %% [Status] Get status of node.
 command(StateName, {call, From}, ?STATUS_COMMAND, State) ->
-    Counters = State#raft_state.counters,
     Status = [
         {state, StateName},
         {id, node()},
+        {table, State#raft_state.table},
         {partition, State#raft_state.partition},
         {data_dir, State#raft_state.data_dir},
         {current_term, State#raft_state.current_term},
@@ -1464,7 +1461,7 @@ command(StateName, {call, From}, ?STATUS_COMMAND, State) ->
         {log_first, wa_raft_log:first_index(State#raft_state.log_view)},
         {log_last, wa_raft_log:last_index(State#raft_state.log_view)},
         {votes, State#raft_state.votes},
-        {inflight_applies, counters:get(Counters, ?RAFT_LOCAL_COUNTER_APPLY)},
+        {inflight_applies, wa_raft_queue:apply_queue_size(State#raft_state.table, State#raft_state.partition)},
         {disable_reason, State#raft_state.disable_reason},
         {offline_peers, State#raft_state.offline_peers},
         {config, config(State)},
@@ -1825,16 +1822,17 @@ compute_quorum([_|_] = Values) ->
 apply_log(#raft_state{witness = true} = State0, CommitIndex, _) ->
     % Update CommitIndex and LastAppliedIndex, but don't apply new log entries
     State0#raft_state{last_applied = CommitIndex, commit_index = CommitIndex};
-apply_log(#raft_state{log_view = View, counters = Counters, last_applied = LastApplied} = State0, CommitIndex, TrimIndex) when CommitIndex > LastApplied ->
+apply_log(#raft_state{name = Name, table = Table, partition = Partition, log_view = View,
+                      last_applied = LastApplied} = State0, CommitIndex, TrimIndex) when CommitIndex > LastApplied ->
     StartT = os:timestamp(),
-    case check_apply_queue(State0) of
-        true ->
+    case wa_raft_queue:apply_queue_full(Table, Partition) of
+        false ->
             % Apply a limited number of log entries (both count and total byte size limited)
             LimitedIndex = erlang:min(CommitIndex, LastApplied + ?MAX_LOG_APPLY_BATCH_SIZE),
             LimitBytes = ?RAFT_CONFIG(raft_apply_batch_max_bytes, 200 * 4 * 1024),
             {ok, {_, #raft_state{log_view = View1} = State1}} = wa_raft_log:fold(View, LastApplied + 1, LimitedIndex, LimitBytes,
                 fun (Index, Entry, {Index, State}) ->
-                    counters:add(Counters, ?RAFT_LOCAL_COUNTER_APPLY, 1),
+                    wa_raft_queue:reserve_apply(Table, Partition),
                     {Index + 1, apply_op(Index, Entry, State)}
                 end, {LastApplied + 1, State0}),
 
@@ -1846,25 +1844,18 @@ apply_log(#raft_state{log_view = View, counters = Counters, last_applied = LastA
             State2 = State1#raft_state{log_view = View2},
             ?RAFT_GATHER('raft.apply_log.latency_us', timer:now_diff(os:timestamp(), StartT)),
             State2;
-        false ->
+        true ->
+            ApplyQueueSize = wa_raft_queue:apply_queue_size(Table, Partition),
+            ?RAFT_COUNT('raft.apply.delay'),
+            ?RAFT_GATHER('raft.apply.queue', ApplyQueueSize),
+            LastApplied rem 10 =:= 0 andalso
+                ?LOG_WARNING("[~p] delays applying for long queue ~p. last applied ~p",
+                    [Name, ApplyQueueSize, LastApplied], #{domain => [whatsapp, wa_raft]}),
             ?RAFT_GATHER('raft.apply_log.latency_us', timer:now_diff(os:timestamp(), StartT)),
             State0
     end;
 apply_log(State, _CommitIndex, _TrimIndex) ->
     State.
-
--spec check_apply_queue(#raft_state{}) -> boolean().
-check_apply_queue(#raft_state{name = Name, counters = Counters, last_applied = LastApplied}) ->
-    ApplyQueueSize = counters:get(Counters, ?RAFT_LOCAL_COUNTER_APPLY),
-    case ApplyQueueSize < ?RAFT_CONFIG(raft_apply_queue_max_size, 1000) of
-       true ->
-           true;
-       false ->
-           ?RAFT_COUNT('raft.apply.delay'),
-           ?RAFT_GATHER('raft.apply.queue', ApplyQueueSize),
-           LastApplied rem 10 =:= 0 andalso ?LOG_WARNING("[~p] delays applying for long queue ~p. last applied ~p", [Name, ApplyQueueSize, LastApplied], #{domain => [whatsapp, wa_raft]}),
-           false
-    end.
 
 -spec apply_op(wa_raft_log:log_index(), wa_raft_log:log_entry(), #raft_state{}) -> #raft_state{}.
 apply_op(LogIndex, _Entry, #raft_state{name = Name, last_applied = LastAppliedIndex} = State) when LogIndex =< LastAppliedIndex ->

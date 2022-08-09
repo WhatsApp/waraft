@@ -67,7 +67,6 @@
 ]).
 
 -include_lib("kernel/include/logger.hrl").
--include_lib("stdlib/include/ms_transform.hrl"). % used by ets:fun2ms
 -include("wa_raft.hrl").
 
 %% Storage plugin need implement the following mandatory callbacks to integrate with raft protocol.
@@ -190,16 +189,15 @@ read_metadata(Pid, Key) ->
 
 %% gen_server callbacks
 -spec init([wa_raft:args()]) -> {ok, #raft_storage{}}.
-init([#{table := Table, partition := Partition, counters := Counters} = Args]) ->
+init([#{table := Table, partition := Partition} = Args]) ->
     process_flag(trap_exit, true),
     Module = maps:get(storage_module, Args, ?RAFT_CONFIG(raft_storage_module, wa_raft_storage_ets)),
     ?LOG_NOTICE("Starting raft storage module ~p on ~p:~p", [Module, Table, Partition], #{domain => [whatsapp, wa_raft]}),
     Name = ?RAFT_STORAGE_NAME(Table, Partition),
     RootDir = ?ROOT_DIR(Table, Partition),
-    State0 = #raft_storage{name = Name, table = Table, partition = Partition, root_dir = RootDir, module = Module, counters = Counters},
+    State0 = #raft_storage{name = Name, table = Table, partition = Partition, root_dir = RootDir, module = Module},
     {LastApplied, Handle} = Module:storage_open(State0),
     State1 = State0#raft_storage{last_applied = LastApplied, handle = Handle},
-    counters:put(Counters, ?RAFT_LOCAL_COUNTER_APPLY, 0),
     %% Here, supervisor should have already started wa_raft_acceptor.
     AcceptorPid = whereis(?RAFT_ACCEPTOR_NAME(Table, Partition)),
     %% Notify the wa_raft_acceptor of the wa_raft_storage pid.
@@ -320,8 +318,8 @@ code_change(_OldVsn, State, _Extra) ->
 
 -spec apply_impl(Record :: wa_raft_log:log_record(), ServerTerm :: wa_raft_log:log_term(), State :: #raft_storage{}) -> NewState :: #raft_storage{}.
 apply_impl({LogIndex, {LogTerm, {Ref, _} = Op}}, ServerTerm,
-           #raft_storage{name = Name, counters = Counters, last_applied = #raft_log_pos{index = LastAppliedIndex}} = State0) ->
-    counters:sub(Counters, ?RAFT_LOCAL_COUNTER_APPLY, 1),
+           #raft_storage{name = Name, table = Table, partition = Partition, last_applied = #raft_log_pos{index = LastAppliedIndex}} = State0) ->
+    wa_raft_queue:fulfill_apply(Table, Partition),
     StartT = os:timestamp(),
     case LogIndex of
         LastAppliedIndex ->
@@ -370,67 +368,31 @@ execute(Command, LogPos, #raft_storage{module = Module, handle = Handle} = State
     {Reply, NewHandle} = Module:storage_apply(Command, LogPos, Handle),
     {Reply, State#raft_storage{handle = NewHandle}}.
 
--spec reply(reference(), term(), #raft_storage{}) -> #raft_storage{}.
-reply(Ref, Reply, #raft_storage{table = Table, partition = Partition, counters = Counters} = State) ->
-    case ets:lookup(?RAFT_PENDING_COMMITS_TABLE(Table, Partition), Ref) of
-        [] ->
-            State;
-        [{Ref, From}] ->
-            ets:delete(?RAFT_PENDING_COMMITS_TABLE(Table, Partition), Ref),
-            counters:sub(Counters, ?RAFT_LOCAL_COUNTER_COMMIT, 1),
-            gen_server:reply(From, Reply),
-            State
-    end.
+-spec reply(term(), term(), #raft_storage{}) -> #raft_storage{}.
+reply(Ref, Reply, #raft_storage{table = Table, partition = Partition} = State) ->
+    wa_raft_queue:fulfill_commit(Table, Partition, Ref, Reply),
+    State.
 
 -spec apply_delayed_reads(State :: #raft_storage{}) -> NewState :: #raft_storage{}.
-apply_delayed_reads(#raft_storage{table = Table, partition = Partition, last_applied = #raft_log_pos{index = LastAppliedIndex} = LastAppliedLogPos,
-                                  counters = Counters} = State) ->
-    case counters:get(Counters, ?RAFT_LOCAL_COUNTER_READ) =:= 0 of
-        true ->
-            State;
-        _ ->
-            MatchSpec = ets:fun2ms(
-                fun({{LogIndex, R}, F, C}) when LogIndex =:= LastAppliedIndex ->
-                    {{LogIndex, R}, F, C}
-                end
-            ),
-            [
-                begin
-                    ets:delete(?RAFT_PENDING_READS_TABLE(Table, Partition), LogIndexRef),
-                    {Reply, _} = execute(Command, LastAppliedLogPos, State),
-                    counters:sub(Counters, ?RAFT_LOCAL_COUNTER_READ, 1),
-                    gen_server:reply(From, Reply)
-                end
-            || {LogIndexRef, From, Command} <- ets:select(?RAFT_PENDING_READS_TABLE(Table, Partition), MatchSpec)],
-            State
-    end.
+apply_delayed_reads(#raft_storage{table = Table, partition = Partition, last_applied = #raft_log_pos{index = LastAppliedIndex} = LastAppliedLogPos} = State) ->
+    lists:foreach(
+        fun ({Reference, Command}) ->
+            {Reply, _} = execute(Command, LastAppliedLogPos, State),
+            wa_raft_queue:fulfill_read(Table, Partition, Reference, Reply)
+        end, wa_raft_queue:query_reads(Table, Partition, LastAppliedIndex)),
+    State.
 
 -spec cancel_pending_commits(#raft_storage{}) -> #raft_storage{}.
-cancel_pending_commits(#raft_storage{table = Table, partition = Partition, name = Name, counters = Counters} = State0) ->
+cancel_pending_commits(#raft_storage{table = Table, partition = Partition, name = Name} = State) ->
     ?LOG_NOTICE("[~p] cancel pending commits", [Name], #{domain => [whatsapp, wa_raft]}),
-    [
-        begin
-            ets:delete(?RAFT_PENDING_COMMITS_TABLE(Table, Partition), Ref),
-            counters:sub(Counters, ?RAFT_LOCAL_COUNTER_COMMIT, 1),
-            gen_server:reply(From, {error, not_leader})
-        end
-        || {Ref, From} <- ets:tab2list(?RAFT_PENDING_COMMITS_TABLE(Table, Partition))
-    ],
-    State0.
+    wa_raft_queue:fulfill_all_commits(Table, Partition, {error, not_leader}),
+    State.
 
 -spec cancel_pending_reads(#raft_storage{}) -> #raft_storage{}.
-cancel_pending_reads(#raft_storage{table = Table, partition = Partition, name = Name, counters = Counters} = State0) ->
+cancel_pending_reads(#raft_storage{table = Table, partition = Partition, name = Name} = State) ->
     ?LOG_NOTICE("[~p] cancel pending reads", [Name], #{domain => [whatsapp, wa_raft]}),
-    MatchSpec = ets:fun2ms(fun({LR, F, _Op}) -> {LR, F} end),
-    [
-        begin
-            ets:delete(?RAFT_PENDING_READS_TABLE(Table, Partition), LogIndexRef),
-            counters:sub(Counters, ?RAFT_LOCAL_COUNTER_READ, 1),
-            gen_server:reply(From, {error, not_leader})
-        end
-        || {LogIndexRef, From} <- ets:select(?RAFT_PENDING_READS_TABLE(Table, Partition), MatchSpec)
-    ],
-    State0.
+    wa_raft_queue:fulfill_all_reads(Table, Partition, {error, not_leader}),
+    State.
 
 -spec list_snapshots(RootDir :: string()) -> [#raft_snapshot{}].
 list_snapshots(RootDir) ->

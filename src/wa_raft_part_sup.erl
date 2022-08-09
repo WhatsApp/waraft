@@ -58,15 +58,7 @@ stop(Supervisor, Table, Partition) ->
     end.
 
 -spec init([wa_raft:args()]) -> {ok, {supervisor:sup_flags(), list(supervisor:child_spec())}}.
-init([#{table := Table, partition := Partition} = Args0]) ->
-    Counters = counters:new(?RAFT_NUMBER_OF_LOCAL_COUNTERS, [atomics]),
-    Args1 = Args0#{counters => Counters},
-
-    % Store the local counters for this partition in persitent_term
-    % This value should change very rarely (only when this RAFT partition
-    % breaches the max restart rate for this supervisor).
-    persistent_term:put(?RAFT_LOCAL_COUNTERS_KEY(Table, Partition), Counters),
-
+init([Args]) ->
     StorageModule = application:get_env(?APP, raft_storage_module, wa_raft_ast),
     code:ensure_loaded(StorageModule),
     Modules0 = case erlang:function_exported(StorageModule, child_spec, 1) of
@@ -76,13 +68,14 @@ init([#{table := Table, partition := Partition} = Args0]) ->
                        []
                end,
     Modules = Modules0 ++ [
+        wa_raft_queue,
         wa_raft_catchup,
         wa_raft_acceptor,
         wa_raft_storage,
         wa_raft_log,
         wa_raft_server
     ],
-    Specs = [M:child_spec(Args1) || M <- Modules],
+    Specs = [M:child_spec(Args) || M <- Modules],
     {ok, {#{strategy => one_for_all, intensity => 10, period => 1}, Specs}}.
 
 -spec raft_sup(wa_raft:table(), wa_raft:partition()) -> atom().

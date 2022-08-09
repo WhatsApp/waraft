@@ -32,9 +32,6 @@
 %% Raft election default weight
 -define(RAFT_ELECTION_DEFAULT_WEIGHT, ?RAFT_ELECTION_MAX_WEIGHT).
 
-%% Raft per-parition local counters key
--define(RAFT_LOCAL_COUNTERS_KEY(Table, Partition), {raft_local_counters, Table, Partition}).
-
 %% Current db directory
 -define(DATA, "db").
 %% Data directory
@@ -57,18 +54,6 @@
 -define(RAFT_GLOBAL_COUNTER_SNAPSHOT_CATCHUP, 1).
 %% Counter - number of log catchup processes
 -define(RAFT_GLOBAL_COUNTER_LOG_CATCHUP, 2).
-%% RAFT partition local counters
--define(RAFT_NUMBER_OF_LOCAL_COUNTERS, 3).
-%% Local counter - inflight storage apply operations
--define(RAFT_LOCAL_COUNTER_APPLY, 1).
-%% Local counter - inflight commit operations
--define(RAFT_LOCAL_COUNTER_COMMIT, 2).
-%% Local counter - inflight strong read operations
--define(RAFT_LOCAL_COUNTER_READ, 3).
-%% Name of ETS table for holding pending commit references
--define(RAFT_PENDING_COMMITS_TABLE(Table, Partition), ?TO_ATOM("raft_pending_commits_table_", Table, Partition)).
-%% Name of ETS table for holding pending strong-read references
--define(RAFT_PENDING_READS_TABLE(Table, Partition), ?TO_ATOM("raft_pending_reads_table_", Table, Partition)).
 
 
 %% [Transport] Atomics - field index for update timestamp
@@ -84,9 +69,6 @@
 -define(RAFT_ELECTION_TIMEOUT_MS(), ?RAFT_CONFIG(raft_election_timeout_ms, 5000)).
 %% Raft maximum election timeout
 -define(RAFT_ELECTION_TIMEOUT_MS_MAX(), ?RAFT_CONFIG(raft_election_timeout_ms_max, 7500)).
-
-%% Maximum number of pending commits for any single RAFT partition
--define(RAFT_MAX_PENDING_COMMITS(), ?RAFT_CONFIG(raft_max_pending_commits, 1500)).
 
 %% Current version of RAFT config
 -define(RAFT_CONFIG_CURRENT_VERSION, 1).
@@ -128,8 +110,6 @@
     acceptor :: undefined | pid(),
     % Catchup Process Name
     catchup :: atom(),
-    % Local counters
-    counters :: counters:counters_ref(),
 
     % Current term
     current_term = 0 :: non_neg_integer(),
@@ -188,8 +168,6 @@
     module :: module(),
     % Storage handle
     handle :: wa_raft_storage:storage_handle(),
-    % Local counters
-    counters :: counters:counters_ref(),
     % Server pid
     server_pid :: undefined | pid(),
 

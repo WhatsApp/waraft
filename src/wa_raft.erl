@@ -22,15 +22,13 @@
 -type args() ::
     #{
         % Table name
-        table => table(),
+        table := table(),
         % Partition number
-        partition => partition(),
+        partition := partition(),
         % Log module
         log_module => module(),
         % Storage module
         storage_module => module(),
-        % Atomic counter ref
-        counters => counters:counters_ref(),
         % Witness flag
         witness => boolean()
     }.

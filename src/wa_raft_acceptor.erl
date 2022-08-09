@@ -19,8 +19,7 @@
 -export([
     commit/2,
     commit/3,
-    read/2,
-    queue_full/2
+    read/2
 ]).
 
 %% Misc API
@@ -61,9 +60,7 @@
     % Server pid
     server_pid :: undefined | pid(),
     % Storage pid
-    storage_pid :: undefined | pid(),
-    % Local counters
-    counters :: counters:counters_ref()
+    storage_pid :: undefined | pid()
 }).
 
 -type command() ::
@@ -72,18 +69,6 @@
     | {execute, Table :: atom(), Key :: term(), Module :: module(), Func :: atom(), Args :: list()}
     | term().
 -type op() :: {Ref :: term(), Command :: command()}.
-
--define(RAFT_PENDING_COMMIT_TABLE_OPTIONS, [
-    named_table, set, public,
-    {read_concurrency, true},
-    {write_concurrency, true}
-]).
-
--define(RAFT_PENDING_READS_TABLE_OPTIONS, [
-    named_table, ordered_set, public,
-    {read_concurrency, true},
-    {write_concurrency, true}
-]).
 
 -spec child_spec(Config :: [term()]) -> supervisor:child_spec().
 child_spec(Config) ->
@@ -135,36 +120,17 @@ commit(Dest, From, Op) ->
 read(Dest, Command) ->
     gen_server:call(Dest, {read, Command}, ?RPC_CALL_TIMEOUT_MS).
 
--spec queue_full(Table :: wa_raft:table(), Partition :: wa_raft:partition()) -> boolean().
-queue_full(Table, Partition) ->
-    case persistent_term:get(?RAFT_LOCAL_COUNTERS_KEY(Table, Partition), undefined) of
-        undefined ->
-            false;
-        Counters ->
-            MaxPendingCommits = ?RAFT_MAX_PENDING_COMMITS(),
-            NumPendingCommits = counters:get(Counters, ?RAFT_LOCAL_COUNTER_COMMIT),
-            NumPendingCommits >= MaxPendingCommits
-    end.
-
 %% gen_server callbacks
 -spec init([wa_raft:args()]) -> {ok, #raft_acceptor{}}.
-init([#{table := Table, partition := Partition, counters := Counters}]) ->
+init([#{table := Table, partition := Partition}]) ->
     process_flag(trap_exit, true),
     ?LOG_NOTICE("Starting raft acceptor on ~p:~p", [Table, Partition], #{domain => [whatsapp, wa_raft]}),
-    % Create ETS table for holding pending commit references.
-    ets:new(?RAFT_PENDING_COMMITS_TABLE(Table, Partition), ?RAFT_PENDING_COMMIT_TABLE_OPTIONS),
-    % Create ETS table for holding pending strong-read references.
-    ets:new(?RAFT_PENDING_READS_TABLE(Table, Partition), ?RAFT_PENDING_READS_TABLE_OPTIONS),
-    % Reset counters for commits / strong-reads.
-    counters:put(Counters, ?RAFT_LOCAL_COUNTER_COMMIT, 0),
-    counters:put(Counters, ?RAFT_LOCAL_COUNTER_READ, 0),
 
     Name = ?RAFT_ACCEPTOR_NAME(Table, Partition),
     State = #raft_acceptor{
         name = Name,
         table = Table,
-        partition = Partition,
-        counters = Counters
+        partition = Partition
     },
     {ok, State}.
 
@@ -230,37 +196,24 @@ terminate(Reason, #raft_acceptor{name = Name} = State) ->
 %% Private functions
 
 -spec commit_impl(From :: {pid(), term()}, Request :: op(), State :: #raft_acceptor{}) -> NewState :: #raft_acceptor{}.
-commit_impl(From, {Ref, _} = Op, #raft_acceptor{table = Table, partition = Partition, server_pid = ServerPid, name = Name,
-                                                counters = Counters} = State) ->
+commit_impl(From, {Ref, _} = Op, #raft_acceptor{table = Table, partition = Partition, server_pid = ServerPid, name = Name} = State) ->
     StartT = os:timestamp(),
     ?LOG_DEBUG("[~p] Commit starts", [Name], #{domain => [whatsapp, wa_raft]}),
-    MaxPendingCommits = ?RAFT_MAX_PENDING_COMMITS(),
-    MaxPendingApplies = ?RAFT_CONFIG(raft_apply_queue_max_size, 1000),
-    NumPendingCommits = counters:get(Counters, ?RAFT_LOCAL_COUNTER_COMMIT),
-    NumPendingApplies = counters:get(Counters, ?RAFT_LOCAL_COUNTER_APPLY),
-    {IsRefPresent, PrevFrom} = case ets:lookup(?RAFT_PENDING_COMMITS_TABLE(Table, Partition), Ref) of
-                                   [] -> {false, undefined};
-                                   [{Ref, OrigFrom}] -> {true, OrigFrom}
-                               end,
-    case {IsRefPresent, NumPendingCommits > MaxPendingCommits, NumPendingApplies > MaxPendingApplies} of
-        {true, _, _} ->
-            ?LOG_WARNING("[~p] Duplicate request ~p. ~0P", [Name, Ref, PrevFrom, 100], #{domain => [whatsapp, wa_raft]}),
+    case wa_raft_queue:commit(Table, Partition, Ref, From) of
+        duplicate ->
+            ?LOG_WARNING("[~p] Duplicate request ~p.", [Name, Ref, 100], #{domain => [whatsapp, wa_raft]}),
             ?RAFT_COUNT('raft.acceptor.error.duplicate_commit'),
             gen_server:reply(From, {error, {duplicate_request, Ref}});
-        {false, true, _} ->
-            ?LOG_WARNING("[~p] Reject request ~p. Commit queue is full (limit ~p)", [Name, Ref, MaxPendingCommits], #{domain => [whatsapp, wa_raft]}),
+        commit_queue_full ->
+            ?LOG_WARNING("[~p] Reject request ~p. Commit queue is full", [Name, Ref], #{domain => [whatsapp, wa_raft]}),
             ?RAFT_COUNT('raft.acceptor.error.commit_queue_full'),
             gen_server:reply(From, {error, {commit_queue_full, Ref}});
-        {false, false, true} ->
-            ?LOG_WARNING("[~p] Reject request ~p. Apply queue is full (limit ~p)", [Name, Ref, MaxPendingApplies], #{domain => [whatsapp, wa_raft]}),
+        apply_queue_full ->
+            ?LOG_WARNING("[~p] Reject request ~p. Apply queue is full", [Name, Ref], #{domain => [whatsapp, wa_raft]}),
             ?RAFT_COUNT('raft.acceptor.error.apply_queue_full'),
             gen_server:reply(From, {error, {apply_queue_full, Ref}});
-        _ ->
-            %% Increase number of pending commits by one and insert the new commit reference.
-            counters:add(Counters, ?RAFT_LOCAL_COUNTER_COMMIT, 1),
-            ets:insert(?RAFT_PENDING_COMMITS_TABLE(Table, Partition), {Ref, From}),
-            wa_raft_server:commit(ServerPid, Op),
-            ?RAFT_GATHER('raft.acceptor.commit.request.pending', NumPendingCommits + 1)
+        ok ->
+            wa_raft_server:commit(ServerPid, Op)
     end,
     ?RAFT_GATHER('raft.acceptor.commit.func', timer:now_diff(os:timestamp(), StartT)),
     State.
@@ -269,29 +222,23 @@ commit_impl(From, {Ref, _} = Op, #raft_acceptor{table = Table, partition = Parti
                 Command :: command(),
                 State0 :: #raft_acceptor{}) -> State1 :: #raft_acceptor{}.
 %% Strongly-consistent read.
-read_impl(From, Command, #raft_acceptor{name = Name, server_pid = ServerPid, counters = Counters} = State) ->
+read_impl(From, Command, #raft_acceptor{name = Name, table = Table, partition = Partition, server_pid = ServerPid} = State) ->
     StartT = os:timestamp(),
-    ?LOG_DEBUG("[~p] read starts", [Name], #{domain => [whatsapp, wa_raft]}),
-    NumPendingReads = counters:get(Counters, ?RAFT_LOCAL_COUNTER_READ),
-    MaxPendingReads = ?RAFT_CONFIG(raft_max_pending_reads, 5000),
-    NumPendingApplies = counters:get(Counters, ?RAFT_LOCAL_COUNTER_APPLY),
-    MaxPendingApplies = ?RAFT_CONFIG(raft_apply_queue_max_size, 1000),
-    case {NumPendingReads >= MaxPendingReads, NumPendingApplies >= MaxPendingApplies} of
-        {true, _} ->
-            ?LOG_WARNING("[~p] Reject read request. Storage queue is full (read limit ~p)",
-                         [Name, MaxPendingReads], #{domain => [whatsapp, wa_raft]}),
-            ?RAFT_COUNT('raft.acceptor.error.strong_read.read_queue_full'),
+    ?LOG_DEBUG("Acceptor[~p] starts to handle read of ~0P from ~0p.",
+        [Name, Command, 100, From], #{domain => [whatsapp, wa_raft]}),
+    case wa_raft_queue:reserve_read(Table, Partition) of
+        read_queue_full ->
+            ?RAFT_COUNT('raft.acceptor.strong_read.error.read_queue_full'),
+            ?LOG_WARNING("Acceptor[~p] is rejecting read request from ~p because the read queue is full.",
+                [Name, From], #{domain => [whatsapp, wa_raft]}),
             gen_server:reply(From, {error, read_queue_full});
-        {_, true} ->
-            ?LOG_WARNING("[~p] Reject read request. Apply queue is full (apply limit ~p)",
-                         [Name, MaxPendingApplies], #{domain => [whatsapp, wa_raft]}),
-            ?RAFT_COUNT('raft.acceptor.error.strong_read.apply_queue_full'),
+        apply_queue_full ->
+            ?RAFT_COUNT('raft.acceptor.strong_read.error.apply_queue_full'),
+            ?LOG_WARNING("Acceptor[~p] is rejecting read request from ~p because the apply queue is full.",
+                [Name, From], #{domain => [whatsapp, wa_raft]}),
             gen_server:reply(From, {error, apply_queue_full});
-        _ ->
-            %% Increase number of pending strong-reads.
-            counters:add(Counters, ?RAFT_LOCAL_COUNTER_READ, 1),
-            wa_raft_server:read(ServerPid, {From, Command}),
-            ?RAFT_GATHER('raft.acceptor.strong_read.request.pending', NumPendingReads + 1)
+        ok ->
+            wa_raft_server:read(ServerPid, {From, Command})
     end,
     ?RAFT_GATHER('raft.acceptor.strong_read.func', timer:now_diff(os:timestamp(), StartT)),
     State.
