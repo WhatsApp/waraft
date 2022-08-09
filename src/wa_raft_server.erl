@@ -2172,7 +2172,7 @@ append_entries(_Term, LeaderId, PrevLogIndex, PrevLogTerm, Entries,
             {failed, State}
     end.
 
--spec notify_leader_change(#raft_state{}) -> any().
+-spec notify_leader_change(#raft_state{}) -> term().
 notify_leader_change(#raft_state{table = Table, partition = Partition, leader_id = undefined}) ->
     ?LOG_NOTICE("No leader for ~p:~p", [Table, Partition], #{domain => [whatsapp, wa_raft]}),
     wa_raft_info:set_leader(Table, Partition, undefined);
@@ -2253,7 +2253,7 @@ should_heartbeat(#raft_state{last_heartbeat_ts = LastHeartbeatTs}) ->
     Current - Latest > ?RAFT_CONFIG(raft_heartbeat_interval_ms, 120).
 
 %% Check follower/candidate staleness due to heartbeat delay
--spec check_follower_stale(state(), #raft_state{}) -> any().
+-spec check_follower_stale(state(), #raft_state{}) -> term().
 check_follower_stale(FSMState, #raft_state{name = Name, table = Table, partition = Partition,
                                            current_term = CurrentTerm, leader_heartbeat_ts = LeaderHeartbeatTs} = State) ->
     HeartbeatMs = case LeaderHeartbeatTs of
@@ -2296,7 +2296,7 @@ check_follower_lagging(LeaderCommit, #raft_state{table = Table, partition = Part
     end.
 
 %% Check leader state and set stale if needed
--spec check_leader_lagging(#raft_state{}) -> any().
+-spec check_leader_lagging(#raft_state{}) -> term().
 check_leader_lagging(#raft_state{name = Name, table = Table, partition = Partition, current_term = CurrentTerm,
                                  heartbeat_response_ts = HeartbeatResponse} = State) ->
     NowTs = erlang:system_time(millisecond),

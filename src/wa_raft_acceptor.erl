@@ -125,7 +125,7 @@ register_storage(Pid, StoragePid) ->
 stop(Pid) ->
     gen_server:call(Pid, stop, ?RPC_CALL_TIMEOUT_MS).
 
--spec status(Pid :: pid()) -> [{Name :: atom(), Value :: any()}].
+-spec status(Pid :: pid()) -> [{Name :: atom(), Value :: term()}].
 status(Pid) ->
     gen_server:call(Pid, status, ?RPC_CALL_TIMEOUT_MS).
 

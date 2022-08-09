@@ -210,7 +210,7 @@ send_logs_loop(FollowerId, PrevLogIndex, LeaderTerm, LeaderCommitIndex,
 %% Private functions - Send snapshot to follower
 %%
 
--spec send_snapshot(node(), #raft_catchup{}, boolean()) -> any().
+-spec send_snapshot(node(), #raft_catchup{}, boolean()) -> term().
 send_snapshot(FollowerId, #raft_catchup{name = Name, table = Table, partition = Partition} = State, Witness) ->
     LastCompletionTs = update_progress(Name, FollowerId, completion_ts, 0),
     erlang:system_time(second) - LastCompletionTs < ?RAFT_CONFIG(raft_catchup_min_interval_s, 20) andalso throw(interval_too_short),

@@ -144,7 +144,7 @@ init(Table, Partition) ->
 open(_Table, _Partition) ->
     {ok, undefined}.
 
--spec close(Log :: wa_raft_log:log(), State :: state()) -> any().
+-spec close(Log :: wa_raft_log:log(), State :: state()) -> term().
 close(_Log, _State) ->
     ok.
 
@@ -175,6 +175,6 @@ trim_impl(Log, Index) ->
     true = ets:delete(Log, Index),
     trim_impl(Log, ets:prev(Log, Index)).
 
--spec flush(Log :: wa_raft_log:log()) -> any().
+-spec flush(Log :: wa_raft_log:log()) -> term().
 flush(_Log) ->
     ok.

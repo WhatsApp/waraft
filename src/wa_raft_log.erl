@@ -239,7 +239,7 @@
 
 %% Close the RAFT log and release any resources used by it. This
 %% is called when the RAFT log server is terminating.
--callback close(Log :: log(), State :: term()) -> any().
+-callback close(Log :: log(), State :: term()) -> term().
 
 %% Completely clear the RAFT log and setup a new log with an initial entry
 %% at the provided index with the provided term and an undefined op.
@@ -264,7 +264,7 @@
 -callback trim(Log :: log(), Index :: log_index(), State :: term()) -> {ok, NewState :: term()} | error().
 
 %% Flush log to disk on a best-effort basis.
--callback flush(Log :: log()) -> any().
+-callback flush(Log :: log()) -> term().
 
 %%-------------------------------------------------------------------
 %% RAFT log provider interface for writing new log data
@@ -706,7 +706,7 @@ handle_cast(Request, #log_state{log = Log} = State) ->
         [Log, Request], #{domain => [whatsapp, wa_raft]}),
     {noreply, State}.
 
--spec terminate(Reason :: term(), State :: #log_state{}) -> any().
+-spec terminate(Reason :: term(), State :: #log_state{}) -> term().
 terminate(Reason, #log_state{log = Log, provider = Provider, state = State}) ->
     ?LOG_NOTICE("[~p] terminating due to ~p",
         [Log, Reason], #{domain => [whatsapp, wa_raft]}),

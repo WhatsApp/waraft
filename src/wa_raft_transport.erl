@@ -128,7 +128,7 @@
     {stop, Reason :: term(), NewState :: term()}.
 
 %% Optional callback for performing any shutdown operations.
--callback transport_terminate(Reason :: term(), State :: term()) -> any().
+-callback transport_terminate(Reason :: term(), State :: term()) -> term().
 
 -optional_callbacks([
     transport_terminate/2
@@ -220,7 +220,7 @@ transport_info(ID, Item) ->
 
 % This function should only be called from the "factory" process since it does not
 % provide any atomicity guarantees.
--spec set_transport_info(ID :: transport_id(), Info :: transport_info()) -> any().
+-spec set_transport_info(ID :: transport_id(), Info :: transport_info()) -> term().
 set_transport_info(ID, #{atomics := TransportAtomics} = Info) ->
     true = ets:insert(?MODULE, {?INFO_KEY(ID), Info}),
     ok = atomics:put(TransportAtomics, ?RAFT_TRANSPORT_ATOMICS_UPDATED_TS, erlang:system_time(millisecond)).
@@ -247,7 +247,7 @@ file_info(ID, FileID) ->
 
 % This function should only be called from the "worker" process responsible for the
 % transport of the specified file since it does not provide any atomicity guarantees.
--spec set_file_info(ID :: transport_id(), FileID :: file_id(), Info :: file_info()) -> any().
+-spec set_file_info(ID :: transport_id(), FileID :: file_id(), Info :: file_info()) -> term().
 set_file_info(ID, FileID, #{atomics := {TransportAtomics, FileAtomics}} = Info) ->
     true = ets:insert(?MODULE, {?FILE_KEY(ID, FileID), Info}),
     NowMillis = erlang:system_time(millisecond),
@@ -273,7 +273,7 @@ update_file_info(ID, FileID, Fun) ->
 %%%  gen_server callbacks
 %%%
 
--spec init(Args :: any()) -> {ok, State :: state()}.
+-spec init(Args :: term()) -> {ok, State :: state()}.
 init(_) ->
     process_flag(trap_exit, true),
     schedule_scan(),

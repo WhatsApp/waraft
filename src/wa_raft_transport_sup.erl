@@ -48,7 +48,7 @@ start_link() ->
 %%%  supervisor callbacks
 %%%
 
--spec init(any()) -> {ok, {supervisor:sup_flags(), [supervisor:child_spec()]}}.
+-spec init(term()) -> {ok, {supervisor:sup_flags(), [supervisor:child_spec()]}}.
 init(_) ->
     NumThreads = ?RAFT_TRANSPORT_THREADS(),
     Specs = [wa_raft_transport_worker:child_spec(N) || N <- lists:seq(1, NumThreads)],

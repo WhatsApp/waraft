@@ -188,7 +188,7 @@ handle_cast(Request, #receiver_state{} = State) ->
         [Request], #{domain => [whatsapp, wa_raft]}),
     {noreply, State}.
 
--spec terminate(Reason :: term(), State :: #receiver_state{}) -> any().
+-spec terminate(Reason :: term(), State :: #receiver_state{}) -> term().
 terminate(Reason, #receiver_state{}) ->
     ?LOG_NOTICE("wa_raft_dist_transport terminating due to ~p",
         [Reason], #{domain => [whatsapp, wa_raft]}),
