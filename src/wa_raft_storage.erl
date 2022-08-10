@@ -30,7 +30,7 @@
 
 %% API
 -export([
-    register/2,
+    open/1,
     open_snapshot/2,
     create_snapshot/1,
     create_snapshot/2,
@@ -45,7 +45,6 @@
 
 %% Misc API
 -export([
-    stop/1,
     status/1
 ]).
 
@@ -139,53 +138,49 @@ start_link(#{table := Table, partition := Partition} = RaftArgs) ->
     Name = ?RAFT_STORAGE_NAME(Table, Partition),
     gen_server:start_link({local, Name}, ?MODULE, [RaftArgs], []).
 
--spec register(Pid :: pid(), ServerPid :: pid()) -> {ok, LastApplied :: wa_raft_log:log_pos()}.
-register(Pid, ServerPid) ->
-    gen_server:call(Pid, {register, ServerPid}, ?RPC_CALL_TIMEOUT_MS).
+-spec status(ServiceRef :: pid() | atom()) -> status().
+status(ServiceRef) ->
+    gen_server:call(ServiceRef, status, ?STORAGE_CALL_TIMEOUT_MS).
 
--spec stop(Pid :: pid()) -> ok.
-stop(Pid) ->
-    gen_server:call(Pid, stop, ?RPC_CALL_TIMEOUT_MS).
+-spec apply_op(ServiceRef :: pid() | atom(), LogRecord :: wa_raft_log:log_record(), ServerTerm :: wa_raft_log:log_term()) -> ok.
+apply_op(ServiceRef, LogRecord, ServerTerm) ->
+    gen_server:cast(ServiceRef, {apply, LogRecord, ServerTerm}).
 
--spec status(Pid :: pid()) -> status().
-status(Pid) ->
-    gen_server:call(Pid, status, ?STORAGE_CALL_TIMEOUT_MS).
+-spec fulfill_op(ServiceRef :: pid() | atom(), Reference :: reference(), Reply :: term()) -> ok.
+fulfill_op(ServiceRef, OpRef, Return) ->
+    gen_server:cast(ServiceRef, {fulfill, OpRef, Return}).
 
--spec apply_op(pid(), wa_raft_log:log_record(), wa_raft_log:log_term()) -> ok.
-apply_op(Pid, LogRecord, ServerTerm) ->
-    gen_server:cast(Pid, {apply, LogRecord, ServerTerm}).
+-spec cancel(ServiceRef :: pid() | atom()) -> ok.
+cancel(ServiceRef) ->
+    gen_server:cast(ServiceRef, cancel).
 
--spec fulfill_op(pid(), reference(), term()) -> ok.
-fulfill_op(Pid, OpRef, Return) ->
-    gen_server:cast(Pid, {fulfill, OpRef, Return}).
+-spec open(ServiceRef :: pid() | atom()) -> {ok, LastApplied :: wa_raft_log:log_pos()}.
+open(ServiceRef) ->
+    gen_server:call(ServiceRef, open, ?RPC_CALL_TIMEOUT_MS).
 
--spec cancel(pid()) -> ok.
-cancel(Pid) ->
-    gen_server:cast(Pid, cancel).
+-spec open_snapshot(ServiceRef :: pid() | atom(), LastAppliedPos :: wa_raft_log:log_pos()) -> ok | error().
+open_snapshot(ServiceRef, LastAppliedPos) ->
+    gen_server:call(ServiceRef, {snapshot_open, LastAppliedPos}, ?STORAGE_CALL_TIMEOUT_MS).
 
--spec open_snapshot(Pid :: pid(), LastAppliedPos :: wa_raft_log:log_pos()) -> ok | error().
-open_snapshot(Pid, LastAppliedPos) ->
-    gen_server:call(Pid, {snapshot_open, LastAppliedPos}, ?STORAGE_CALL_TIMEOUT_MS).
+-spec create_snapshot(ServiceRef :: pid() | atom()) -> {ok, Pos :: wa_raft_log:log_pos()} | error().
+create_snapshot(ServiceRef) ->
+    gen_server:call(ServiceRef, snapshot_create, ?STORAGE_CALL_TIMEOUT_MS).
 
--spec create_snapshot(ServerRef :: pid() | atom() | {Name :: atom(), Node :: atom()}) -> {ok, Pos :: wa_raft_log:log_pos()} | error().
-create_snapshot(ServerRef) ->
-    gen_server:call(ServerRef, snapshot_create, ?STORAGE_CALL_TIMEOUT_MS).
+-spec create_snapshot(ServiceRef :: pid() | atom(), Name :: string()) -> ok | error().
+create_snapshot(ServiceRef, Name) ->
+    gen_server:call(ServiceRef, {snapshot_create, Name}, ?STORAGE_CALL_TIMEOUT_MS).
 
--spec create_snapshot(Pid :: pid(), Name :: string()) -> ok | error().
-create_snapshot(Pid, Name) ->
-    gen_server:call(Pid, {snapshot_create, Name}, ?STORAGE_CALL_TIMEOUT_MS).
+-spec create_empty_snapshot(ServiceRef :: pid() | atom(), Name :: string()) -> ok | error().
+create_empty_snapshot(ServiceRef, Name) ->
+    gen_server:call(ServiceRef, {snapshot_create_empty, Name}, ?STORAGE_CALL_TIMEOUT_MS).
 
--spec create_empty_snapshot(Pid :: pid(), Name :: string()) -> ok | error().
-create_empty_snapshot(Pid, Name) ->
-    gen_server:call(Pid, {snapshot_create_empty, Name}, ?STORAGE_CALL_TIMEOUT_MS).
+-spec delete_snapshot(ServiceRef :: pid() | atom(), Name :: string()) -> ok.
+delete_snapshot(ServiceRef, Name) ->
+    gen_server:cast(ServiceRef, {snapshot_delete, Name}).
 
--spec delete_snapshot(Pid :: pid(), Name :: string()) -> ok.
-delete_snapshot(Pid, Name) ->
-    gen_server:cast(Pid, {snapshot_delete, Name}).
-
--spec read_metadata(Pid :: pid(), Key :: metadata()) -> {ok, Version :: wa_raft_log:log_pos(), Value :: term()} | undefined | error().
-read_metadata(Pid, Key) ->
-    gen_server:call(Pid, {read_metadata, Key}, ?STORAGE_CALL_TIMEOUT_MS).
+-spec read_metadata(ServiceRef :: pid() | atom(), Key :: metadata()) -> {ok, Version :: wa_raft_log:log_pos(), Value :: term()} | undefined | error().
+read_metadata(ServiceRef, Key) ->
+    gen_server:call(ServiceRef, {read_metadata, Key}, ?STORAGE_CALL_TIMEOUT_MS).
 
 %% gen_server callbacks
 -spec init([wa_raft:args()]) -> {ok, #raft_storage{}}.
@@ -198,10 +193,6 @@ init([#{table := Table, partition := Partition} = Args]) ->
     State0 = #raft_storage{name = Name, table = Table, partition = Partition, root_dir = RootDir, module = Module},
     {LastApplied, Handle} = Module:storage_open(State0),
     State1 = State0#raft_storage{last_applied = LastApplied, handle = Handle},
-    %% Here, supervisor should have already started wa_raft_acceptor.
-    AcceptorPid = whereis(?RAFT_ACCEPTOR_NAME(Table, Partition)),
-    %% Notify the wa_raft_acceptor of the wa_raft_storage pid.
-    ok = wa_raft_acceptor:register_storage(AcceptorPid, self()),
     {ok, State1}.
 
 %% The interaction between the RAFT server and the RAFT storage server is designed to be
@@ -212,9 +203,9 @@ init([#{table := Table, partition := Partition} = Args]) ->
 %% or timeouts and other failures are handled properly.
 -spec handle_call(Request :: term(), From :: {pid(), term()}, State :: #raft_storage{}) ->
     {reply, Reply :: term(), NewState :: #raft_storage{}} | {stop, Reason :: term(), Reply :: term(), NewState :: #raft_storage{}}.
-handle_call({register, ServerPid}, _From, #raft_storage{name = Name, last_applied = LastApplied} = State) ->
-    ?LOG_NOTICE("[~p] registering server pid ~p", [Name, ServerPid], #{domain => [whatsapp, wa_raft]}),
-    {reply, {ok, LastApplied}, State#raft_storage{server_pid = ServerPid}};
+
+handle_call(open, _From, #raft_storage{last_applied = LastApplied} = State) ->
+    {reply, {ok, LastApplied}, State};
 
 handle_call(snapshot_create, _From, #raft_storage{last_applied = #raft_log_pos{index = LastIndex, term = LastTerm}} = State) ->
     Name = ?SNAPSHOT_NAME(LastIndex, LastTerm),
@@ -261,9 +252,6 @@ handle_call(status, _From, #raft_storage{module = Module, handle = Handle} = Sta
     ],
     ModuleStatus = Module:storage_status(Handle),
     {reply, Status ++ ModuleStatus, State};
-
-handle_call(stop, _From, State) ->
-    {stop, normal, ok, State};
 
 handle_call(Cmd, From, #raft_storage{name = Name} = State) ->
     ?LOG_WARNING("[~p] unexpected call ~p from ~p", [Name, Cmd, From], #{domain => [whatsapp, wa_raft]}),

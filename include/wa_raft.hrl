@@ -104,11 +104,9 @@
     offline_peers = [] :: [atom()],
     % Log handle and view
     log_view :: wa_raft_log:view(),
-    % Storage pid
-    storage :: undefined | pid(),
-    % Acceptor pid
-    acceptor :: undefined | pid(),
-    % Catchup Process Name
+    % Storage service name
+    storage :: atom(),
+    % Catchup service name
     catchup :: atom(),
 
     % Current term
@@ -168,8 +166,6 @@
     module :: module(),
     % Storage handle
     handle :: wa_raft_storage:storage_handle(),
-    % Server pid
-    server_pid :: undefined | pid(),
 
     % Last applied position
     last_applied = #raft_log_pos{} :: wa_raft_log:log_pos()

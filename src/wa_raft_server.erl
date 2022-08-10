@@ -160,8 +160,8 @@ child_spec(RaftArgs) ->
     }.
 
 -spec start_link(RaftArgs :: wa_raft:args()) -> {ok, Pid :: pid()} | ignore | wa_raft:error().
-start_link(RaftArgs) ->
-    gen_statem:start_link(?MODULE, [RaftArgs], []).
+start_link(#{table := Table, partition := Partition} = RaftArgs) ->
+    gen_statem:start_link({local, ?RAFT_SERVER_NAME(Table, Partition)}, ?MODULE, [RaftArgs], []).
 
 %% ==================================================
 %%  RAFT Server Internal API
@@ -301,38 +301,33 @@ init([StateName, #raft_state{name = Name} = State]) when StateName =:= follower 
 %% Standard startup
 init([#{table := Table, partition := Partition} = RaftArgs] ) ->
     process_flag(trap_exit, true),
-    ?LOG_NOTICE("Starting raft server ~w", [RaftArgs], #{domain => [whatsapp, wa_raft]}),
+
     Name = ?RAFT_SERVER_NAME(Table, Partition),
     Witness = maps:get(witness, RaftArgs, false),
-    %% Here, supervisor should have already started wa_raft_storage.
-    StoragePid = whereis(?RAFT_STORAGE_NAME(Table, Partition)),
-    %% Notify the wa_raft_storage of the wa_raft_server pid.
-    {ok, Last} = wa_raft_storage:register(StoragePid, self()),
+    Storage = ?RAFT_STORAGE_NAME(Table, Partition),
 
-    %% Here, supervisor should have already started wa_raft_acceptor.
-    AcceptorPid = whereis(?RAFT_ACCEPTOR_NAME(Table, Partition)),
-    %% Notify the wa_raft_acceptor of the wa_raft_server pid.
-    ok = wa_raft_acceptor:register_server(AcceptorPid, self()),
+    ?LOG_NOTICE("Server[~p] starting with options ~p", [Name, RaftArgs], #{domain => [whatsapp, wa_raft]}),
 
+    % Open storage and the log
+    {ok, Last} = wa_raft_storage:open(Storage),
     {ok, View} = wa_raft_log:open(?RAFT_LOG_NAME(Table, Partition), Last),
+
     DataDir = ?ROOT_DIR(Table, Partition),
     State0 = #raft_state{
+        name = Name,
         table = Table,
         partition = Partition,
-        name = Name,
-        storage = StoragePid,
-        acceptor = AcceptorPid,
-        log_view = View,
-        last_applied = Last#raft_log_pos.index,
-        commit_index = Last#raft_log_pos.index,
-        current_term = Last#raft_log_pos.term,
         data_dir = DataDir,
+        log_view = View,
+        storage = Storage,
         catchup = ?RAFT_CATCHUP(Table, Partition),
+        current_term = Last#raft_log_pos.term,
+        commit_index = Last#raft_log_pos.index,
+        last_applied = Last#raft_log_pos.index,
         witness = Witness
     },
 
     State1 = load_config(State0),
-    true = register(Name, self()),
     rand:seed(exsp, {erlang:monotonic_time(), erlang:time_offset(), erlang:unique_integer()}),
     % TODO(hsun324): When we have proper error handling for data corruption vs. stalled server
     %                then handle {error, Reason} type returns from load_state.
@@ -421,7 +416,7 @@ stalled(Type, ?RAFT_NAMED_RPC(RPC, Term, _SenderName, SenderNode, Payload), Stat
     ?FUNCTION_NAME(Type, ?RAFT_RPC(RPC, Term, SenderNode, Payload), State);
 
 stalled({call, From}, ?SNAPSHOT_AVAILABLE_COMMAND(Root, #raft_log_pos{index = SnapshotIndex, term = SnapshotTerm} = SnapshotPos),
-        #raft_state{name = Name, data_dir = DataDir, log_view = View0, storage = StoragePid,
+        #raft_state{name = Name, data_dir = DataDir, log_view = View0, storage = Storage,
                     current_term = CurrentTerm, last_applied = LastApplied} = State0) ->
     case SnapshotIndex > LastApplied orelse LastApplied =:= 0 of
         true ->
@@ -431,7 +426,7 @@ stalled({call, From}, ?SNAPSHOT_AVAILABLE_COMMAND(Root, #raft_log_pos{index = Sn
                 ok ->
                     ?LOG_NOTICE("Stalled[~p, term ~p] applying snapshot ~p:~p",
                         [Name, CurrentTerm, SnapshotIndex, SnapshotTerm], #{domain => [whatsapp, wa_raft]}),
-                    ok = wa_raft_storage:open_snapshot(StoragePid, SnapshotPos),
+                    ok = wa_raft_storage:open_snapshot(Storage, SnapshotPos),
                     {ok, View1} = wa_raft_log:reset(View0, SnapshotPos),
                     State1 = State0#raft_state{log_view = View1, last_applied = SnapshotIndex, commit_index = SnapshotIndex},
                     State2 = load_config(State1),
@@ -468,12 +463,12 @@ stalled(Type, Event, #raft_state{name = Name, current_term = CurrentTerm}) ->
 -spec leader(Type :: atom(), Event :: term(), State0 :: #raft_state{}) -> gen_statem:state_enter_result(state()).
 %% [Leader] changing to leader
 leader(enter, OldStateName,
-       #raft_state{name = Name, current_term = CurrentTerm, storage = StoragePid, log_view = View} = State) ->
+       #raft_state{name = Name, current_term = CurrentTerm, storage = Storage, log_view = View} = State) ->
     ?LOG_NOTICE("~p becomes leader[term ~p, last log ~p]. Previous state is ~p.", [Name, CurrentTerm, wa_raft_log:last_index(View), OldStateName], #{domain => [whatsapp, wa_raft]}),
     ?RAFT_COUNT('raft.leader.elected'),
     wa_raft_info:set_state(State#raft_state.table, State#raft_state.partition, ?FUNCTION_NAME),
     wa_raft_info:set_stale(false, State),
-    wa_raft_storage:cancel(StoragePid),
+    wa_raft_storage:cancel(Storage),
     State1 = reset_state(State),
     State2 = reset_leader_state(State1),
     State3 = append_entries_to_followers(State2),
@@ -647,9 +642,9 @@ leader(state_timeout, _, #raft_state{name = Name, current_term = CurrentTerm} = 
     end;
 
 %% [Commit] If a handover is in progress, then try to redirect to handover target
-leader(cast, ?COMMIT_COMMAND({Ref, _Op}), #raft_state{storage = StoragePid, handover = {Peer, _Ref, _Timeout}} = State) ->
+leader(cast, ?COMMIT_COMMAND({Ref, _Op}), #raft_state{storage = Storage, handover = {Peer, _Ref, _Timeout}} = State) ->
     ?RAFT_COUNT('raft.commit.handover'),
-    wa_raft_storage:fulfill_op(StoragePid, Ref, {error, {redirect, Peer}}), % Optimistically redirect to handover peer
+    wa_raft_storage:fulfill_op(Storage, Ref, {error, {redirect, Peer}}), % Optimistically redirect to handover peer
     {keep_state, State};
 %% [Commit] Otherwise, add a new commit to the RAFT log
 leader(cast, ?COMMIT_COMMAND(Op), #raft_state{current_term = CurrentTerm, log_view = View0, next_index = NextIndex} = State0) ->
@@ -851,14 +846,14 @@ leader(Type, Event, #raft_state{name = Name, current_term = CurrentTerm}) ->
 %% [Follower] changes from leader
 follower(enter, leader,
          #raft_state{name = Name, current_term = CurrentTerm, match_index = MatchIndex, next_index = NextIndex,
-                     last_heartbeat_ts = LastHeartbeatTs, storage = StoragePid} = State) ->
+                     last_heartbeat_ts = LastHeartbeatTs, storage = Storage} = State) ->
     ?LOG_NOTICE("Follower[~p, term ~p] changes from leader. Match ~p. Next ~p. LastHeartbeat ~p.",
         [Name, CurrentTerm, MatchIndex, NextIndex, LastHeartbeatTs], #{domain => [whatsapp, wa_raft]}),
     wa_raft_info:set_state(State#raft_state.table, State#raft_state.partition, ?FUNCTION_NAME),
     check_follower_stale(follower, State),
     State1 = reset_state(State),
     State2 = State1#raft_state{voted_for = undefined, next_index = maps:new(), match_index = maps:new()},
-    wa_raft_storage:cancel(StoragePid),
+    wa_raft_storage:cancel(Storage),
     {keep_state, State2, ?ELECTION_TIMEOUT};
 %% [Follower] State entry setup
 follower(enter, OldStateName,
@@ -1169,14 +1164,14 @@ candidate(Type, Event, #raft_state{name = Name, current_term = CurrentTerm}) ->
 disabled(enter, FromState, #raft_state{disable_reason = undefined} = State) ->
     disabled(enter, FromState, State#raft_state{disable_reason = "No reason specified."});
 
-disabled(enter, leader, #raft_state{name = Name, current_term = CurrentTerm, storage = StoragePid} = State0) ->
+disabled(enter, leader, #raft_state{name = Name, current_term = CurrentTerm, storage = Storage} = State0) ->
     ?LOG_NOTICE("Leader[~p, term ~p] is now disabled.", [Name, CurrentTerm], #{domain => [whatsapp, wa_raft]}),
     wa_raft_info:set_state(State0#raft_state.table, State0#raft_state.partition, ?FUNCTION_NAME),
     wa_raft_info:set_stale(true, State0),
     State1 = reset_state(State0),
     State2 = State1#raft_state{leader_id = undefined, voted_for = undefined, next_index = #{}, match_index = #{}},
     notify_leader_change(State2),
-    wa_raft_storage:cancel(StoragePid),
+    wa_raft_storage:cancel(Storage),
     wa_raft_durable_state:store(State2),
     {keep_state, State2};
 
@@ -1410,12 +1405,11 @@ witness(Type, Event, #raft_state{name = Name, current_term = CurrentTerm}) ->
 
 -spec terminate(Reason :: term(), StateName :: state(), State :: #raft_state{}) -> ok.
 terminate(Reason, StateName, #raft_state{name = Name, current_term = CurrentTerm} = State) ->
+    ?LOG_NOTICE("~p[~p, term ~p] terminating due to ~p.",
+        [StateName, Name, CurrentTerm, Reason], #{domain => [whatsapp, wa_raft]}),
     wa_raft_durable_state:sync(State),
     wa_raft_info:delete_state(State#raft_state.table, State#raft_state.partition),
     wa_raft_info:set_stale(true, State),
-    catch unregister(Name),
-    ?LOG_NOTICE("~p[~p, term ~p] terminating due to ~p.",
-        [StateName, Name, CurrentTerm, Reason], #{domain => [whatsapp, wa_raft]}),
     ok.
 
 -spec code_change(_OldVsn :: term(), StateName :: state(), State :: #raft_state{}, Extra :: term())
@@ -1429,10 +1423,10 @@ code_change(_OldVsn, StateName, State, _Extra) ->
     gen_statem:event_handler_result(state()).
 %% [Commit] Non-leader nodes should fail commits with {error, not_leader}.
 command(StateName, Type, ?COMMIT_COMMAND({Ref, _}),
-        #raft_state{name = Name, current_term = CurrentTerm, storage = StoragePid, leader_id = LeaderId}) when StateName =/= leader ->
+        #raft_state{name = Name, current_term = CurrentTerm, storage = Storage, leader_id = LeaderId}) when StateName =/= leader ->
     ?LOG_WARNING("~p[~p, term ~p] commit ~p fails. Leader is ~p.",
         [StateName, Name, CurrentTerm, Ref, LeaderId], #{domain => [whatsapp, wa_raft]}),
-    wa_raft_storage:fulfill_op(StoragePid, Ref, {error, not_leader}),
+    wa_raft_storage:fulfill_op(Storage, Ref, {error, not_leader}),
     reply(Type, {error, not_leader}),
     keep_state_and_data;
 %% [Strong Read] Non-leader nodes are not eligible for strong reads.
@@ -1861,8 +1855,8 @@ apply_log(State, _CommitIndex, _TrimIndex) ->
 apply_op(LogIndex, _Entry, #raft_state{name = Name, last_applied = LastAppliedIndex} = State) when LogIndex =< LastAppliedIndex ->
     ?LOG_WARNING("Skip apply_op because log ~p already applied on ~p", [LogIndex, Name], #{domain => [whatsapp, wa_raft]}),
     State;
-apply_op(LogIndex, {Term, Op}, #raft_state{current_term = CurrentTerm, storage = StoragePid} = State0) ->
-    wa_raft_storage:apply_op(StoragePid, {LogIndex, {Term, Op}}, CurrentTerm),
+apply_op(LogIndex, {Term, Op}, #raft_state{current_term = CurrentTerm, storage = Storage} = State0) ->
+    wa_raft_storage:apply_op(Storage, {LogIndex, {Term, Op}}, CurrentTerm),
     maybe_update_config(LogIndex, Term, Op, State0#raft_state{last_applied = LogIndex, commit_index = LogIndex});
 apply_op(LogIndex, undefined, #raft_state{name = Name, log_view = View}) ->
     ?RAFT_COUNT('raft.server.missing.log.entry'),
@@ -1874,7 +1868,7 @@ apply_op(LogIndex, Entry, #raft_state{name = Name}) ->
     exit({invalid_op, LogIndex, Entry}).
 
 -spec append_entries_to_followers(State0 :: #raft_state{}) -> State1 :: #raft_state{}.
-append_entries_to_followers(#raft_state{name = Name, log_view = View0, storage = StoragePid} = State0) ->
+append_entries_to_followers(#raft_state{name = Name, log_view = View0, storage = Storage} = State0) ->
     State1 = case wa_raft_log:sync(View0) of
         {ok, View1} ->
             State0#raft_state{log_view = View1};
@@ -1883,7 +1877,7 @@ append_entries_to_followers(#raft_state{name = Name, log_view = View0, storage =
             ?RAFT_COUNT('raft.server.sync.skipped'),
             ?LOG_WARNING("~p: skipping pre-heartbeat sync for ~p log entr(ies)", [Name, length(Pending)], #{domain => [whatsapp, wa_raft]}),
             lists:foreach(
-                fun ({_Term, {Ref, _Op}}) -> wa_raft_storage:fulfill_op(StoragePid, Ref, {error, commit_stalled});
+                fun ({_Term, {Ref, _Op}}) -> wa_raft_storage:fulfill_op(Storage, Ref, {error, commit_stalled});
                     (_)                   -> ok
                 end, Pending),
             State0#raft_state{log_view = View1}

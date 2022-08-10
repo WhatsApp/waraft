@@ -22,14 +22,6 @@
     read/2
 ]).
 
-%% Misc API
--export([
-    stop/1,
-    status/1,
-    register_server/2,
-    register_storage/2
-]).
-
 %% gen_server callbacks
 -export([
     init/1,
@@ -55,12 +47,10 @@
     table :: wa_raft:table(),
     % Partition
     partition :: wa_raft:partition(),
-    % Callback module
-    module :: module(),
-    % Server pid
-    server_pid :: undefined | pid(),
-    % Storage pid
-    storage_pid :: undefined | pid()
+    % Server service name
+    server :: atom(),
+    % Storage service name
+    storage :: atom()
 }).
 
 -type command() ::
@@ -85,22 +75,6 @@ child_spec(Config) ->
 start_link(#{table := Table, partition := Partition} = RaftArgs) ->
     Name = ?RAFT_ACCEPTOR_NAME(Table, Partition),
     gen_server:start_link({local, Name}, ?MODULE, [RaftArgs], []).
-
--spec register_server(Pid :: pid(), ServerPid :: pid()) -> ok | wa_raft:error().
-register_server(Pid, ServerPid) ->
-    gen_server:call(Pid, {register_server, ServerPid}, ?RPC_CALL_TIMEOUT_MS).
-
--spec register_storage(Pid :: pid(), StoragePid :: pid()) -> ok | wa_raft:error().
-register_storage(Pid, StoragePid) ->
-    gen_server:call(Pid, {register_storage, StoragePid}, ?RPC_CALL_TIMEOUT_MS).
-
--spec stop(Pid :: pid()) -> ok.
-stop(Pid) ->
-    gen_server:call(Pid, stop, ?RPC_CALL_TIMEOUT_MS).
-
--spec status(Pid :: pid()) -> [{Name :: atom(), Value :: term()}].
-status(Pid) ->
-    gen_server:call(Pid, status, ?RPC_CALL_TIMEOUT_MS).
 
 %% Commit a change on leader node specified by pid. It's a blocking call. It returns until it
 %% is acknowledged on quorum nodes.
@@ -130,40 +104,22 @@ init([#{table := Table, partition := Partition}]) ->
     State = #raft_acceptor{
         name = Name,
         table = Table,
-        partition = Partition
+        partition = Partition,
+        server = ?RAFT_SERVER_NAME(Table, Partition),
+        storage = ?RAFT_STORAGE_NAME(Table, Partition)
     },
     {ok, State}.
 
 -spec handle_call(Request :: term(), From :: {pid(), term()}, State :: #raft_acceptor{}) ->
     {reply, Reply :: term(), NewState :: #raft_acceptor{}} | {stop, Reason :: term(), Reply :: term(), NewState :: #raft_acceptor{}}.
-handle_call({register_server, ServerPid}, _From, #raft_acceptor{name = Name} = State) ->
-    ?LOG_NOTICE("[~p] registering server pid ~p", [Name, ServerPid], #{domain => [whatsapp, wa_raft]}),
-    {reply, ok, State#raft_acceptor{server_pid = ServerPid}};
-
-handle_call({register_storage, StoragePid}, _From, #raft_acceptor{name = Name} = State) ->
-    ?LOG_NOTICE("[~p] registering storage pid ~p", [Name, StoragePid], #{domain => [whatsapp, wa_raft]}),
-    {reply, ok, State#raft_acceptor{storage_pid = StoragePid}};
 
 handle_call({read, Command}, From, #raft_acceptor{} = State0) ->
     State1 = read_impl(From, Command, State0),
     {noreply, State1};
 
-handle_call({commit, _Op}, From, #raft_acceptor{name = Name, server_pid = undefined} = State) ->
-    ?LOG_NOTICE("[~p] commit op from ~p before registered with server", [Name, From], #{domain => [whatsapp, wa_raft]}),
-    {reply, {error, not_registered}, State};
-
 handle_call({commit, Op}, From, State0) ->
     State1 = commit_impl(From, Op, State0),
     {noreply, State1};
-
-handle_call(status, _From, State) ->
-    Status = [
-        {name, State#raft_acceptor.name},
-        {partition, State#raft_acceptor.partition},
-        {server_pid, State#raft_acceptor.server_pid},
-        {storage_pid, State#raft_acceptor.storage_pid}
-    ],
-    {reply, Status, State};
 
 handle_call(stop, _From, State) ->
     {stop, normal, ok, State};
@@ -196,7 +152,7 @@ terminate(Reason, #raft_acceptor{name = Name} = State) ->
 %% Private functions
 
 -spec commit_impl(From :: {pid(), term()}, Request :: op(), State :: #raft_acceptor{}) -> NewState :: #raft_acceptor{}.
-commit_impl(From, {Ref, _} = Op, #raft_acceptor{table = Table, partition = Partition, server_pid = ServerPid, name = Name} = State) ->
+commit_impl(From, {Ref, _} = Op, #raft_acceptor{table = Table, partition = Partition, server = Server, name = Name} = State) ->
     StartT = os:timestamp(),
     ?LOG_DEBUG("[~p] Commit starts", [Name], #{domain => [whatsapp, wa_raft]}),
     case wa_raft_queue:commit(Table, Partition, Ref, From) of
@@ -213,7 +169,7 @@ commit_impl(From, {Ref, _} = Op, #raft_acceptor{table = Table, partition = Parti
             ?RAFT_COUNT('raft.acceptor.error.apply_queue_full'),
             gen_server:reply(From, {error, {apply_queue_full, Ref}});
         ok ->
-            wa_raft_server:commit(ServerPid, Op)
+            wa_raft_server:commit(Server, Op)
     end,
     ?RAFT_GATHER('raft.acceptor.commit.func', timer:now_diff(os:timestamp(), StartT)),
     State.
@@ -222,7 +178,7 @@ commit_impl(From, {Ref, _} = Op, #raft_acceptor{table = Table, partition = Parti
                 Command :: command(),
                 State0 :: #raft_acceptor{}) -> State1 :: #raft_acceptor{}.
 %% Strongly-consistent read.
-read_impl(From, Command, #raft_acceptor{name = Name, table = Table, partition = Partition, server_pid = ServerPid} = State) ->
+read_impl(From, Command, #raft_acceptor{name = Name, table = Table, partition = Partition, server = Server} = State) ->
     StartT = os:timestamp(),
     ?LOG_DEBUG("Acceptor[~p] starts to handle read of ~0P from ~0p.",
         [Name, Command, 100, From], #{domain => [whatsapp, wa_raft]}),
@@ -238,7 +194,7 @@ read_impl(From, Command, #raft_acceptor{name = Name, table = Table, partition = 
                 [Name, From], #{domain => [whatsapp, wa_raft]}),
             gen_server:reply(From, {error, apply_queue_full});
         ok ->
-            wa_raft_server:read(ServerPid, {From, Command})
+            wa_raft_server:read(Server, {From, Command})
     end,
     ?RAFT_GATHER('raft.acceptor.strong_read.func', timer:now_diff(os:timestamp(), StartT)),
     State.

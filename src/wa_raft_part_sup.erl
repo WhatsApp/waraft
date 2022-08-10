@@ -69,11 +69,11 @@ init([Args]) ->
                end,
     Modules = Modules0 ++ [
         wa_raft_queue,
-        wa_raft_catchup,
-        wa_raft_acceptor,
         wa_raft_storage,
         wa_raft_log,
-        wa_raft_server
+        wa_raft_catchup,
+        wa_raft_server,
+        wa_raft_acceptor
     ],
     Specs = [M:child_spec(Args) || M <- Modules],
     {ok, {#{strategy => one_for_all, intensity => 10, period => 1}, Specs}}.
