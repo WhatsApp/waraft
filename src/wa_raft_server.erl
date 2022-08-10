@@ -231,15 +231,15 @@ snapshot_available(Pid, Root, Pos) ->
 
 %% TODO(hsun324): Update promote to enable setting a RAFT cluster membership
 %%                in order to be able to bootstrap new RAFT clusters.
--spec promote(Pid :: atom() | pid(), Term :: pos_integer()) -> ok | rejected | wa_raft:error().
+-spec promote(Pid :: atom() | pid(), Term :: pos_integer()) -> ok | wa_raft:error().
 promote(Pid, Term) ->
     promote(Pid, Term, false).
 
--spec promote(Pid :: atom() | pid(), Term :: pos_integer(), Force :: boolean()) -> ok | rejected | wa_raft:error().
+-spec promote(Pid :: atom() | pid(), Term :: pos_integer(), Force :: boolean()) -> ok | wa_raft:error().
 promote(Pid, Term, Force) ->
     promote(Pid, Term, Force, undefined).
 
--spec promote(Pid :: atom() | pid(), Term :: pos_integer(), Force :: boolean(), Config :: undefined | config()) -> ok | rejected | wa_raft:error().
+-spec promote(Pid :: atom() | pid(), Term :: pos_integer(), Force :: boolean(), Config :: undefined | config()) -> ok | wa_raft:error().
 promote(Pid, Term, Force, Config) ->
     gen_server:call(Pid, ?PROMOTE_COMMAND(Term, Force, Config), ?RPC_CALL_TIMEOUT_MS).
 
@@ -1529,7 +1529,7 @@ command(StateName, {call, From}, ?PROMOTE_COMMAND(Term, Force, Config),
         false ->
             ?LOG_NOTICE("~p[~p, term ~p] rejected leader promotion of term ~p.",
                 [StateName, Name, CurrentTerm, Term], #{domain => [whatsapp, wa_raft]}),
-            {keep_state_and_data, {reply, From, rejected}}
+            {keep_state_and_data, {reply, From, {error, rejected}}}
     end;
 %% [Resign] Non-leader nodes cannot resign.
 command(StateName, {call, From}, ?RESIGN_COMMAND, #raft_state{name = Name, current_term = CurrentTerm}) when StateName =/= leader ->
