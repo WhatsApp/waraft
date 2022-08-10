@@ -17,6 +17,7 @@
 %% PENDING COMMIT QUEUE API
 -export([
     commit/4,
+    commit_queue_size/2,
     commit_queue_full/2,
     fulfill_commit/4,
     fulfill_all_commits/3
