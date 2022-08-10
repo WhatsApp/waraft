@@ -311,7 +311,7 @@ handle_cast(Request, #state{name = Name} = State) ->
         [Name, Request, 100], #{domain => [whatsapp, wa_raft]}),
     {noreply, State}.
 
--spec terminate(Reason :: term(), State :: #state{}) -> any().
+-spec terminate(Reason :: term(), State :: #state{}) -> term().
 terminate(Reason, #state{name = Name}) ->
     ?LOG_NOTICE("Queue[~p] terminating due to ~0P",
         [Name, Reason, 100], #{domain => [whatsapp, wa_raft]}).
