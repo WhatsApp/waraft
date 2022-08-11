@@ -376,7 +376,7 @@ stalled(_Type, ?RAFT_RPC(RPCType, Term, SenderId, _Payload),
         #raft_state{name = Name, current_term = CurrentTerm} = State) when Term < CurrentTerm ->
     ?LOG_NOTICE("Stalled[~p, term ~p] received stale ~p from ~p with old term ~p. Dropping.",
         [Name, CurrentTerm, RPCType, SenderId, Term], #{domain => [whatsapp, wa_raft]}),
-    ?MODULE:cast(SenderId, ?NOTIFY_TERM_RPC(CurrentTerm, node()), State),
+    ?MODULE:cast(SenderId, ?NOTIFY_TERM_RPC(CurrentTerm, Name, node()), State),
     {keep_state, State};
 %% [General Rules] Advance to the newer term and reset state when seeing a newer term in an incoming RPC
 stalled(Type, ?RAFT_RPC(RPCType, Term, SenderId, _Payload) = Event,
@@ -401,7 +401,7 @@ stalled(_Type, ?APPEND_ENTRIES_RPC(CurrentTerm, LeaderId, PrevLogIndex, _PrevLog
     {keep_state, NewState};
 
 %% [NotifyTerm] Drop NotifyTerm RPCs with matching term
-stalled(_Type, ?NOTIFY_TERM_RPC(CurrentTerm, _SenderId), #raft_state{current_term = CurrentTerm}) ->
+stalled(_Type, ?NOTIFY_TERM_RPC(CurrentTerm, _SenderName, _SenderNode), #raft_state{current_term = CurrentTerm}) ->
     keep_state_and_data;
 
 %% [Fallback] Node receives unrecognized RPC
@@ -487,7 +487,7 @@ leader(_Type, ?RAFT_RPC(RPCType, Term, SenderId, _Payload),
         #raft_state{name = Name, current_term = CurrentTerm} = State) when Term < CurrentTerm ->
     ?LOG_NOTICE("Leader[~p, term ~p] received stale ~p from ~p with old term ~p. Dropping.",
         [Name, CurrentTerm, RPCType, SenderId, Term], #{domain => [whatsapp, wa_raft]}),
-    ?MODULE:cast(SenderId, ?NOTIFY_TERM_RPC(CurrentTerm, node()), State),
+    ?MODULE:cast(SenderId, ?NOTIFY_TERM_RPC(CurrentTerm, Name, node()), State),
     {keep_state, State};
 %% [General Rules] Advance to the newer term and reset state when seeing a newer term in an incoming RPC
 leader(Type, ?RAFT_RPC(RPCType, Term, SenderId, _Payload) = Event,
@@ -604,7 +604,7 @@ leader(_Type, ?HANDOVER_FAILED_RPC(CurrentTerm, NodeId, _Ref),
     keep_state_and_data;
 
 %% [NotifyTerm] Drop NotifyTerm RPCs with matching term
-leader(_Type, ?NOTIFY_TERM_RPC(CurrentTerm, _SenderId), #raft_state{current_term = CurrentTerm}) ->
+leader(_Type, ?NOTIFY_TERM_RPC(CurrentTerm, _SenderName, _SenderNode), #raft_state{current_term = CurrentTerm}) ->
     keep_state_and_data;
 
 %% [Fallback] Node receives unrecognized RPC
@@ -878,7 +878,7 @@ follower(_Type, ?RAFT_RPC(RPCType, Term, SenderId, _Payload),
         #raft_state{name = Name, current_term = CurrentTerm} = State) when Term < CurrentTerm ->
     ?LOG_NOTICE("Follower[~p, term ~p] received stale ~p from ~p with old term ~p. Dropping.",
         [Name, CurrentTerm, RPCType, SenderId, Term], #{domain => [whatsapp, wa_raft]}),
-    ?MODULE:cast(SenderId, ?NOTIFY_TERM_RPC(CurrentTerm, node()), State),
+    ?MODULE:cast(SenderId, ?NOTIFY_TERM_RPC(CurrentTerm, Name, node()), State),
     {keep_state, State};
 %% [General Rules] Advance to the newer term and reset state when seeing a newer term in an incoming RPC
 follower(Type, ?RAFT_RPC(RPCType, Term, SenderId, _Payload) = Event,
@@ -972,7 +972,7 @@ follower(_Type, ?HANDOVER_FAILED_RPC(CurrentTerm, NodeId, _Ref),
     keep_state_and_data;
 
 %% [NotifyTerm] Drop NotifyTerm RPCs with matching term
-follower(_Type, ?NOTIFY_TERM_RPC(CurrentTerm, _SenderId), #raft_state{current_term = CurrentTerm}) ->
+follower(_Type, ?NOTIFY_TERM_RPC(CurrentTerm, _SenderName, _SenderNode), #raft_state{current_term = CurrentTerm}) ->
     keep_state_and_data;
 
 %% [Fallback] Node receives unrecognized RPC
@@ -1062,7 +1062,7 @@ candidate(_Type, ?RAFT_RPC(RPCType, Term, SenderId, _Payload),
         #raft_state{name = Name, current_term = CurrentTerm} = State) when Term < CurrentTerm ->
     ?LOG_NOTICE("Candidate[~p, term ~p] received stale ~p from ~p with old term ~p. Dropping.",
         [Name, CurrentTerm, RPCType, SenderId, Term], #{domain => [whatsapp, wa_raft]}),
-    ?MODULE:cast(SenderId, ?NOTIFY_TERM_RPC(CurrentTerm, node()), State),
+    ?MODULE:cast(SenderId, ?NOTIFY_TERM_RPC(CurrentTerm, Name, node()), State),
     {keep_state, State};
 %% [General Rules] Advance to the newer term and reset state when seeing a newer term in an incoming RPC
 candidate(Type, ?RAFT_RPC(RPCType, Term, SenderId, _Payload) = Event,
@@ -1130,7 +1130,7 @@ candidate(_Type, ?HANDOVER_FAILED_RPC(CurrentTerm, NodeId, _Ref),
     keep_state_and_data;
 
 %% [NotifyTerm] Drop NotifyTerm RPCs with matching term
-candidate(_Type, ?NOTIFY_TERM_RPC(CurrentTerm, _SenderId), #raft_state{current_term = CurrentTerm}) ->
+candidate(_Type, ?NOTIFY_TERM_RPC(CurrentTerm, _SenderName, _SenderNode), #raft_state{current_term = CurrentTerm}) ->
     keep_state_and_data;
 
 %% [Fallback] Node receives unrecognized RPC
@@ -1226,7 +1226,7 @@ disabled(_Type, ?REQUEST_VOTE_RPC(CurrentTerm, _SenderId, _ElectionType, _LastLo
     keep_state_and_data;
 
 %% [NotifyTerm] Drop NotifyTerm RPCs with matching term
-disabled(_Type, ?NOTIFY_TERM_RPC(CurrentTerm, _SenderId), #raft_state{current_term = CurrentTerm}) ->
+disabled(_Type, ?NOTIFY_TERM_RPC(CurrentTerm, _SenderName, _SenderNode), #raft_state{current_term = CurrentTerm}) ->
     keep_state_and_data;
 
 %% [Fallback] Node receives unrecognized RPC
@@ -1302,7 +1302,7 @@ witness(_Type, ?RAFT_RPC(RPCType, Term, SenderId, _Payload),
         #raft_state{name = Name, current_term = CurrentTerm} = State) when Term < CurrentTerm ->
     ?LOG_NOTICE("Witness[~p, term ~p] received stale ~p from ~p with old term ~p. Dropping.",
         [Name, CurrentTerm, RPCType, SenderId, Term], #{domain => [whatsapp, wa_raft]}),
-    ?MODULE:cast(SenderId, ?NOTIFY_TERM_RPC(CurrentTerm, node()), State),
+    ?MODULE:cast(SenderId, ?NOTIFY_TERM_RPC(CurrentTerm, Name, node()), State),
     {keep_state, State};
 
 witness(Type, ?RAFT_RPC(RPCType, Term, SenderId, _Payload) = Event,
@@ -1354,7 +1354,7 @@ witness(_Type, ?HANDOVER_RPC(CurrentTerm, NodeId, Ref, _PrevLogIndex, _PrevLogTe
     ?MODULE:cast(NodeId, ?HANDOVER_FAILED_RPC(CurrentTerm, node(), Ref), State),
     keep_state_and_data;
 
-witness(_Type, ?NOTIFY_TERM_RPC(CurrentTerm, _SenderId), #raft_state{current_term = CurrentTerm}) ->
+witness(_Type, ?NOTIFY_TERM_RPC(CurrentTerm, _SenderName, _SenderNode), #raft_state{current_term = CurrentTerm}) ->
     keep_state_and_data;
 
 witness(_Type, ?HANDOVER_FAILED_RPC(CurrentTerm, NodeId, _Ref),

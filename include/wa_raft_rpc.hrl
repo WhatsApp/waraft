@@ -26,8 +26,8 @@
 -define(HANDOVER_FAILED_RPC(Term, SenderId, Ref),
     ?RAFT_RPC(handover_failed, Term, SenderId, {Ref})).
 
--define(NOTIFY_TERM_RPC(Term, SenderId),
-    ?RAFT_RPC(notify_term, Term, SenderId, undefined)).
+-define(NOTIFY_TERM_RPC(Term, SenderName, SenderNode),
+    ?RAFT_NAMED_RPC(notify_term, Term, SenderName, SenderNode, undefined)).
 
 %% ==================================================
 %%  RAFT server API definitions
