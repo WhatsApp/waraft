@@ -105,6 +105,7 @@
     total_bytes := non_neg_integer(),
     completed_bytes := non_neg_integer(),
 
+    meta => map(),
     error => Reason :: term()
 }.
 
