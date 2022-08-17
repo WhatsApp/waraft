@@ -10,6 +10,11 @@
 -compile(warn_missing_spec).
 -behaviour(supervisor).
 
+%% Internal API
+-export([
+    get_or_start/1
+]).
+
 %% OTP supervision callbacks
 -export([
     child_spec/0,
@@ -21,9 +26,16 @@
     init/1
 ]).
 
--include("wa_raft.hrl").
+%%% ------------------------------------------------------------------------
+%%%  OTP supervision callbacks
+%%%
 
--define(RAFT_TRANSPORT_THREADS(), application:get_env(?APP, raft_transport_threads, 1)).
+-spec get_or_start(node()) -> atom().
+get_or_start(Node) ->
+    Name = wa_raft_transport_target_sup:name(Node),
+    not is_pid(whereis(Name)) andalso
+        supervisor:start_child(?MODULE, wa_raft_transport_target_sup:child_spec(Node)),
+    Name.
 
 %%% ------------------------------------------------------------------------
 %%%  OTP supervision callbacks
@@ -50,6 +62,4 @@ start_link() ->
 
 -spec init(term()) -> {ok, {supervisor:sup_flags(), [supervisor:child_spec()]}}.
 init(_) ->
-    NumThreads = ?RAFT_TRANSPORT_THREADS(),
-    Specs = [wa_raft_transport_worker:child_spec(N) || N <- lists:seq(1, NumThreads)],
-    {ok, {#{strategy => one_for_all, intensity => 5, period => 1}, Specs}}.
+    {ok, {#{strategy => one_for_one, intensity => 5, period => 1}, []}}.

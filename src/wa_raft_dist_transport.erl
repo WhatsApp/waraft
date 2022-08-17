@@ -16,7 +16,7 @@
 ]).
 
 -export([
-    transport_init/0,
+    transport_init/1,
     transport_send/3
 ]).
 
@@ -55,8 +55,8 @@ child_spec() ->
 start_link() ->
     gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
 
--spec transport_init() -> {ok, State :: #sender_state{}}.
-transport_init() ->
+-spec transport_init(Node :: node()) -> {ok, State :: #sender_state{}}.
+transport_init(_Node) ->
     {ok, #sender_state{}}.
 
 -spec transport_send(ID :: wa_raft_transport:transport_id(), FileID :: wa_raft_transport:file_id(), State :: #sender_state{}) ->

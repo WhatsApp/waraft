@@ -10,10 +10,15 @@
 -include_lib("kernel/include/logger.hrl").
 -include("wa_raft.hrl").
 
+%% Internal API
+-export([
+    name/2
+]).
+
 %% OTP supervision
 -export([
-    child_spec/1,
-    start_link/1
+    child_spec/2,
+    start_link/2
 ]).
 
 %% gen_server callbacks
@@ -28,6 +33,7 @@
 -define(CONTINUE_TIMEOUT, 0).
 
 -record(state, {
+    node :: node(),
     number :: non_neg_integer(),
     table :: ets:tid(),
 
@@ -37,31 +43,39 @@
 -type state() :: #state{}.
 
 %%% ------------------------------------------------------------------------
+%%%  Internal API
+%%%
+
+-spec name(Node :: node(), Number :: non_neg_integer()) -> atom().
+name(Node, Number) ->
+    list_to_atom(lists:concat([?MODULE, "_", Node, "_", integer_to_list(Number)])).
+
+%%% ------------------------------------------------------------------------
 %%%  OTP supervision callbacks
 %%%
 
--spec child_spec(Number :: non_neg_integer()) -> supervisor:child_spec().
-child_spec(Number) ->
+-spec child_spec(Node :: node(), Number :: non_neg_integer()) -> supervisor:child_spec().
+child_spec(Node, Number) ->
     #{
-        id => list_to_atom(atom_to_list(?MODULE) ++ "_" ++ integer_to_list(Number)),
-        start => {?MODULE, start_link, [Number]},
+        id => {?MODULE, Node, Number},
+        start => {?MODULE, start_link, [Node, Number]},
         restart => permanent,
         shutdown => 5000,
         modules => [?MODULE]
     }.
 
--spec start_link(Number :: non_neg_integer()) -> {ok, Pid :: pid()} | wa_raft:error().
-start_link(Number) ->
-    gen_server:start_link(?MODULE, [Number], []).
+-spec start_link(Node :: node(), Number :: non_neg_integer()) -> {ok, Pid :: pid()} | wa_raft:error().
+start_link(Node, Number) ->
+    gen_server:start_link(?MODULE, {Node, Number}, []).
 
 %%% ------------------------------------------------------------------------
 %%%  gen_server callbacks
 %%%
 
--spec init(Args :: term()) -> {ok, State :: state(), Timeout :: timeout()}.
-init([Number]) ->
+-spec init(Args :: {node(), non_neg_integer()}) -> {ok, State :: state(), Timeout :: timeout()}.
+init({Node, Number}) ->
     Table = ets:new(?MODULE, [ordered_set, public]),
-    {ok, #state{number = Number, table = Table}, ?CONTINUE_TIMEOUT}.
+    {ok, #state{node = Node, number = Number, table = Table}, ?CONTINUE_TIMEOUT}.
 
 -spec handle_call(Request :: term(), From :: {Pid :: pid(), Tag :: term()}, State :: state()) ->
     {noreply, NewState :: state(), Timeout :: timeout()}.
@@ -148,8 +162,8 @@ terminate(Reason, #state{states = States}) ->
         end, undefined, States).
 
 -spec get_module_state(module(), state()) -> {ok, state()} | {stop, term()}.
-get_module_state(Module, #state{states = States}) ->
+get_module_state(Module, #state{node = Node, states = States}) ->
     case States of
         #{Module := ModuleState} -> {ok, ModuleState};
-        _                        -> Module:transport_init()
+        _                        -> Module:transport_init(Node)
     end.

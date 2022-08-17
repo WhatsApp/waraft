@@ -120,7 +120,7 @@
 %%%
 
 %% Perform any setup required before transport can be started.
--callback transport_init() -> {ok, State :: term()} | {stop, Reason :: term()}.
+-callback transport_init(Node :: node()) -> {ok, State :: term()} | {stop, Reason :: term()}.
 
 %% Send a file to the target peer.
 -callback transport_send(ID :: transport_id(), FileID :: file_id(), State :: term()) ->
@@ -544,7 +544,8 @@ start_transport(From, Peer, Meta, Root) ->
                                 maybe_notify(ID, Info2);
                             _ ->
                                 Info2 = Info1#{status => running, next_file => 1},
-                                Workers = [Pid || {_Id, Pid, _Type, _Modules} <- supervisor:which_children(wa_raft_transport_sup)],
+                                Sup = wa_raft_transport_sup:get_or_start(Peer),
+                                Workers = [Pid || {_Id, Pid, _Type, _Modules} <- supervisor:which_children(Sup)],
                                 lists:foldl(fun (Pid, InfoN) -> maybe_submit_one(ID, InfoN, Pid) end, Info2, Workers)
                         end
                 end),
