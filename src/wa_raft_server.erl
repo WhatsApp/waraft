@@ -161,7 +161,7 @@ child_spec(RaftArgs) ->
 
 -spec start_link(RaftArgs :: wa_raft:args()) -> {ok, Pid :: pid()} | ignore | wa_raft:error().
 start_link(#{table := Table, partition := Partition} = RaftArgs) ->
-    gen_statem:start_link({local, ?RAFT_SERVER_NAME(Table, Partition)}, ?MODULE, [RaftArgs], []).
+    gen_statem:start_link({local, ?RAFT_SERVER_NAME(Table, Partition)}, ?MODULE, RaftArgs, []).
 
 %% ==================================================
 %%  RAFT Server Internal API
@@ -292,14 +292,8 @@ set_peer_offline(Name, Peer, IsOffline) ->
 %% ==================================================
 
 %% gen_statem callbacks
--spec init(term()) -> gen_statem:init_result(state()).
-init([StateName, #raft_state{name = Name} = State]) when StateName =:= follower orelse StateName =:= leader orelse StateName =:= candidate ->
-    process_flag(trap_exit, true),
-    ?LOG_NOTICE("Started raft server ~p with state ~p", [Name, StateName], #{domain => [whatsapp, wa_raft]}),
-    {ok, StateName, State};
-
-%% Standard startup
-init([#{table := Table, partition := Partition} = RaftArgs] ) ->
+-spec init(wa_raft:args()) -> gen_statem:init_result(state()).
+init(#{table := Table, partition := Partition} = RaftArgs) ->
     process_flag(trap_exit, true),
 
     Name = ?RAFT_SERVER_NAME(Table, Partition),
