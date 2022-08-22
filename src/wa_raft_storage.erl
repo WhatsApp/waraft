@@ -146,7 +146,7 @@ status(ServiceRef) ->
 apply_op(ServiceRef, LogRecord, ServerTerm) ->
     gen_server:cast(ServiceRef, {apply, LogRecord, ServerTerm}).
 
--spec fulfill_op(ServiceRef :: pid() | atom(), Reference :: reference(), Reply :: term()) -> ok.
+-spec fulfill_op(ServiceRef :: pid() | atom(), Reference :: term(), Reply :: term()) -> ok.
 fulfill_op(ServiceRef, OpRef, Return) ->
     gen_server:cast(ServiceRef, {fulfill, OpRef, Return}).
 

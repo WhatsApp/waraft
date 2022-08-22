@@ -65,8 +65,8 @@ last_index(Log) ->
            Start :: wa_raft_log:log_index() | '$end_of_table',
            End :: wa_raft_log:log_index(),
            SizeLimit :: non_neg_integer() | infinity,
-           Func :: fun((Index :: wa_raft_log:log_index(), Entry :: wa_raft_log:log_entry(), AccIn :: term()) -> AccOut :: term()),
-           Acc0 :: term()) -> {ok, AccN :: term()}.
+           Func :: fun((Index :: wa_raft_log:log_index(), Entry :: wa_raft_log:log_entry(), Acc) -> Acc),
+           Acc) -> {ok, Acc}.
 fold(Log, Start, End, SizeLimit, Func, Acc) ->
     fold_impl(Log, Start, End, 0, SizeLimit, Func, Acc).
 

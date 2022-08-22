@@ -145,6 +145,39 @@
     | {offline_peers, [node()]}
     | {config, config()}.
 
+-type event() :: rpc() | command() | timeout_type().
+
+-type rpc() :: append_entries_rpc() | append_entries_response_rpc() | request_vote_rpc_old() | request_vote_rpc() | vote_rpc() | handover_rpc() | handover_failed_rpc() | notify_term_rpc().
+-type append_entries_rpc()          :: ?APPEND_ENTRIES_RPC         (wa_raft_log:log_term(), node(), wa_raft_log:log_index(), wa_raft_log:log_term(), [wa_raft_log:log_entry()], wa_raft_log:log_index(), wa_raft_log:log_index()).
+-type append_entries_response_rpc() :: ?APPEND_ENTRIES_RESPONSE_RPC(wa_raft_log:log_term(), node(), wa_raft_log:log_index(), boolean(), wa_raft_log:log_index()).
+-type request_vote_rpc_old()        :: ?REQUEST_VOTE_RPC_OLD       (wa_raft_log:log_term(), node(), wa_raft_log:log_index(), wa_raft_log:log_term()).
+-type request_vote_rpc()            :: ?REQUEST_VOTE_RPC           (wa_raft_log:log_term(), node(), election_type(), wa_raft_log:log_index(), wa_raft_log:log_term()).
+-type vote_rpc()                    :: ?VOTE_RPC                   (wa_raft_log:log_term(), node(), boolean()).
+-type handover_rpc()                :: ?HANDOVER_RPC               (wa_raft_log:log_term(), node(), reference(), wa_raft_log:log_index(), wa_raft_log:log_term(), [wa_raft_log:log_entry()]).
+-type handover_failed_rpc()         :: ?HANDOVER_FAILED_RPC        (wa_raft_log:log_term(), node(), reference()).
+-type notify_term_rpc()             :: ?NOTIFY_TERM_RPC            (wa_raft_log:log_term(), atom(), node()).
+
+-type command() :: commit_command() | read_command() | status_command() | promote_command() | resign_command() | adjust_membership_command() | snapshot_available_command() |
+                   handover_candidates_command() | handover_command() | enable_command() | disable_command() | witness_command() | set_peer_offline_command().
+-type commit_command()              :: ?COMMIT_COMMAND(wa_raft_acceptor:op()).
+-type read_command()                :: ?READ_COMMAND(wa_raft_acceptor:read_op()).
+-type status_command()              :: ?STATUS_COMMAND.
+-type promote_command()             :: ?PROMOTE_COMMAND(wa_raft_log:log_term(), boolean(), config() | undefined).
+-type resign_command()              :: ?RESIGN_COMMAND.
+-type adjust_membership_command()   :: ?ADJUST_MEMBERSHIP_COMMAND(membership_action(), peer() | undefined).
+-type snapshot_available_command()  :: ?SNAPSHOT_AVAILABLE_COMMAND(string(), wa_raft_log:log_pos()).
+-type handover_candidates_command() :: ?HANDOVER_CANDIDATES_COMMAND.
+-type handover_command()            :: ?HANDOVER_COMMAND(node()).
+-type enable_command()              :: ?ENABLE_COMMAND.
+-type disable_command()             :: ?DISABLE_COMMAND(term()).
+-type witness_command()             :: ?WITNESS_COMMAND().
+-type set_peer_offline_command()    :: ?SET_PEER_OFFLINE_COMMAND(node(), boolean()).
+
+-type election_type() :: normal | force | allowed.
+-type timeout_type() :: election | heartbeat.
+
+-type membership_action() :: add | add_witness | remove | remove_witness | refresh.
+
 %% ==================================================
 %%  OTP Supervision Callbacks
 %% ==================================================
@@ -351,7 +384,8 @@ callback_mode() ->
 %% [RAFT Extension]
 %% Stalled - an extension of raft protocol to handle the situation that a node join after being wiped(tupperware preemption).
 %%           This node should not participate any election. Otherwise it may vote yes to a lagging node and sabotage data integrity.
--spec stalled(Type :: atom(), Event :: term(), State0 :: #raft_state{}) -> gen_statem:state_enter_result(state()).
+-spec stalled(Type :: enter, PreviousState :: state(), Data :: #raft_state{}) -> gen_statem:state_enter_result(state(), #raft_state{});
+             (Type :: gen_statem:event_type(), Event :: event(), Data :: #raft_state{}) -> gen_statem:event_handler_result(state(), #raft_state{}).
 stalled(enter, _OldStateName, State) ->
     wa_raft_info:set_state(State#raft_state.table, State#raft_state.partition, ?FUNCTION_NAME),
     wa_raft_info:set_stale(true, State),
@@ -454,7 +488,8 @@ stalled(Type, Event, #raft_state{name = Name, current_term = CurrentTerm}) ->
 %% Leader - In the RAFT cluster, the leader node is a node agreed upon by the cluster to be
 %%          responsible for accepting and replicating commits and maintaining the integrity
 %%          of the underlying state machine.
--spec leader(Type :: atom(), Event :: term(), State0 :: #raft_state{}) -> gen_statem:state_enter_result(state()).
+-spec leader(Type :: enter, PreviousState :: state(), Data :: #raft_state{}) -> gen_statem:state_enter_result(state(), #raft_state{});
+            (Type :: gen_statem:event_type(), Event :: event(), Data :: #raft_state{}) -> gen_statem:event_handler_result(state(), #raft_state{}).
 %% [Leader] changing to leader
 leader(enter, OldStateName,
        #raft_state{name = Name, current_term = CurrentTerm, storage = Storage, log_view = View} = State) ->
@@ -836,7 +871,8 @@ leader(Type, Event, #raft_state{name = Name, current_term = CurrentTerm}) ->
     reply(Type, {error, unsupported}),
     keep_state_and_data.
 
--spec follower(Type :: atom(), Event :: term(), State0 :: #raft_state{}) -> gen_statem:state_enter_result(state()).
+-spec follower(Type :: enter, PreviousState :: state(), Data :: #raft_state{}) -> gen_statem:state_enter_result(state(), #raft_state{});
+              (Type :: gen_statem:event_type(), Event :: event(), Data :: #raft_state{}) -> gen_statem:event_handler_result(state(), #raft_state{}).
 %% [Follower] changes from leader
 follower(enter, leader,
          #raft_state{name = Name, current_term = CurrentTerm, match_index = MatchIndex, next_index = NextIndex,
@@ -1010,7 +1046,8 @@ follower(Type, Event, #raft_state{name = Name, current_term = CurrentTerm}) ->
     reply(Type, {error, unsupported}),
     keep_state_and_data.
 
--spec candidate(Type :: atom(), Event :: term(), State0 :: #raft_state{}) -> gen_statem:state_enter_result(state()).
+-spec candidate(Type :: enter, PreviousState :: state(), Data :: #raft_state{}) -> gen_statem:state_enter_result(state(), #raft_state{});
+               (Type :: gen_statem:event_type(), Event :: event(), Data :: #raft_state{}) -> gen_statem:event_handler_result(state(), #raft_state{}).
 %% [Enter] Node starts a new election upon entering the candidate state.
 candidate(enter, _PreviousState,
           #raft_state{name = Name, current_term = CurrentTerm,
@@ -1154,7 +1191,8 @@ candidate(Type, Event, #raft_state{name = Name, current_term = CurrentTerm}) ->
     reply(Type, {error, unsupported}),
     keep_state_and_data.
 
--spec disabled(Type :: atom(), Event :: term(), State :: #raft_state{}) -> gen_statem:state_enter_result(state()).
+-spec disabled(Type :: enter, PreviousState :: state(), Data :: #raft_state{}) -> gen_statem:state_enter_result(state(), #raft_state{});
+              (Type :: gen_statem:event_type(), Event :: event(), Data :: #raft_state{}) -> gen_statem:event_handler_result(state(), #raft_state{}).
 disabled(enter, FromState, #raft_state{disable_reason = undefined} = State) ->
     disabled(enter, FromState, State#raft_state{disable_reason = "No reason specified."});
 
@@ -1255,7 +1293,8 @@ disabled(Type, Event, #raft_state{name = Name, current_term = CurrentTerm}) ->
     keep_state_and_data.
 
 %% [Witness] State functions
--spec witness(Type :: atom(), Event :: term(), State :: #raft_state{}) -> gen_statem:state_enter_result(state()).
+-spec witness(Type :: enter, PreviousState :: state(), Data :: #raft_state{}) -> gen_statem:state_enter_result(state(), #raft_state{});
+             (Type :: gen_statem:event_type(), Event :: event(), Data :: #raft_state{}) -> gen_statem:event_handler_result(state(), #raft_state{}).
 witness(enter, FromState, #raft_state{witness = false} = State) ->
     witness(enter, FromState, State#raft_state{witness = true});
 
@@ -1413,8 +1452,7 @@ code_change(_OldVsn, StateName, State, _Extra) ->
 
 %% Fallbacks for command calls to the RAFT server for when there is no state-specific
 %% handler for a particular command defined for a particular RAFT server FSM state.
--spec command(StateName :: state(), Type :: gen_statem:event_type(), Event :: term(), State :: #raft_state{}) ->
-    gen_statem:event_handler_result(state()).
+-spec command(state(), gen_statem:event_type(), command(), #raft_state{}) -> gen_statem:event_handler_result(state(), #raft_state{}).
 %% [Commit] Non-leader nodes should fail commits with {error, not_leader}.
 command(StateName, Type, ?COMMIT_COMMAND({Ref, _}),
         #raft_state{name = Name, current_term = CurrentTerm, storage = Storage, leader_id = LeaderId}) when StateName =/= leader ->
@@ -1490,8 +1528,9 @@ command(StateName, {call, From}, ?PROMOTE_COMMAND(Term, Force, Config),
             ?LOG_ERROR("~p[~p, term ~p] cannot promote a stalled node.",
                 [StateName, Name, CurrentTerm], #{domain => [whatsapp, wa_raft]}),
             false;
+        HeartbeatTs =:= undefined ->
+            true;
         true ->
-            HeartbeatTs =:= undefined orelse
             erlang:system_time(millisecond) - HeartbeatTs >= ?RAFT_CONFIG(raft_promotion_grace_period_secs, 60) * 1000
     end,
     case Allowed of
@@ -1602,7 +1641,7 @@ member(_Peer, _Config, Default) ->
     Default.
 
 %% Helper function to get the membership list from a config with unknown version.
--spec config_membership(Config :: config()) -> Membership :: [peer()] | undefined.
+-spec config_membership(Config :: config()) -> Membership :: [peer()].
 config_membership(#{membership := Membership}) ->
     Membership;
 config_membership(_Config) ->
@@ -1670,7 +1709,7 @@ maybe_upgrade_config(#{version := ?RAFT_CONFIG_CURRENT_VERSION} = Config) ->
 %% After an apply is sent to storage, check to see if it is a new configuration
 %% being applied. If it is, then update the cached configuration.
 -spec maybe_update_config(Index :: wa_raft_log:log_index(), Term :: wa_raft_log:log_term(),
-                          Op :: wa_raft_acceptor:op(), State :: #raft_state{}) -> NewState :: #raft_state{}.
+                          Op :: wa_raft_acceptor:op() | [] | undefined, State :: #raft_state{}) -> NewState :: #raft_state{}.
 maybe_update_config(Index, _Term, {_Ref, {config, Config}}, State) ->
     State#raft_state{cached_config = {Index, Config}};
 maybe_update_config(_Index, _Term, _Op, State) ->
@@ -1702,7 +1741,7 @@ random_election_timeout() ->
 %% one that is replicating to a quorum so we can check if we have gotten a
 %% heartbeat recently.
 -spec filter_vote_request(StateName :: state(), Type :: gen_statem:event_type(),
-                          Event :: term(), State :: #raft_state{}) -> gen_statem:state_enter_result(state()).
+                          Event :: request_vote_rpc(), State :: #raft_state{}) -> gen_statem:event_handler_result(state(), #raft_state{}).
 filter_vote_request(StateName, Type, ?REQUEST_VOTE_RPC(Term, SenderId, normal, LastLogIndex, LastLogTerm),
                     #raft_state{name = Name, current_term = CurrentTerm, leader_heartbeat_ts = LeaderHeartbeatTs} = State) ->
     AllowedDelay = ?RAFT_ELECTION_TIMEOUT_MS() div 2,
@@ -1916,7 +1955,8 @@ cast_vote(CandidateId, Vote, #raft_state{name = Name, current_term = CurrentTerm
     {ok, MyLastTerm} = wa_raft_log:term(View, MyLastIndex),
     ?LOG_NOTICE("~p vote ~p to candidate ~p in term ~p. Current last log ~p:~p",
         [Name, Vote, CandidateId, CurrentTerm, MyLastIndex, MyLastTerm], #{domain => [whatsapp, wa_raft]}),
-    ?MODULE:cast(CandidateId, ?VOTE_RPC(CurrentTerm, node(), Vote), State).
+    ?MODULE:cast(CandidateId, ?VOTE_RPC(CurrentTerm, node(), Vote), State),
+    ok.
 
 -spec reset_state(#raft_state{}) -> #raft_state{}.
 reset_state(#raft_state{log_view = View0} = State) ->
@@ -2160,7 +2200,7 @@ notify_leader_change(#raft_state{table = Table, partition = Partition, leader_id
     wa_raft_info:set_leader(Table, Partition, LeaderId).
 
 %% Generic reply function that operates based on event type.
--spec reply(Type :: gen_statem:event_type(), Message :: term()) -> ok | wa_raft:error().
+-spec reply(Type :: enter | gen_statem:event_type(), Message :: term()) -> ok | wa_raft:error().
 reply(cast, _Message) ->
     ok;
 reply({call, From}, Message) ->
@@ -2170,7 +2210,7 @@ reply(Type, Message) ->
         [Type, Message, 100], #{domain => [whatsapp, wa_raft]}),
     ok.
 
--spec cast(node(), term(), #raft_state{}) -> ok | {error, term()}.
+-spec cast(node(), rpc(), #raft_state{}) -> ok | {error, term()}.
 cast(DestId, Message, #raft_state{name = Name, offline_peers = OfflinePeers}) when OfflinePeers =:= [] ->
     try
         % TODO(hsun324): T112326686 - upgrade clause to add assumed name to RPCs without SenderName
@@ -2199,7 +2239,7 @@ cast(DestId, Message, #raft_state{offline_peers = OfflinePeers} = State) ->
             cast(DestId, Message, State#raft_state{offline_peers = []})
     end.
 
--spec broadcast(term(), #raft_state{}) -> ok.
+-spec broadcast(rpc(), #raft_state{}) -> ok.
 broadcast(Message, State) ->
     Peers = config_peers(config(State), State),
     lists:foreach(fun({Id, _Addr}) -> catch ok = ?MODULE:cast(Id, Message, State) end, Peers).
@@ -2256,23 +2296,18 @@ check_follower_lagging(LeaderCommit, #raft_state{table = Table, partition = Part
     ?RAFT_GATHER('raft.follower.lagging', Lagging),
     case Lagging < ?RAFT_CONFIG(raft_follower_max_lagging, 5000) of
         true ->
-            case wa_raft_info:get_stale(Table, Partition) =/= false of
-                true ->
-                    ?LOG_NOTICE("[~p:~p] Follower catches up.", [Table, Partition], #{domain => [whatsapp, wa_raft]}),
-                    wa_raft_info:set_stale(false, State);
-                false ->
-                    ok
+            wa_raft_info:get_stale(Table, Partition) =/= false andalso begin
+                ?LOG_NOTICE("[~p:~p] Follower catches up.", [Table, Partition], #{domain => [whatsapp, wa_raft]}),
+                wa_raft_info:set_stale(false, State)
             end;
         false ->
-            case wa_raft_info:get_stale(Table, Partition) =/= true of
-                true ->
-                    ?LOG_NOTICE("[~p:~p] Follower is far behind ~p(leader ~p, follower ~p)",
-                            [Table, Partition, Lagging, LeaderCommit, LastApplied], #{domain => [whatsapp, wa_raft]}),
-                    wa_raft_info:set_stale(true, State);
-                false ->
-                    ok
+            wa_raft_info:get_stale(Table, Partition) =/= true andalso begin
+                ?LOG_NOTICE("[~p:~p] Follower is far behind ~p(leader ~p, follower ~p)",
+                        [Table, Partition, Lagging, LeaderCommit, LastApplied], #{domain => [whatsapp, wa_raft]}),
+                wa_raft_info:set_stale(true, State)
             end
-    end.
+    end,
+    ok.
 
 %% Check leader state and set stale if needed
 -spec check_leader_lagging(#raft_state{}) -> term().

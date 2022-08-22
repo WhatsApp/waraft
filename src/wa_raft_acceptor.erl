@@ -33,7 +33,8 @@
 
 -export_type([
     command/0,
-    op/0
+    op/0,
+    read_op/0
 ]).
 
 -include_lib("kernel/include/logger.hrl").
@@ -59,6 +60,7 @@
     | {execute, Table :: atom(), Key :: term(), Module :: module(), Func :: atom(), Args :: list()}
     | term().
 -type op() :: {Ref :: term(), Command :: command()}.
+-type read_op() :: {From :: gen_server:from(), Command :: command()}.
 
 -spec child_spec(Config :: [term()]) -> supervisor:child_spec().
 child_spec(Config) ->

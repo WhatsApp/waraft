@@ -166,9 +166,9 @@
                Start :: log_index(),
                End :: log_index(),
                SizeLimit :: non_neg_integer() | infinity,
-               Func :: fun((Index :: log_index(), Entry :: log_entry(), AccIn :: term()) -> AccOut :: term()),
-               Acc0 :: term()) ->
-    {ok, AccOut :: term()} | error().
+               Func :: fun((Index :: log_index(), Entry :: log_entry(), Acc) -> Acc),
+               Acc) ->
+    {ok, Acc} | error().
 
 %% Get a single log entry at the specified index. This API is specified
 %% separately because some implementations may have more efficient ways to
@@ -358,9 +358,9 @@ last_index(Log) ->
 -spec fold(Log :: log() | view(),
            First :: log_index(),
            Last :: log_index() | infinity,
-           Func :: fun((Index :: log_index(), Entry :: log_entry(), AccIn :: term()) -> AccOut :: term()),
-           Acc0 :: term()) ->
-    {ok, AccOut :: term()} | wa_raft:error().
+           Func :: fun((Index :: log_index(), Entry :: log_entry(), Acc) -> Acc),
+           Acc) ->
+    {ok, Acc} | wa_raft:error().
 fold(Log, First, Last, Func, Acc) ->
     fold(Log, First, Last, infinity, Func, Acc).
 
@@ -376,9 +376,9 @@ fold(Log, First, Last, Func, Acc) ->
            First :: log_index(),
            Last :: log_index() | infinity,
            SizeLimit :: non_neg_integer() | infinity,
-           Func :: fun((Index :: log_index(), Entry :: log_entry(), AccIn :: term()) -> AccOut :: term()),
-           Acc0 :: term()) ->
-    {ok, AccOut :: term()} | wa_raft:error().
+           Func :: fun((Index :: log_index(), Entry :: log_entry(), Acc) -> Acc),
+           Acc) ->
+    {ok, Acc} | wa_raft:error().
 fold(#log_view{log = Log, provider = Provider, first = LogFirst, last = LogLast}, First, Last, SizeLimit, Func, Acc) ->
     fold_impl(Provider, Log, max(First, LogFirst), min(Last, LogLast), SizeLimit, Func, Acc);
 fold(Log, First, Last, SizeLimit, Func, Acc) ->
