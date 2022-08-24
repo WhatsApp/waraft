@@ -14,8 +14,6 @@
 -define(APPEND_ENTRIES_RESPONSE_RPC(Term, SenderId, PrevLogIndex, Success, LastIndex),
     ?RAFT_RPC(append_entries_response, Term, SenderId, {PrevLogIndex, Success, LastIndex})).
 
--define(REQUEST_VOTE_RPC_OLD(Term, SenderId, LastLogIndex, LastLogTerm),
-    ?RAFT_RPC(request_vote, Term, SenderId, {LastLogIndex, LastLogTerm})).
 -define(REQUEST_VOTE_RPC(Term, SenderId, ElectionType, LastLogIndex, LastLogTerm),
     ?RAFT_RPC(request_vote, Term, SenderId, {ElectionType, LastLogIndex, LastLogTerm})).
 -define(VOTE_RPC(Term, SenderId, Vote),

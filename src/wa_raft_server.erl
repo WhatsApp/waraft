@@ -147,10 +147,9 @@
 
 -type event() :: rpc() | command() | timeout_type().
 
--type rpc() :: append_entries_rpc() | append_entries_response_rpc() | request_vote_rpc_old() | request_vote_rpc() | vote_rpc() | handover_rpc() | handover_failed_rpc() | notify_term_rpc().
+-type rpc() :: append_entries_rpc() | append_entries_response_rpc() | request_vote_rpc() | vote_rpc() | handover_rpc() | handover_failed_rpc() | notify_term_rpc().
 -type append_entries_rpc()          :: ?APPEND_ENTRIES_RPC         (wa_raft_log:log_term(), node(), wa_raft_log:log_index(), wa_raft_log:log_term(), [wa_raft_log:log_entry()], wa_raft_log:log_index(), wa_raft_log:log_index()).
 -type append_entries_response_rpc() :: ?APPEND_ENTRIES_RESPONSE_RPC(wa_raft_log:log_term(), node(), wa_raft_log:log_index(), boolean(), wa_raft_log:log_index()).
--type request_vote_rpc_old()        :: ?REQUEST_VOTE_RPC_OLD       (wa_raft_log:log_term(), node(), wa_raft_log:log_index(), wa_raft_log:log_term()).
 -type request_vote_rpc()            :: ?REQUEST_VOTE_RPC           (wa_raft_log:log_term(), node(), election_type(), wa_raft_log:log_index(), wa_raft_log:log_term()).
 -type vote_rpc()                    :: ?VOTE_RPC                   (wa_raft_log:log_term(), node(), boolean()).
 -type handover_rpc()                :: ?HANDOVER_RPC               (wa_raft_log:log_term(), node(), reference(), wa_raft_log:log_index(), wa_raft_log:log_term(), [wa_raft_log:log_entry()]).
@@ -392,9 +391,6 @@ stalled(enter, _OldStateName, State) ->
     State1 = reset_state(State),
     {keep_state, State1};
 
-%% [RequestVote RPC] MIGRATION - add ElectionType (type force has previous behavior) to RequestVote RPCs
-stalled(Type, ?REQUEST_VOTE_RPC_OLD(Term, SenderId, LastLogIndex, LastLogTerm), State) ->
-    ?FUNCTION_NAME(Type, ?REQUEST_VOTE_RPC(Term, SenderId, force, LastLogIndex, LastLogTerm), State);
 %% [RequestVote RPC] Discard normal RequestVote RPCs when we have an active leader.
 stalled(Type, ?REQUEST_VOTE_RPC(_Term, _SenderId, normal, _LastLogIndex, _LastLogTerm) = Event, State) ->
     filter_vote_request(?FUNCTION_NAME, Type, Event, State);
@@ -504,9 +500,6 @@ leader(enter, OldStateName,
     State4 = apply_single_node_cluster(State3), % apply immediately for single node cluster
     {keep_state, State4, ?HEARTBEAT_TIMEOUT};
 
-%% [RequestVote RPC] MIGRATION - add ElectionType (type force has previous behavior) to RequestVote RPCs
-leader(Type, ?REQUEST_VOTE_RPC_OLD(Term, SenderId, LastLogIndex, LastLogTerm), State) ->
-    ?FUNCTION_NAME(Type, ?REQUEST_VOTE_RPC(Term, SenderId, force, LastLogIndex, LastLogTerm), State);
 %% [RequestVote RPC] Discard normal RequestVote RPCs when we have an active leader.
 leader(Type, ?REQUEST_VOTE_RPC(_Term, _SenderId, normal, _LastLogIndex, _LastLogTerm) = Event, State) ->
     filter_vote_request(?FUNCTION_NAME, Type, Event, State);
@@ -896,9 +889,6 @@ follower(enter, OldStateName,
     State2 = State1#raft_state{voted_for = undefined, next_index = maps:new(), match_index = maps:new()}, %% always reset leader on state change
     {keep_state, State2, ?ELECTION_TIMEOUT};
 
-%% [RequestVote RPC] MIGRATION - add ElectionType (type force has previous behavior) to RequestVote RPCs
-follower(Type, ?REQUEST_VOTE_RPC_OLD(Term, SenderId, LastLogIndex, LastLogTerm), State) ->
-    ?FUNCTION_NAME(Type, ?REQUEST_VOTE_RPC(Term, SenderId, force, LastLogIndex, LastLogTerm), State);
 %% [RequestVote RPC] Discard normal RequestVote RPCs when we have an active leader.
 follower(Type, ?REQUEST_VOTE_RPC(_Term, _SenderId, normal, _LastLogIndex, _LastLogTerm) = Event, State) ->
     filter_vote_request(?FUNCTION_NAME, Type, Event, State);
@@ -1072,18 +1062,11 @@ candidate(enter, _PreviousState,
 
     % Broadcast vote requests and also send a vote-for-self.
     % (Candidates always implicitly vote for themselves.)
-    RequestVote = case ?RAFT_CONFIG(send_request_vote_with_type, false) of
-        true  -> ?REQUEST_VOTE_RPC(CurrentTerm + 1, node(), ElectionType, LastLogIndex, LastLogTerm);
-        false -> ?REQUEST_VOTE_RPC_OLD(CurrentTerm + 1, node(), LastLogIndex, LastLogTerm)
-    end,
-    broadcast(RequestVote, State3),
+    broadcast(?REQUEST_VOTE_RPC(CurrentTerm + 1, node(), ElectionType, LastLogIndex, LastLogTerm), State3),
     ?MODULE:cast(node(), ?VOTE_RPC(CurrentTerm + 1, node(), true), State3),
 
     {keep_state, State3, ?ELECTION_TIMEOUT};
 
-%% [RequestVote RPC] MIGRATION - add ElectionType (type force has previous behavior) to RequestVote RPCs
-candidate(Type, ?REQUEST_VOTE_RPC_OLD(Term, SenderId, LastLogIndex, LastLogTerm), State) ->
-    ?FUNCTION_NAME(Type, ?REQUEST_VOTE_RPC(Term, SenderId, force, LastLogIndex, LastLogTerm), State);
 %% [RequestVote RPC] Discard normal RequestVote RPCs when we have an active leader.
 candidate(Type, ?REQUEST_VOTE_RPC(_Term, _SenderId, normal, _LastLogIndex, _LastLogTerm) = Event, State) ->
     filter_vote_request(?FUNCTION_NAME, Type, Event, State);
@@ -1217,10 +1200,6 @@ disabled(enter, FromState, #raft_state{name = Name, current_term = CurrentTerm} 
     wa_raft_durable_state:store(State2),
     {keep_state, State2};
 
-%% [RequestVote RPC] MIGRATION - Disabled nodes drop all RequestVote RPCs unconditionally
-disabled(_Type, ?REQUEST_VOTE_RPC_OLD(_Term, _SenderId, _LastLogIndex, _LastLogTerm), State) ->
-    ?RAFT_COUNT('raft.server.request_vote.disabled'),
-    {keep_state, State};
 %% [RequestVote RPC] Disabled nodes drop all RequestVote RPCs unconditionally
 disabled(_Type, ?REQUEST_VOTE_RPC(_Term, _SenderId, normal, _LastLogIndex, _LastLogTerm), State) ->
     ?RAFT_COUNT('raft.server.request_vote.disabled'),
@@ -1324,9 +1303,6 @@ witness(state_timeout, _,
     wa_raft_info:set_stale(true, State),
     {keep_state, State, ?WITNESS_TIMEOUT};
 
-%% [RequestVote RPC] MIGRATION - add ElectionType (type force has previous behavior) to RequestVote RPCs
-witness(Type, ?REQUEST_VOTE_RPC_OLD(Term, SenderId, LastLogIndex, LastLogTerm), State) ->
-    ?FUNCTION_NAME(Type, ?REQUEST_VOTE_RPC(Term, SenderId, force, LastLogIndex, LastLogTerm), State);
 %% [RequestVote RPC] Discard normal RequestVote RPCs when we have an active leader.
 witness(Type, ?REQUEST_VOTE_RPC(_Term, _SenderId, normal, _LastLogIndex, _LastLogTerm) = Event, State) ->
     filter_vote_request(?FUNCTION_NAME, Type, Event, State);
