@@ -232,9 +232,14 @@ set_transport_info(ID, #{atomics := TransportAtomics} = Info) ->
 update_transport_info(ID, Fun) ->
     case transport_info(ID) of
         {ok, #{atomics := TransportAtomics} = Info} ->
-            true = ets:insert(?MODULE, {?INFO_KEY(ID), Fun(Info)}),
-            ok = atomics:put(TransportAtomics, ?RAFT_TRANSPORT_ATOMICS_UPDATED_TS, erlang:system_time(millisecond)),
-            ok;
+            case Fun(Info) of
+                Info ->
+                    ok;
+                NewInfo ->
+                    true = ets:insert(?MODULE, {?INFO_KEY(ID), NewInfo}),
+                    ok = atomics:put(TransportAtomics, ?RAFT_TRANSPORT_ATOMICS_UPDATED_TS, erlang:system_time(millisecond)),
+                    ok
+            end;
         not_found ->
             not_found
     end.
@@ -261,11 +266,16 @@ set_file_info(ID, FileID, #{atomics := {TransportAtomics, FileAtomics}} = Info) 
 update_file_info(ID, FileID, Fun) ->
     case file_info(ID, FileID) of
         {ok, #{atomics := {TransportAtomics, FileAtomics}} = Info} ->
-            true = ets:insert(?MODULE, {?FILE_KEY(ID, FileID), Fun(Info)}),
-            NowMillis = erlang:system_time(millisecond),
-            ok = atomics:put(TransportAtomics, ?RAFT_TRANSPORT_ATOMICS_UPDATED_TS, NowMillis),
-            ok = atomics:put(FileAtomics, ?RAFT_TRANSPORT_ATOMICS_UPDATED_TS, NowMillis),
-            ok;
+            case Fun(Info) of
+                Info ->
+                    ok;
+                NewInfo ->
+                    true = ets:insert(?MODULE, {?FILE_KEY(ID, FileID), NewInfo}),
+                    NowMillis = erlang:system_time(millisecond),
+                    ok = atomics:put(TransportAtomics, ?RAFT_TRANSPORT_ATOMICS_UPDATED_TS, NowMillis),
+                    ok = atomics:put(FileAtomics, ?RAFT_TRANSPORT_ATOMICS_UPDATED_TS, NowMillis),
+                    ok
+            end;
         not_found ->
             not_found
     end.
