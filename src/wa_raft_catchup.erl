@@ -98,7 +98,8 @@ init([#{table := Table, partition := Partition}]) ->
         }
     }.
 
--spec handle_event(term(), #raft_catchup{}) -> {ok, #raft_catchup{}}.
+-spec handle_event(Event, #raft_catchup{}) -> {ok, #raft_catchup{}}
+    when Event :: {catchup, FollowerId :: node(), FollowerLastIndex :: wa_raft_log:log_index(), LeaderTerm :: wa_raft_log:log_term(), LeaderCommitIndex :: wa_raft_log:log_index(), Witness :: boolean()}.
 handle_event({catchup, FollowerId, FollowerLastIndex, LeaderTerm, LeaderCommitIndex, Witness}, #raft_catchup{name = Name, log = Log} = State) ->
     ?LOG_NOTICE("Leader[~p] catchup follower[~p] with last log index ~p. current leader term ~p",
          [Name, FollowerId, FollowerLastIndex, LeaderTerm], #{domain => [whatsapp, wa_raft]}),
@@ -218,8 +219,8 @@ send_snapshot(FollowerId, #raft_catchup{name = Name, table = Table, partition = 
     set_state(Name, FollowerId, sending),
     StartT = os:timestamp(),
     try
-        StoragePid = whereis(?RAFT_STORAGE_NAME(Table, Partition)),
-        case wa_raft_storage:create_snapshot(StoragePid) of
+        StorageRef = ?RAFT_STORAGE_NAME(Table, Partition),
+        case wa_raft_storage:create_snapshot(StorageRef) of
             {ok, #raft_log_pos{index = Index, term = Term} = LogPos} ->
                 SnapName = ?SNAPSHOT_NAME(Index, Term),
                 Root = ?ROOT_DIR(Table, Partition),
@@ -234,7 +235,7 @@ send_snapshot(FollowerId, #raft_catchup{name = Name, table = Table, partition = 
                             wa_raft_server:snapshot_available({ServerName, FollowerId}, Root, LogPos)
                     end
                 after
-                    wa_raft_storage:delete_snapshot(StoragePid, SnapName)
+                    wa_raft_storage:delete_snapshot(StorageRef, SnapName)
                 end;
             {error, Reason} = Error ->
                 ?LOG_ERROR("Catchup[~p] create snapshot error ~p", [Name, Reason], #{domain => [whatsapp, wa_raft]}),

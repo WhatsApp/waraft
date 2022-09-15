@@ -223,15 +223,17 @@ commit(Pid, Op) ->
 read(Pid, Op) ->
     gen_server:cast(Pid, ?READ_COMMAND(Op)).
 
--spec status(Pid :: atom() | pid()) -> status().
-status(Pid) ->
-    gen_server:call(Pid, ?STATUS_COMMAND, ?RPC_CALL_TIMEOUT_MS).
+-spec status(ServerRef :: gen_server:server_ref()) -> status().
+status(ServerRef) ->
+    gen_server:call(ServerRef, ?STATUS_COMMAND, ?RPC_CALL_TIMEOUT_MS).
 
--spec status(Pid :: atom() | pid(), Key :: atom() | list(atom())) -> Value :: term() | list(term()).
-status(Pid, Key) when is_atom(Key) ->
-    hd(status(Pid, [Key]));
-status(Pid, Keys) when is_list(Keys) ->
-    case status(Pid) of
+-spec status
+    (ServerRef :: gen_server:server_ref(), Key :: atom()) -> Value :: eqwalizer:dynamic();
+    (ServerRef :: gen_server:server_ref(), Keys :: [atom()]) -> Value :: [eqwalizer:dynamic()].
+status(ServerRef, Key) when is_atom(Key) ->
+    hd(status(ServerRef, [Key]));
+status(ServerRef, Keys) when is_list(Keys) ->
+    case status(ServerRef) of
         [_|_] = Status ->
             FilterFun =
                 fun({Key, Value}) ->
@@ -716,6 +718,7 @@ leader(Type, ?ADJUST_MEMBERSHIP_COMMAND(Action, Peer),
                    current_term = CurrentTerm, last_applied = LastApplied} = State0) ->
     % Try to adjust the configuration according to the current request.
     Config = config(State0),
+    % eqwalizer:fixme - adjust_membership_command() is defined imprecisely
     case adjust_config({Action, Peer}, Config, State0) of
         {ok, NewConfig} ->
             % Ensure that we have committed (applied entries are committed) at least one log entry
@@ -1112,6 +1115,7 @@ candidate(cast, ?VOTE_RPC(CurrentTerm, NodeId, true),
     State1 = State0#raft_state{heartbeat_response_ts = HeartbeatResponse1, votes = Votes1},
     case compute_quorum(Votes1, false, config(State1)) of
         true ->
+            StartT =/= undefined orelse error(bad_state),
             Duration = timer:now_diff(os:timestamp(), StartT),
             LastIndex = wa_raft_log:last_index(View),
             {ok, LastTerm} = wa_raft_log:term(View, LastIndex),
@@ -1644,7 +1648,7 @@ config_peers(_Config, _State) ->
 -spec config(State :: #raft_state{}) -> Config :: config().
 config(#raft_state{log_view = View, cached_config = {ConfigIndex, Config}}) ->
     case wa_raft_log:config(View) of
-        {ok, LogConfigIndex, LogConfig} when LogConfigIndex > ConfigIndex ->
+        {ok, LogConfigIndex, LogConfig} when LogConfig =/= undefined, LogConfigIndex > ConfigIndex ->
             maybe_upgrade_config(LogConfig);
         {ok, _LogConfigIndex, _LogConfig} ->
             % This case will normally only occur when the log has leftover log entries from
@@ -1843,6 +1847,7 @@ apply_log(#raft_state{name = Name, table = Table, partition = Partition, log_vie
             % at maximum MaxRotateDelay log entries.
             MaxRotateDelay = ?RAFT_CONFIG(max_log_rotate_delay, 1500000),
             RotateIndex = max(LimitedIndex - MaxRotateDelay, min(State1#raft_state.last_applied, TrimIndex)),
+            RotateIndex =/= infinity orelse error(bad_state),
             {ok, View2} = wa_raft_log:rotate(View1, RotateIndex),
             State2 = State1#raft_state{log_view = View2},
             ?RAFT_GATHER('raft.apply_log.latency_us', timer:now_diff(os:timestamp(), StartT)),

@@ -478,7 +478,7 @@ get_terms(View, First, Limit, Bytes) ->
     end.
 
 
--spec config(View :: log() | view()) -> {ok, Index :: log_index(), Config :: wa_raft_server:config()} | not_found.
+-spec config(View :: log() | view()) -> {ok, Index :: log_index(), Config :: wa_raft_server:config() | undefined} | not_found.
 config(#log_view{config_index = undefined}) ->
     not_found;
 config(#log_view{first = First, config_index = Index}) when First > Index ->
@@ -646,7 +646,8 @@ init([#{table := Table, partition := Partition} = RaftArgs]) ->
 
     Log = ?RAFT_LOG_NAME(Table, Partition),
     Provider = maps:get(log_module, RaftArgs, ?RAFT_CONFIG(raft_log_module, wa_raft_log_ets)),
-    Metadata = ets:new(metadata_table(Log), [set, public, named_table]),
+    Metadata = metadata_table(Log),
+    Metadata = ets:new(Metadata, [set, public, named_table]),
     State = #log_state{
         log = Log,
         table = Table,
@@ -663,9 +664,13 @@ init([#{table := Table, partition := Partition} = RaftArgs]) ->
 
     {ok, State}.
 
--spec handle_call(Request :: term(), From :: term(), State :: #log_state{}) ->
+-spec handle_call(Request, From :: term(), State :: #log_state{}) ->
     {reply, Reply :: term(), NewState :: #log_state{}} |
-    {noreply, NewState :: #log_state{}}.
+    {noreply, NewState :: #log_state{}}
+    when Request ::
+        {open, Position :: log_pos()} |
+        {reset, Position :: log_pos(), View :: view()} |
+        {truncate, Index :: log_index(), View :: view()}.
 handle_call({open, Position}, _From, State) ->
     {Reply, NewState} = handle_open(Position, State),
     {reply, Reply, NewState};
@@ -688,7 +693,8 @@ handle_call(Request, From, #log_state{log = Log} = State) ->
         [Log, Request, From], #{domain => [whatsapp, wa_raft]}),
     {noreply, State}.
 
--spec handle_cast(Request :: term(), State :: #log_state{}) -> {noreply, NewState :: #log_state{}}.
+-spec handle_cast(Request, State :: #log_state{}) -> {noreply, NewState :: #log_state{}}
+    when Request :: flush | {trim, Index :: log_index()}.
 handle_cast(flush, #log_state{log = Log, provider = Provider} = State) ->
     Provider:flush(Log),
     {noreply, State};

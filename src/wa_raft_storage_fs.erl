@@ -206,7 +206,7 @@ storage_write({Table, Partition}, #raft_log_pos{index = LogIndex, term = LogTerm
 
 %% Read value for given key
 -spec storage_read(storage_handle(), term()) ->
-    {ok, {wa_raft_log:log_index() | undefined, wa_raft_log:log_term() | undefined, map(), binary() | undefined}} | wa_raft_storage:error().
+    {ok, {wa_raft_log:log_index(), wa_raft_log:log_term(), map(), binary()} | {undefined, undefined, map(), undefined}} | wa_raft_storage:error().
 storage_read({Table, Partition}, Key) ->
     Fullpath = fullpath(Table, Partition, Key),
     file_read(Fullpath).
@@ -275,7 +275,7 @@ fullpath(Table, Partition, Key) ->
 %%  string e.g "123"
 %%  binary e.g <<"123">>
 %%  tuple e.g {1, 2, 3}, or {1, "2", {3, 4}}
--spec filename(term()) -> term().
+-spec filename(term()) -> string() | eqwalizer:dynamic().
 filename(Key) when is_tuple(Key) ->
     List0 = flatten(Key, []),
     List1 = lists:flatmap(fun(E) -> [filename(E)] end, List0),
@@ -327,7 +327,8 @@ file_write(Filename, Data) ->
     end.
 
 %% Read file content
--spec file_read(string()) -> {ok, {wa_raft_log:log_index() | undefined, wa_raft_log:log_term() | undefined, map(), binary() | undefined}} | wa_raft_storage:error().
+-spec file_read(string()) ->
+    {ok, {wa_raft_log:log_index(), wa_raft_log:log_term(), map(), binary()} | {undefined, undefined, map(), undefined}} | wa_raft_storage:error().
 file_read(Filename) ->
     case prim_file:open(Filename, [read, binary]) of
         {ok, Fd} ->
@@ -471,7 +472,7 @@ exec(Command) ->
     end.
 
 %% Wait for completion of port and return both exit code and stdout
--spec wait_for_exec(Port :: port(), Output :: string()) -> {ExitCode :: integer(), Output :: string()}.
+-spec wait_for_exec(Port :: port(), Output :: io_lib:chars()) -> {ExitCode :: integer(), Output :: string()}.
 wait_for_exec(Port, Output) ->
     receive
         {Port, {data, Bytes}} ->
@@ -579,7 +580,8 @@ maybe_delete_version_cache_lru(Tab, LRU, Key) ->
     case ets:lookup(Tab, Key) of
         [{_Key, _Result0, Ts}] ->
             ets:update_counter(LRU, size, -1),
-            ets:delete(LRU, Ts);
+            ets:delete(LRU, Ts),
+            ok;
         [] ->
             ok
     end.
@@ -601,7 +603,7 @@ maybe_cleanup_version_cache(Tab, LRU, Size) ->
 -spec max_levels() -> pos_integer().
 max_levels() -> ?MAX_DIR_LEVELS * ?MAX_DIR_LEVELS.
 
--spec directory(term()) -> iolist().
+-spec directory(term()) -> string().
 directory(Key) ->
     DirKey =
         case is_tuple(Key) of
@@ -612,6 +614,7 @@ directory(Key) ->
     lists:concat([directory_fmt(Hash div ?MAX_DIR_LEVELS), "/", directory_fmt(Hash rem ?MAX_DIR_LEVELS)]).
 
 %% Use it to replace slow io_lib:format("~2.16.0b", V)
+-spec directory_fmt(integer()) -> string().
 directory_fmt(V) ->
     List = "0" ++ integer_to_list(V, 16),
     string:to_lower(lists:sublist(List, length(List) - 1, 2)).

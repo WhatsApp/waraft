@@ -47,7 +47,7 @@ child_spec(#{table := Table, partition := Partition} = RaftArgs) ->
 start_link(Name, RaftSpec) ->
     supervisor:start_link({local, Name}, ?MODULE, [RaftSpec]).
 
--spec stop(Supervisor :: atom() | pid(), Table :: atom(), Partition :: pos_integer()) -> ok | {error, not_found}.
+-spec stop(Supervisor :: atom() | pid(), Table :: atom(), Partition :: pos_integer()) -> ok | {error, 'running' | 'restarting' | 'not_found' | 'simple_one_for_one'}.
 stop(Supervisor, Table, Partition) ->
     Name = raft_sup(Table, Partition),
     case supervisor:terminate_child(Supervisor, Name) of

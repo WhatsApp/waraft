@@ -74,7 +74,8 @@ storage_delete_snapshot(SnapName, #raft_storage{root_dir = RootDir}) ->
     case filelib:is_file(SnapFile) of
         true ->
             ok = file:delete(SnapFile),
-            file:del_dir(filename:dirname(SnapFile));
+            file:del_dir(filename:dirname(SnapFile)),
+            ok;
         false ->
             ok
     end.
@@ -120,7 +121,7 @@ storage_write({Table, Partition}, #raft_log_pos{index = LogIndex, term = LogTerm
     {ok, LogIndex}.
 
 -spec storage_read(storage_handle(), term()) ->
-    {ok, {wa_raft_log:log_index() | undefined, wa_raft_log:log_term() | undefined, map(), binary() | undefined}} | wa_raft_storage:error().
+    {ok, {wa_raft_log:log_index(), wa_raft_log:log_term(), map(), binary()} | {undefined, undefined, map(), undefined}} | wa_raft_storage:error().
 storage_read({Table, Partition}, Key) ->
     Tab = ?RAFT_STORAGE_NAME(Table, Partition),
     try ets:lookup(Tab, Key) of

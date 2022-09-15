@@ -58,7 +58,7 @@
       noop
     | {config, Config :: wa_raft_server:config()}
     | {execute, Table :: atom(), Key :: term(), Module :: module(), Func :: atom(), Args :: list()}
-    | term().
+    | eqwalizer:dynamic().
 -type op() :: {Ref :: term(), Command :: command()}.
 -type read_op() :: {From :: gen_server:from(), Command :: command()}.
 
@@ -112,8 +112,9 @@ init([#{table := Table, partition := Partition}]) ->
     },
     {ok, State}.
 
--spec handle_call(Request :: term(), From :: {pid(), term()}, State :: #raft_acceptor{}) ->
-    {reply, Reply :: term(), NewState :: #raft_acceptor{}} | {stop, Reason :: term(), Reply :: term(), NewState :: #raft_acceptor{}}.
+-spec handle_call(Request, From :: gen_server:from(), State :: #raft_acceptor{}) ->
+    {noreply, NewState :: #raft_acceptor{}} | {stop, Reason :: term(), Reply :: term(), NewState :: #raft_acceptor{}}
+    when Request :: {read, command()} | {commit, op()} | stop.
 
 handle_call({read, Command}, From, #raft_acceptor{} = State0) ->
     State1 = read_impl(From, Command, State0),
@@ -131,7 +132,8 @@ handle_call(Cmd, From, #raft_acceptor{name = Name} = State) ->
     {noreply, State}.
 
 
--spec handle_cast(Request :: term(), State :: #raft_acceptor{}) -> {noreply, NewState :: #raft_acceptor{}}.
+-spec handle_cast(Request, State :: #raft_acceptor{}) -> {noreply, NewState :: #raft_acceptor{}}
+    when Request :: {commit, gen_server:from(), op()}.
 handle_cast({commit, From, Op}, State0) ->
     State1 = commit_impl(From, Op, State0),
     {noreply, State1};
@@ -153,7 +155,7 @@ terminate(Reason, #raft_acceptor{name = Name} = State) ->
 
 %% Private functions
 
--spec commit_impl(From :: {pid(), term()}, Request :: op(), State :: #raft_acceptor{}) -> NewState :: #raft_acceptor{}.
+-spec commit_impl(From :: gen_server:from(), Request :: op(), State :: #raft_acceptor{}) -> NewState :: #raft_acceptor{}.
 commit_impl(From, {Ref, _} = Op, #raft_acceptor{table = Table, partition = Partition, server = Server, name = Name} = State) ->
     StartT = os:timestamp(),
     ?LOG_DEBUG("[~p] Commit starts", [Name], #{domain => [whatsapp, wa_raft]}),

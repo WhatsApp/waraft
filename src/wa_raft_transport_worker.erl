@@ -37,7 +37,7 @@
     number :: non_neg_integer(),
     table :: ets:tid(),
 
-    states = #{} :: #{module() => term()},
+    states = #{} :: #{module() => state()},
     marker :: undefined | 0 | reference()
 }).
 -type state() :: #state{}.
@@ -64,7 +64,7 @@ child_spec(Node, Number) ->
         modules => [?MODULE]
     }.
 
--spec start_link(Node :: node(), Number :: non_neg_integer()) -> {ok, Pid :: pid()} | wa_raft:error().
+-spec start_link(Node :: node(), Number :: non_neg_integer()) -> gen_server:start_ret().
 start_link(Node, Number) ->
     gen_server:start_link(?MODULE, {Node, Number}, []).
 
@@ -75,6 +75,7 @@ start_link(Node, Number) ->
 -spec init(Args :: {node(), non_neg_integer()}) -> {ok, State :: state(), Timeout :: timeout()}.
 init({Node, Number}) ->
     Table = ets:new(?MODULE, [ordered_set, public]),
+    % eqwalizer:fixme - better ets:new
     {ok, #state{node = Node, number = Number, table = Table}, ?CONTINUE_TIMEOUT}.
 
 -spec handle_call(Request :: term(), From :: {Pid :: pid(), Tag :: term()}, State :: state()) ->
@@ -84,7 +85,8 @@ handle_call(Request, From, #state{number = Number} = State) ->
         [Number, Request, From], #{domain => [whatsapp, wa_raft]}),
     {noreply, State, ?CONTINUE_TIMEOUT}.
 
--spec handle_cast(Request :: term(), State :: state()) -> {noreply, NewState :: state(), Timeout :: timeout()}.
+-spec handle_cast(Request, State :: state()) -> {noreply, NewState :: state(), Timeout :: timeout()}
+    when Request :: {send, wa_raft_transport:transport_id(), wa_raft_transport:file_id()}.
 handle_cast({send, ID, FileID}, #state{table = Table} = State) ->
     ?RAFT_COUNT('raft.transport.send'),
     wa_raft_transport:update_file_info(ID, FileID,
@@ -159,7 +161,7 @@ terminate(Reason, #state{states = States}) ->
                 true  -> Module:transport_terminate(Reason, State);
                 false -> ok
             end
-        end, undefined, States).
+        end, ok, States).
 
 -spec get_module_state(module(), state()) -> {ok, state()} | {stop, term()}.
 get_module_state(Module, #state{node = Node, states = States}) ->

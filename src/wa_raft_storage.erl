@@ -96,7 +96,7 @@
 %% Optional callback to write key value for given log pos
 -callback storage_write(storage_handle(), wa_raft_log:log_pos(), term(), binary(), map()) -> {ok, wa_raft_log:log_index()} | error().
 %% Optional callback to read value for given key
--callback storage_read(storage_handle(), term()) -> {ok, {wa_raft_log:log_index() | undefined, wa_raft_log:log_term() | undefined, map(), binary() | undefined}} | error().
+-callback storage_read(storage_handle(), term()) -> {ok, {wa_raft_log:log_index(), wa_raft_log:log_term(), map(), binary()} | {undefined, undefined, map(), undefined}} | error().
 %% Optional callback to read version for given key
 -callback storage_read_version(storage_handle(), term()) -> wa_raft_log:log_index() | undefined | error().
 %% Optional callback to delete for given key
@@ -111,7 +111,7 @@
 
 -type metadata() :: config | atom().
 -type storage_handle() :: term().
--type error() :: {error, file:posix()}.
+-type error() :: {error, term()}.
 
 -type status() :: [status_element()].
 -type status_element() ::
@@ -178,7 +178,7 @@ create_empty_snapshot(ServiceRef, Name) ->
 delete_snapshot(ServiceRef, Name) ->
     gen_server:cast(ServiceRef, {snapshot_delete, Name}).
 
--spec read_metadata(ServiceRef :: pid() | atom(), Key :: metadata()) -> {ok, Version :: wa_raft_log:log_pos(), Value :: term()} | undefined | error().
+-spec read_metadata(ServiceRef :: pid() | atom(), Key :: metadata()) -> {ok, Version :: wa_raft_log:log_pos(), Value :: eqwalizer:dynamic()} | undefined | error().
 read_metadata(ServiceRef, Key) ->
     gen_server:call(ServiceRef, {read_metadata, Key}, ?STORAGE_CALL_TIMEOUT_MS).
 
@@ -201,9 +201,17 @@ init([#{table := Table, partition := Partition} = Args]) ->
 %% If you are adding a new call to the RAFT storage server, make sure that it is either
 %% guaranteed to not be used when the storage server is busy (and may not reply in time)
 %% or timeouts and other failures are handled properly.
--spec handle_call(Request :: term(), From :: {pid(), term()}, State :: #raft_storage{}) ->
-    {reply, Reply :: term(), NewState :: #raft_storage{}} | {stop, Reason :: term(), Reply :: term(), NewState :: #raft_storage{}}.
-
+-spec handle_call(Request, From :: {pid(), term()}, State :: #raft_storage{}) ->
+    {reply, Reply :: term(), NewState :: #raft_storage{}} |
+    {noreply, NewState :: #raft_storage{}} |
+    {stop, Reason :: term(), Reply :: term(), NewState :: #raft_storage{}}
+    when Request ::
+        open |
+        snapshot_create |
+        {snapshot_create, Name :: string()} |
+        {snapshot_create_empty, Name :: string()} |
+        {snapshot_open, LastAppliedPos :: wa_raft_log:log_pos()} |
+        {read_metadata, Key :: metadata()}.
 handle_call(open, _From, #raft_storage{last_applied = LastApplied} = State) ->
     {reply, {ok, LastApplied}, State};
 
@@ -257,7 +265,12 @@ handle_call(Cmd, From, #raft_storage{name = Name} = State) ->
     ?LOG_WARNING("[~p] unexpected call ~p from ~p", [Name, Cmd, From], #{domain => [whatsapp, wa_raft]}),
     {noreply, State}.
 
--spec handle_cast(Request :: term(), State :: #raft_storage{}) -> {noreply, NewState :: #raft_storage{}}.
+-spec handle_cast(Request, State :: #raft_storage{}) -> {noreply, NewState :: #raft_storage{}}
+    when Request ::
+        cancel |
+        {fulfill, term(), term()} |
+        {appy, LogRecord :: wa_raft_log:log_record(), ServerTerm :: wa_raft_log:log_term()} |
+        {snapshot_delete, Name :: string()}.
 handle_cast(cancel, State0) ->
     State1 = cancel_pending_commits(State0),
     State2 = cancel_pending_reads(State1),
@@ -333,7 +346,7 @@ storage_apply(LogPos, {_Ref, Command}, State) ->
     ?RAFT_COUNT('raft.storage.apply'),
     execute(Command, LogPos, State).
 
--spec execute(Command :: term(), LogPos :: wa_raft_log:log_pos(), State :: #raft_storage{}) -> {term() | error(), #raft_storage{}}.
+-spec execute(Command :: wa_raft_acceptor:command(), LogPos :: wa_raft_log:log_pos(), State :: #raft_storage{}) -> {term() | error(), #raft_storage{}}.
 execute(noop, LogPos, #raft_storage{name = Name, module = Module, handle = Handle} = State) ->
     ?LOG_NOTICE("Noop for ~100p at pos ~w", [Name, LogPos], #{domain => [whatsapp, wa_raft]}),
     {Reply, NewHandle} = Module:storage_apply(noop, LogPos, Handle),

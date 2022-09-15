@@ -290,7 +290,15 @@ init(_) ->
     schedule_scan(),
     {ok, #state{}}.
 
--spec handle_call(Request :: term(), From :: {Pid :: pid(), Tag :: term()}, State :: state()) -> {reply, Reply :: term(), NewState :: state()} | {noreply, NewState :: state()}.
+-spec handle_call(Request, From :: {Pid :: pid(), Tag :: term()}, State :: state()) -> {reply, Reply :: term(), NewState :: state()} | {noreply, NewState :: state()}
+    when
+        Request ::
+            {start, node(), term(), string()} |
+            {start_wait, node(), term(), string()} |
+            {transport, ID :: transport_id(), Peer :: node(), Module :: module(), From :: term(), Files :: [{file_id(), RelPath :: string(), Size :: integer()}]} |
+            {cancel, ID :: transport_id(), Reason :: term()} |
+            {pin, ID :: transport_id()} |
+            {unpin, ID :: transport_id()}.
 handle_call({start, Peer, Meta, Root}, _From, #state{} = State) ->
     {reply, start_transport(undefined, Peer, Meta, Root), State};
 handle_call({start_wait, Peer, Meta, Root}, From, #state{} = State) ->
@@ -402,7 +410,10 @@ handle_call(Request, _From, #state{} = State) ->
         [Request], #{domain => [whatsapp, wa_raft]}),
     {noreply, State}.
 
--spec handle_cast(Request :: term(), State :: state()) -> {noreply, NewState :: state()}.
+-spec handle_cast(Request, State :: state()) -> {noreply, NewState :: state()}
+    when Request ::
+        {complete, ID :: transport_id(), FileID :: file_id(), Status :: term(), Pid :: pid()} |
+        {cleanup, ID :: transport_id()}.
 handle_cast({complete, ID, FileID, Status, Pid}, #state{} = State) ->
     ?RAFT_COUNT('raft.transport.file.complete'),
     NowMillis = erlang:system_time(millisecond),
@@ -555,7 +566,7 @@ start_transport(From, Peer, Meta, Root) ->
                             _ ->
                                 Info2 = Info1#{status => running, next_file => 1},
                                 Sup = wa_raft_transport_sup:get_or_start(Peer),
-                                Workers = [Pid || {_Id, Pid, _Type, _Modules} <- supervisor:which_children(Sup)],
+                                Workers = [Pid || {_Id, Pid, _Type, _Modules} <- supervisor:which_children(Sup), is_pid(Pid)],
                                 lists:foldl(fun (Pid, InfoN) -> maybe_submit_one(ID, InfoN, Pid) end, Info2, Workers)
                         end
                 end),
@@ -576,7 +587,7 @@ start_transport(From, Peer, Meta, Root) ->
             {error, failed}
     end.
 
--spec transport_destination(non_neg_integer()) -> file:filename_all().
+-spec transport_destination(non_neg_integer()) -> string().
 transport_destination(ID) ->
     filename:join(?DB, [?RAFT_TRANSPORT_DIRNAME, $/, integer_to_list(ID)]).
 

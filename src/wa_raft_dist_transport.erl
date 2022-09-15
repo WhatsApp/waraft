@@ -51,7 +51,7 @@ child_spec() ->
         modules => [?MODULE]
     }.
 
--spec start_link() -> {ok, Pid :: pid()}.
+-spec start_link() -> gen_server:start_ret().
 start_link() ->
     gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
 
@@ -142,8 +142,9 @@ init([]) ->
     process_flag(trap_exit, true),
     {ok, #receiver_state{}}.
 
--spec handle_call(Request :: term(), From :: term(), State :: #receiver_state{}) ->
-    {reply, Reply :: term(), NewState :: #receiver_state{}} | {noreply, NewState :: #receiver_state{}}.
+-spec handle_call(Request, From :: term(), State :: #receiver_state{}) ->
+    {reply, Reply :: term(), NewState :: #receiver_state{}} | {noreply, NewState :: #receiver_state{}}
+    when Request :: {chunk, wa_raft_transport:transport_id(), wa_raft_transport:file_id(), integer(), binary()}.
 handle_call({chunk, ID, FileID, Offset, Data}, _From, #receiver_state{} = State0) ->
     {Reply, NewState} = case open_file(ID, FileID, State0) of
         {ok, Fd, State1} ->
@@ -171,7 +172,8 @@ handle_call(Request, From, #receiver_state{} = State) ->
         [Request, From], #{domain => [whatsapp, wa_raft]}),
     {noreply, State}.
 
--spec handle_cast(Request :: term(), State :: #receiver_state{}) -> {noreply, NewState :: #receiver_state{}}.
+-spec handle_cast(Request, State :: #receiver_state{}) -> {noreply, NewState :: #receiver_state{}}
+    when Request :: {complete,  wa_raft_transport:transport_id(), wa_raft_transport:file_id()}.
 handle_cast({complete, ID, FileID}, #receiver_state{} = State0) ->
     case open_file(ID, FileID, State0) of
         {ok, _Fd, State1} ->

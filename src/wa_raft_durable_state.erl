@@ -20,8 +20,8 @@
 -spec load(StateIn :: #raft_state{}) -> {ok, StateOut :: #raft_state{}} | no_state | wa_raft:error().
 load(#raft_state{name = Name, data_dir = RootDir} = State) ->
     StateItems = [
-        {current_term,   fun is_integer/1, fun (V, S) -> S#raft_state{current_term = V} end},
-        {voted_for,      fun is_atom/1,    fun (V, S) -> S#raft_state{voted_for = V} end},
+        {current_term,   fun is_integer/1, fun (V, S) -> S#raft_state{current_term = V} end,   required},
+        {voted_for,      fun is_atom/1,    fun (V, S) -> S#raft_state{voted_for = V} end,      required},
         {disable_reason, undefined,        fun (V, S) -> S#raft_state{disable_reason = V} end, undefined}
     ],
     StateFile = filename:join(RootDir, ?STATE_FILE_NAME),
@@ -31,12 +31,9 @@ load(#raft_state{name = Name, data_dir = RootDir} = State) ->
                 CRC ->
                     try
                         {ok, lists:foldl(
-                            fun
-                                F({Item, Validator, Updater}, StateN) ->
-                                    F({Item, Validator, Updater, '$required'}, StateN);
-                                F({Item, Validator, Updater, Default}, StateN) ->
+                            fun ({Item, Validator, Updater, Default}, StateN) ->
                                     case proplists:lookup(Item, StateTerms) of
-                                        none when Default =:= '$required' ->
+                                        none when Default =:= required ->
                                             ?LOG_ERROR("~p read state file but cannot find ~p.",
                                                 [Name, Item], #{domain => [whatsapp, wa_raft]}),
                                             throw({error, {missing, Item}});
