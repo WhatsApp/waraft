@@ -16,6 +16,10 @@
 -define(ROOT_DIR(Table, Partition), lists:concat([?DB, "/", Table, ".", Partition, "/"])).
 
 -define(TO_ATOM(Prefix, Table, Partition), list_to_atom(lists:concat([Prefix, Table, "_" , Partition]))).
+%% Raft instance supervisor name
+-define(RAFT_INSTANCE_SUP_NAME(Application), list_to_atom(lists:concat(["raft_instance_sup_", Application]))).
+%% Raft partition supervisor name
+-define(RAFT_PART_SUP_NAME(Table, Partition), ?TO_ATOM("raft_sup_", Table, Partition)).
 %% Raft server name
 -define(RAFT_SERVER_NAME(Table, Partition), ?TO_ATOM("raft_server_", Table, Partition)).
 %% Raft log service
