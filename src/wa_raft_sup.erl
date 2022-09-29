@@ -3,85 +3,56 @@
 %%% This source code is licensed under the Apache 2.0 license found in
 %%% the LICENSE file in the root directory of this source tree.
 %%%
-%%% The OTP supervisor for supervising the RAFT partitions started on
-%%% behalf of a dependent application as part of a single call to start
-%%% partitions or a single RAFT bridge.
-%%%
-%%% This supervisor is a simple_one_for_one supervisor that will start
-%%% each partition in sequence in `start_link` but stop each partition in
-%%% parallel.
-%%%
-%%% The supervisor is flexible enough to start new RAFT partitions or stop
-%%% existing RAFT partitions if desired.
+%%% Top level OTP Supervisor for monitoring ALL raft processes.
 
 -module(wa_raft_sup).
 -compile(warn_missing_spec).
 -behaviour(supervisor).
 
-%% OTP supervision
+%% API
 -export([
     child_spec/1,
-    child_spec/2,
-    start_link/2
-]).
-
-%% Public API
--export([
-    reg_name/1,
-    add_partition/2,
-    remove_partition/3
-]).
-
-%% Supervisor callbacks
--export([
+    start_link/1,
     init/1
+]).
+
+-export([
+    init_globals/0
 ]).
 
 -include("wa_raft.hrl").
 
--spec child_spec(InitialRaftArgsList :: [wa_raft:args()]) -> supervisor:child_spec().
-child_spec(InitialRaftArgsList) ->
-    {ok, Application} = application:get_application(),
-    child_spec(Application, InitialRaftArgsList).
-
--spec child_spec(Application :: atom(), InitialRaftArgsList :: [wa_raft:args()]) -> supervisor:child_spec().
-child_spec(Application, InitialRaftArgsList) ->
+-spec child_spec(RaftArgs :: [wa_raft:args()]) -> supervisor:child_spec().
+child_spec(RaftArgs) ->
     #{
         id => ?MODULE,
-        start => {?MODULE, start_link, [Application, InitialRaftArgsList]},
+        start => {?MODULE, start_link, [RaftArgs]},
         restart => permanent,
         shutdown => infinity,
-        type => supervisor,
         modules => [?MODULE]
     }.
 
--spec start_link(Application :: atom(), InitialRaftArgsList :: [wa_raft:args()]) -> supervisor:startlink_ret().
-start_link(Application, InitialRaftArgsList) ->
-    case supervisor:start_link({local, reg_name(Application)}, ?MODULE, []) of
-        {ok, InstancePid} = Result ->
-            [{ok, _} = add_partition(InstancePid, RaftArgs) || RaftArgs <- InitialRaftArgsList],
-            Result;
-        Else ->
-            Else
-    end.
+-spec start_link([term()]) -> supervisor:startlink_ret().
+start_link(RaftArgs) ->
+    supervisor:start_link({local, ?MODULE}, ?MODULE, RaftArgs).
 
--spec reg_name(Application :: atom()) -> RegName :: atom().
-reg_name(Application) ->
-    ?RAFT_INSTANCE_SUP_NAME(Application).
+-spec init([wa_raft:args()]) -> {ok, {supervisor:sup_flags(), list(supervisor:child_spec())}}.
+init(RaftArgs) ->
+    init_globals(),
+    wa_raft_info:init_tables(),
+    wa_raft_transport:setup_tables(),
+    ChildSpecs = [
+        wa_raft_transport:child_spec(),
+        wa_raft_transport_sup:child_spec(),
+        wa_raft_dist_transport:child_spec(),
+        wa_raft_part_top_sup:child_spec(RaftArgs)
+    ],
+    {ok, {#{strategy => one_for_one, intensity => 5, period => 1}, lists:flatten(ChildSpecs)}}.
 
--spec add_partition(SupervisorSpec :: pid() | atom(), RaftArgs :: wa_raft:args()) -> supervisor:startchild_ret().
-add_partition(SupervisorSpec, RaftArgs) ->
-    supervisor:start_child(SupervisorSpec, [RaftArgs]).
-
--spec remove_partition(SupervisorSpec :: pid() | atom(), Table :: wa_raft:table(), Partition :: wa_raft:partition()) -> ok | {error, not_found | simple_one_for_one}.
-remove_partition(SupervisorSpec, Table, Partition) ->
-    case whereis(?RAFT_PART_SUP_NAME(Table, Partition)) of
-        Pid when is_pid(Pid) -> supervisor:terminate_child(SupervisorSpec, Pid);
-        _                    -> {error, not_found}
-    end.
-
--spec init([]) -> {ok, {supervisor:sup_flags(), [supervisor:child_spec()]}}.
-init([]) ->
-    {ok, {#{strategy => simple_one_for_one, intensity => 10, period => 1}, [
-        wa_raft_part_sup:child_spec()
-    ]}}.
+-spec init_globals() -> ok.
+init_globals() ->
+    % it may trigger GC for all processes, but we only do it only during app start
+    persistent_term:put(?RAFT_COUNTERS, counters:new(?RAFT_NUMBER_OF_GLOBAL_COUNTERS, [atomics])),
+    persistent_term:put(raft_metrics_module, ?RAFT_CONFIG(raft_metrics_module, wa_raft_metrics)),
+    persistent_term:put(raft_distribution_module, ?RAFT_CONFIG(raft_distribution_module, wa_raft_distribution)),
+    ok.

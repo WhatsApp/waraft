@@ -7,12 +7,6 @@
 
 -module(wa_raft).
 -compile(warn_missing_spec).
--behaviour(application).
-
--export([
-    start/2,
-    stop/1
-]).
 
 -export_type([
     table/0,
@@ -38,11 +32,3 @@
         % Witness flag
         witness => boolean()
     }.
-
--spec start(Type :: application:start_type(), Args :: term()) -> {ok, Pid :: pid()}.
-start(normal, _Args) ->
-    {ok, _Pid} = wa_raft_global_sup:start_link().
-
--spec stop(State :: term()) -> term().
-stop(_State) ->
-    ok.
