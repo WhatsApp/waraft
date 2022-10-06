@@ -143,7 +143,8 @@
     | {disable_reason, string()}
     | {witness, boolean()}
     | {offline_peers, [node()]}
-    | {config, config()}.
+    | {config, config()}
+    | {config_index, wa_raft_log:log_index()}.
 
 -type event() :: rpc() | command() | timeout_type().
 
@@ -1471,6 +1472,7 @@ command(StateName, {call, From}, ?STATUS_COMMAND, State) ->
         {disable_reason, State#raft_state.disable_reason},
         {offline_peers, State#raft_state.offline_peers},
         {config, config(State)},
+        {config_index, config_index(State)},
         {witness, State#raft_state.witness}
     ],
     {keep_state_and_data, {reply, From, Status}};
@@ -1664,6 +1666,22 @@ config(#raft_state{cached_config = undefined} = State) ->
 -spec default_config(State :: #raft_state{}) -> Config :: config().
 default_config(#raft_state{}) ->
     #{version => ?RAFT_CONFIG_CURRENT_VERSION}.
+
+-spec config_index(State :: #raft_state{}) -> ConfigIndex :: wa_raft_log:log_index().
+config_index(#raft_state{log_view = View, cached_config = {ConfigIndex, _Config}}) ->
+    case wa_raft_log:config(View) of
+        {ok, LogConfigIndex, LogConfig} when LogConfig =/= undefined, LogConfigIndex > ConfigIndex ->
+            LogConfigIndex;
+        {ok, _LogConfigIndex, _LogConfig} ->
+            % This case will normally only occur when the log has leftover log entries from
+            % previous incarnations of the RAFT server that have been applied but not yet
+            % trimmed this incarnation.
+            ConfigIndex;
+        not_found ->
+            ConfigIndex
+    end;
+config_index(#raft_state{cached_config = undefined} = State) ->
+    config_index(State#raft_state{cached_config = {0, default_config(State)}}).
 
 %% Loads and caches the current configuration stored in the RAFT storage.
 %% This configuration is used whenever there is no newer configuration
