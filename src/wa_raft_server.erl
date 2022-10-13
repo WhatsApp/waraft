@@ -669,7 +669,7 @@ leader(state_timeout, _, #raft_state{name = Name, current_term = CurrentTerm} = 
 %% [Commit] If a handover is in progress, then try to redirect to handover target
 leader(cast, ?COMMIT_COMMAND({Ref, _Op}), #raft_state{storage = Storage, handover = {Peer, _Ref, _Timeout}} = State) ->
     ?RAFT_COUNT('raft.commit.handover'),
-    wa_raft_storage:fulfill_op(Storage, Ref, {error, {redirect, Peer}}), % Optimistically redirect to handover peer
+    wa_raft_storage:fulfill_op(Storage, Ref, {error, {notify_redirect, Peer}}), % Optimistically redirect to handover peer
     {keep_state, State};
 %% [Commit] Otherwise, add a new commit to the RAFT log
 leader(cast, ?COMMIT_COMMAND(Op), #raft_state{current_term = CurrentTerm, log_view = View0, next_index = NextIndex} = State0) ->
