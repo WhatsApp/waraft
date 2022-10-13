@@ -152,6 +152,7 @@
 -type append_entries_rpc()          :: ?APPEND_ENTRIES_RPC         (wa_raft_log:log_term(), node(), wa_raft_log:log_index(), wa_raft_log:log_term(), [wa_raft_log:log_entry()], wa_raft_log:log_index(), wa_raft_log:log_index()).
 -type append_entries_response_rpc() :: ?APPEND_ENTRIES_RESPONSE_RPC(wa_raft_log:log_term(), node(), wa_raft_log:log_index(), boolean(), wa_raft_log:log_index()).
 -type request_vote_rpc()            :: ?REQUEST_VOTE_RPC           (wa_raft_log:log_term(), node(), election_type(), wa_raft_log:log_index(), wa_raft_log:log_term()).
+-type request_vote_named_rpc()      :: ?REQUEST_VOTE_NAMED_RPC     (wa_raft_log:log_term(), atom(), node(), election_type(), wa_raft_log:log_index(), wa_raft_log:log_term()).
 -type vote_rpc()                    :: ?VOTE_RPC                   (wa_raft_log:log_term(), node(), boolean()).
 -type handover_rpc()                :: ?HANDOVER_RPC               (wa_raft_log:log_term(), node(), reference(), wa_raft_log:log_index(), wa_raft_log:log_term(), [wa_raft_log:log_entry()]).
 -type handover_failed_rpc()         :: ?HANDOVER_FAILED_RPC        (wa_raft_log:log_term(), node(), reference()).
@@ -395,21 +396,21 @@ stalled(enter, _OldStateName, State) ->
     {keep_state, State1};
 
 %% [RequestVote RPC] Discard normal RequestVote RPCs when we have an active leader.
-stalled(Type, ?REQUEST_VOTE_RPC(_Term, _SenderId, normal, _LastLogIndex, _LastLogTerm) = Event, State) ->
+stalled(Type, ?REQUEST_VOTE_NAMED_RPC(_Term, _SenderName, _SenderNode, normal, _LastLogIndex, _LastLogTerm) = Event, State) ->
     filter_vote_request(?FUNCTION_NAME, Type, Event, State);
 
 %% [General Rules] Discard any incoming RPCs with a term older than the current term
-stalled(_Type, ?RAFT_RPC(RPCType, Term, SenderId, _Payload),
+stalled(_Type, ?RAFT_NAMED_RPC(RPCType, Term, SenderName, SenderNode, _Payload),
         #raft_state{name = Name, current_term = CurrentTerm} = State) when Term < CurrentTerm ->
     ?LOG_NOTICE("Stalled[~p, term ~p] received stale ~p from ~p with old term ~p. Dropping.",
-        [Name, CurrentTerm, RPCType, SenderId, Term], #{domain => [whatsapp, wa_raft]}),
-    ?MODULE:cast(SenderId, ?NOTIFY_TERM_RPC(CurrentTerm, Name, node()), State),
+        [Name, CurrentTerm, RPCType, {SenderName, SenderNode}, Term], #{domain => [whatsapp, wa_raft]}),
+    ?MODULE:cast({SenderName, SenderNode}, ?NOTIFY_TERM_RPC(CurrentTerm, Name, node()), State),
     {keep_state, State};
 %% [General Rules] Advance to the newer term and reset state when seeing a newer term in an incoming RPC
-stalled(Type, ?RAFT_RPC(RPCType, Term, SenderId, _Payload) = Event,
+stalled(Type, ?RAFT_NAMED_RPC(RPCType, Term, SenderName, SenderNode, _Payload) = Event,
         #raft_state{name = Name, current_term = CurrentTerm} = State) when Term > CurrentTerm ->
     ?LOG_NOTICE("Stalled[~p, term ~p] received ~p from ~p with new term ~p. Advancing.",
-        [Name, CurrentTerm, RPCType, SenderId, Term], #{domain => [whatsapp, wa_raft]}),
+        [Name, CurrentTerm, RPCType, {SenderName, SenderNode}, Term], #{domain => [whatsapp, wa_raft]}),
     {repeat_state, advance_term(Term, State), {next_event, Type, Event}};
 
 %% [AppendEntries] If we haven't discovered leader for this term, record it
@@ -504,21 +505,21 @@ leader(enter, OldStateName,
     {keep_state, State4, ?HEARTBEAT_TIMEOUT};
 
 %% [RequestVote RPC] Discard normal RequestVote RPCs when we have an active leader.
-leader(Type, ?REQUEST_VOTE_RPC(_Term, _SenderId, normal, _LastLogIndex, _LastLogTerm) = Event, State) ->
+leader(Type, ?REQUEST_VOTE_NAMED_RPC(_Term, _SenderName, _SenderNode, normal, _LastLogIndex, _LastLogTerm) = Event, State) ->
     filter_vote_request(?FUNCTION_NAME, Type, Event, State);
 
 %% [General Rules] Discard any incoming RPCs with a term older than the current term
-leader(_Type, ?RAFT_RPC(RPCType, Term, SenderId, _Payload),
+leader(_Type, ?RAFT_NAMED_RPC(RPCType, Term, SenderName, SenderNode, _Payload),
         #raft_state{name = Name, current_term = CurrentTerm} = State) when Term < CurrentTerm ->
     ?LOG_NOTICE("Leader[~p, term ~p] received stale ~p from ~p with old term ~p. Dropping.",
-        [Name, CurrentTerm, RPCType, SenderId, Term], #{domain => [whatsapp, wa_raft]}),
-    ?MODULE:cast(SenderId, ?NOTIFY_TERM_RPC(CurrentTerm, Name, node()), State),
+        [Name, CurrentTerm, RPCType, {SenderName, SenderNode}, Term], #{domain => [whatsapp, wa_raft]}),
+    ?MODULE:cast({SenderName, SenderNode}, ?NOTIFY_TERM_RPC(CurrentTerm, Name, node()), State),
     {keep_state, State};
 %% [General Rules] Advance to the newer term and reset state when seeing a newer term in an incoming RPC
-leader(Type, ?RAFT_RPC(RPCType, Term, SenderId, _Payload) = Event,
+leader(Type, ?RAFT_NAMED_RPC(RPCType, Term, SenderName, SenderNode, _Payload) = Event,
         #raft_state{name = Name, current_term = CurrentTerm} = State) when Term > CurrentTerm ->
     ?LOG_NOTICE("Leader[~p, term ~p] received ~p from ~p with new term ~p. Advancing and switching to follower.",
-        [Name, CurrentTerm, RPCType, SenderId, Term], #{domain => [whatsapp, wa_raft]}),
+        [Name, CurrentTerm, RPCType, {SenderName, SenderNode}, Term], #{domain => [whatsapp, wa_raft]}),
     {next_state, follower, advance_term(Term, State), {next_event, Type, Event}};
 
 %% [Leader] Handle AppendEntries RPC (5.1, 5.2)
@@ -894,21 +895,21 @@ follower(enter, OldStateName,
     {keep_state, State2, ?ELECTION_TIMEOUT};
 
 %% [RequestVote RPC] Discard normal RequestVote RPCs when we have an active leader.
-follower(Type, ?REQUEST_VOTE_RPC(_Term, _SenderId, normal, _LastLogIndex, _LastLogTerm) = Event, State) ->
+follower(Type, ?REQUEST_VOTE_NAMED_RPC(_Term, _SenderName, _SenderNode, normal, _LastLogIndex, _LastLogTerm) = Event, State) ->
     filter_vote_request(?FUNCTION_NAME, Type, Event, State);
 
 %% [General Rules] Discard any incoming RPCs with a term older than the current term
-follower(_Type, ?RAFT_RPC(RPCType, Term, SenderId, _Payload),
+follower(_Type, ?RAFT_NAMED_RPC(RPCType, Term, SenderName, SenderNode, _Payload),
         #raft_state{name = Name, current_term = CurrentTerm} = State) when Term < CurrentTerm ->
     ?LOG_NOTICE("Follower[~p, term ~p] received stale ~p from ~p with old term ~p. Dropping.",
-        [Name, CurrentTerm, RPCType, SenderId, Term], #{domain => [whatsapp, wa_raft]}),
-    ?MODULE:cast(SenderId, ?NOTIFY_TERM_RPC(CurrentTerm, Name, node()), State),
+        [Name, CurrentTerm, RPCType, {SenderName, SenderNode}, Term], #{domain => [whatsapp, wa_raft]}),
+    ?MODULE:cast({SenderName, SenderNode}, ?NOTIFY_TERM_RPC(CurrentTerm, Name, node()), State),
     {keep_state, State};
 %% [General Rules] Advance to the newer term and reset state when seeing a newer term in an incoming RPC
-follower(Type, ?RAFT_RPC(RPCType, Term, SenderId, _Payload) = Event,
+follower(Type, ?RAFT_NAMED_RPC(RPCType, Term, SenderName, SenderNode, _Payload) = Event,
         #raft_state{name = Name, current_term = CurrentTerm} = State) when Term > CurrentTerm ->
     ?LOG_NOTICE("Follower[~p, term ~p] received ~p from ~p with new term ~p. Advancing.",
-        [Name, CurrentTerm, RPCType, SenderId, Term], #{domain => [whatsapp, wa_raft]}),
+        [Name, CurrentTerm, RPCType, {SenderName, SenderNode}, Term], #{domain => [whatsapp, wa_raft]}),
     {repeat_state, advance_term(Term, State), {next_event, Type, Event}};
 
 %% [Follower] Handle AppendEntries RPC (5.2, 5.3)
@@ -1072,21 +1073,21 @@ candidate(enter, _PreviousState,
     {keep_state, State3, ?ELECTION_TIMEOUT};
 
 %% [RequestVote RPC] Discard normal RequestVote RPCs when we have an active leader.
-candidate(Type, ?REQUEST_VOTE_RPC(_Term, _SenderId, normal, _LastLogIndex, _LastLogTerm) = Event, State) ->
+candidate(Type, ?REQUEST_VOTE_NAMED_RPC(_Term, _SenderName, _SenderNode, normal, _LastLogIndex, _LastLogTerm) = Event, State) ->
     filter_vote_request(?FUNCTION_NAME, Type, Event, State);
 
 %% [General Rules] Discard any incoming RPCs with a term older than the current term
-candidate(_Type, ?RAFT_RPC(RPCType, Term, SenderId, _Payload),
+candidate(_Type, ?RAFT_NAMED_RPC(RPCType, Term, SenderName, SenderNode, _Payload),
         #raft_state{name = Name, current_term = CurrentTerm} = State) when Term < CurrentTerm ->
     ?LOG_NOTICE("Candidate[~p, term ~p] received stale ~p from ~p with old term ~p. Dropping.",
-        [Name, CurrentTerm, RPCType, SenderId, Term], #{domain => [whatsapp, wa_raft]}),
-    ?MODULE:cast(SenderId, ?NOTIFY_TERM_RPC(CurrentTerm, Name, node()), State),
+        [Name, CurrentTerm, RPCType, {SenderName, SenderNode}, Term], #{domain => [whatsapp, wa_raft]}),
+    ?MODULE:cast({SenderName, SenderNode}, ?NOTIFY_TERM_RPC(CurrentTerm, Name, node()), State),
     {keep_state, State};
 %% [General Rules] Advance to the newer term and reset state when seeing a newer term in an incoming RPC
-candidate(Type, ?RAFT_RPC(RPCType, Term, SenderId, _Payload) = Event,
+candidate(Type, ?RAFT_NAMED_RPC(RPCType, Term, SenderName, SenderNode, _Payload) = Event,
         #raft_state{name = Name, current_term = CurrentTerm} = State) when Term > CurrentTerm ->
     ?LOG_NOTICE("Candidate[~p, term ~p] received ~p from ~p with new term ~p. Advancing and switching to follower.",
-        [Name, CurrentTerm, RPCType, SenderId, Term], #{domain => [whatsapp, wa_raft]}),
+        [Name, CurrentTerm, RPCType, {SenderName, SenderNode}, Term], #{domain => [whatsapp, wa_raft]}),
     {next_state, follower, advance_term(Term, State), {next_event, Type, Event}};
 
 %% [AppendEntries RPC] Switch to follower because current term now has a leader (5.2, 5.3)
@@ -1206,22 +1207,22 @@ disabled(enter, FromState, #raft_state{name = Name, current_term = CurrentTerm} 
     {keep_state, State2};
 
 %% [RequestVote RPC] Disabled nodes drop all RequestVote RPCs unconditionally
-disabled(_Type, ?REQUEST_VOTE_RPC(_Term, _SenderId, normal, _LastLogIndex, _LastLogTerm), State) ->
+disabled(_Type, ?REQUEST_VOTE_NAMED_RPC(_Term, _SenderName, _SenderNode, normal, _LastLogIndex, _LastLogTerm), State) ->
     ?RAFT_COUNT('raft.server.request_vote.disabled'),
     {keep_state, State};
 
 %% [General Rules] Discard any incoming RPCs with a term older than the current term
-disabled(_Type, ?RAFT_RPC(RPCType, Term, SenderId, _Payload),
+disabled(_Type, ?RAFT_NAMED_RPC(RPCType, Term, SenderName, SenderNode, _Payload),
         #raft_state{name = Name, current_term = CurrentTerm} = State) when Term < CurrentTerm ->
     ?LOG_NOTICE("Disabled[~p, term ~p] received stale ~p from ~p with old term ~p. Dropping.",
-        [Name, CurrentTerm, RPCType, SenderId, Term], #{domain => [whatsapp, wa_raft]}),
+        [Name, CurrentTerm, RPCType, {SenderName, SenderNode}, Term], #{domain => [whatsapp, wa_raft]}),
     % Do not notify term here because a disabled node should be invisible to the cluster.
     {keep_state, State};
 %% [General Rules] Advance to the newer term and reset state when seeing a newer term in an incoming RPC
-disabled(Type, ?RAFT_RPC(RPCType, Term, SenderId, _Payload) = Event,
+disabled(Type, ?RAFT_NAMED_RPC(RPCType, Term, SenderName, SenderNode, _Payload) = Event,
         #raft_state{name = Name, current_term = CurrentTerm} = State) when Term > CurrentTerm ->
     ?LOG_NOTICE("Disabled[~p, term ~p] received ~p from ~p with new term ~p. Advancing.",
-        [Name, CurrentTerm, RPCType, SenderId, Term], #{domain => [whatsapp, wa_raft]}),
+        [Name, CurrentTerm, RPCType, {SenderName, SenderNode}, Term], #{domain => [whatsapp, wa_raft]}),
     {repeat_state, advance_term(Term, State), {next_event, Type, Event}};
 
 disabled(_Type, ?APPEND_ENTRIES_RPC(CurrentTerm, SenderId, _PrevLogIndex, _PrevLogTerm, _Entries, _CommitIndex, _TrimIndex),
@@ -1309,20 +1310,20 @@ witness(state_timeout, _,
     {keep_state, State, ?WITNESS_TIMEOUT};
 
 %% [RequestVote RPC] Discard normal RequestVote RPCs when we have an active leader.
-witness(Type, ?REQUEST_VOTE_RPC(_Term, _SenderId, normal, _LastLogIndex, _LastLogTerm) = Event, State) ->
+witness(Type, ?REQUEST_VOTE_NAMED_RPC(_Term, _SenderName, _SenderNode, normal, _LastLogIndex, _LastLogTerm) = Event, State) ->
     filter_vote_request(?FUNCTION_NAME, Type, Event, State);
 
-witness(_Type, ?RAFT_RPC(RPCType, Term, SenderId, _Payload),
+witness(_Type, ?RAFT_NAMED_RPC(RPCType, Term, SenderName, SenderNode, _Payload),
         #raft_state{name = Name, current_term = CurrentTerm} = State) when Term < CurrentTerm ->
     ?LOG_NOTICE("Witness[~p, term ~p] received stale ~p from ~p with old term ~p. Dropping.",
-        [Name, CurrentTerm, RPCType, SenderId, Term], #{domain => [whatsapp, wa_raft]}),
-    ?MODULE:cast(SenderId, ?NOTIFY_TERM_RPC(CurrentTerm, Name, node()), State),
+        [Name, CurrentTerm, RPCType, {SenderName, SenderNode}, Term], #{domain => [whatsapp, wa_raft]}),
+    ?MODULE:cast({SenderName, SenderNode}, ?NOTIFY_TERM_RPC(CurrentTerm, Name, node()), State),
     {keep_state, State};
 
-witness(Type, ?RAFT_RPC(RPCType, Term, SenderId, _Payload) = Event,
+witness(Type, ?RAFT_NAMED_RPC(RPCType, Term, SenderName, SenderNode, _Payload) = Event,
         #raft_state{name = Name, current_term = CurrentTerm} = State) when Term > CurrentTerm ->
     ?LOG_NOTICE("Witness[~p, term ~p] received ~p from ~p with new term ~p. Advancing.",
-        [Name, CurrentTerm, RPCType, SenderId, Term], #{domain => [whatsapp, wa_raft]}),
+        [Name, CurrentTerm, RPCType, {SenderName, SenderNode}, Term], #{domain => [whatsapp, wa_raft]}),
     {repeat_state, advance_term(Term, State), {next_event, Type, Event}};
 
 %% [Witness] Handle AppendEntries RPC (5.2, 5.3)
@@ -1739,8 +1740,8 @@ random_election_timeout() ->
 %% one that is replicating to a quorum so we can check if we have gotten a
 %% heartbeat recently.
 -spec filter_vote_request(StateName :: state(), Type :: gen_statem:event_type(),
-                          Event :: request_vote_rpc(), State :: #raft_state{}) -> gen_statem:event_handler_result(state(), #raft_state{}).
-filter_vote_request(StateName, Type, ?REQUEST_VOTE_RPC(Term, SenderId, normal, LastLogIndex, LastLogTerm),
+                          Event :: request_vote_named_rpc(), State :: #raft_state{}) -> gen_statem:event_handler_result(state(), #raft_state{}).
+filter_vote_request(StateName, Type, ?REQUEST_VOTE_NAMED_RPC(Term, SenderName, SenderNode, normal, LastLogIndex, LastLogTerm),
                     #raft_state{name = Name, current_term = CurrentTerm, leader_heartbeat_ts = LeaderHeartbeatTs} = State) ->
     AllowedDelay = ?RAFT_ELECTION_TIMEOUT_MS() div 2,
     Delay = case LeaderHeartbeatTs of
@@ -1751,14 +1752,14 @@ filter_vote_request(StateName, Type, ?REQUEST_VOTE_RPC(Term, SenderId, normal, L
         true ->
             % We have not gotten a heartbeat from the leader recently so allow this vote request
             % to go through by reraising it with the special 'allowed' type.
-            {keep_state, State, {next_event, Type, ?REQUEST_VOTE_RPC(Term, SenderId, allowed, LastLogIndex, LastLogTerm)}};
+            {keep_state, State, {next_event, Type, ?REQUEST_VOTE_NAMED_RPC(Term, SenderName, SenderNode, allowed, LastLogIndex, LastLogTerm)}};
         false ->
             % We have gotten a heartbeat recently so drop this vote request.
             % Log this at debug level because we may end up with alot of these when we have
             % removed a server from the cluster but not yet shut it down.
             ?RAFT_COUNT('raft.server.request_vote.drop'),
             ?LOG_DEBUG("~p[~p, term ~p] dropping normal vote request from ~p because leader was still active ~p ms ago (allowed ~p ms).",
-                [StateName, Name, CurrentTerm, SenderId, Delay, AllowedDelay], #{domain => [whatsapp, wa_raft]}),
+                [StateName, Name, CurrentTerm, {SenderName, SenderNode}, Delay, AllowedDelay], #{domain => [whatsapp, wa_raft]}),
             {keep_state, State}
     end.
 
@@ -2209,8 +2210,13 @@ reply(Type, Message) ->
         [Type, Message, 100], #{domain => [whatsapp, wa_raft]}),
     ok.
 
--spec cast(node(), rpc(), #raft_state{}) -> ok | {error, term()}.
-cast(DestId, Message, #raft_state{name = Name, offline_peers = OfflinePeers}) when OfflinePeers =:= [] ->
+-spec cast(node() | peer(), rpc(), #raft_state{}) -> ok | {error, term()}.
+cast(DestIdOrPeer, Message, #raft_state{name = Name, offline_peers = OfflinePeers}) when OfflinePeers =:= [] ->
+    % TODO(hsun324): T112326686 - remove compatability with just node after all RPCs migrated
+    DestPeer = case DestIdOrPeer of
+        {_, _} -> DestIdOrPeer;
+        _      -> {Name, DestIdOrPeer}
+    end,
     try
         % TODO(hsun324): T112326686 - upgrade clause to add assumed name to RPCs without SenderName
         AdjustedMessage =
@@ -2220,22 +2226,25 @@ cast(DestId, Message, #raft_state{name = Name, offline_peers = OfflinePeers}) wh
             end,
 
         % TODO(hsun324): For the time being, assume that all members of the cluster use the same server name.
-        DestAddr = {Name, DestId},
-        ok = ?RAFT_DISTRIBUTION_MODULE:cast(DestAddr, AdjustedMessage)
+        ok = ?RAFT_DISTRIBUTION_MODULE:cast(DestPeer, AdjustedMessage)
     catch
         _:E ->
             ?RAFT_COUNT({'raft.server.cast.error', E}),
-            ?LOG_DEBUG("Cast to ~p error ~100p", [DestId, E], #{domain => [whatsapp, wa_raft]}),
+            ?LOG_DEBUG("Cast to ~p error ~100p", [DestPeer, E], #{domain => [whatsapp, wa_raft]}),
             {error, E}
     end;
-cast(DestId, Message, #raft_state{offline_peers = OfflinePeers} = State) ->
-    case lists:member(node(), OfflinePeers) orelse lists:member(DestId, OfflinePeers) of
+cast(DestIdOrPeer, Message, #raft_state{offline_peers = OfflinePeers} = State) ->
+    DestNode = case DestIdOrPeer of
+        {_, N} -> N;
+        _      -> DestIdOrPeer
+    end,
+    case lists:member(node(), OfflinePeers) orelse lists:member(DestNode, OfflinePeers) of
         true ->
             ?RAFT_COUNT('raft.server.cast.error.not_online'),
-            ?LOG_DEBUG("Cast to ~p error not_online", [DestId], #{domain => [whatsapp, wa_raft]}),
+            ?LOG_DEBUG("Cast to ~p error not_online", [DestIdOrPeer], #{domain => [whatsapp, wa_raft]}),
             {error, not_online};
         _ ->
-            cast(DestId, Message, State#raft_state{offline_peers = []})
+            cast(DestIdOrPeer, Message, State#raft_state{offline_peers = []})
     end.
 
 -spec broadcast(rpc(), #raft_state{}) -> ok.

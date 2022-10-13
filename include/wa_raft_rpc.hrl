@@ -16,6 +16,8 @@
 
 -define(REQUEST_VOTE_RPC(Term, SenderId, ElectionType, LastLogIndex, LastLogTerm),
     ?RAFT_RPC(request_vote, Term, SenderId, {ElectionType, LastLogIndex, LastLogTerm})).
+-define(REQUEST_VOTE_NAMED_RPC(Term, SenderName, SenderNode, ElectionType, LastLogIndex, LastLogTerm),
+    ?RAFT_NAMED_RPC(request_vote, Term, SenderName, SenderNode, {ElectionType, LastLogIndex, LastLogTerm})).
 -define(VOTE_RPC(Term, SenderId, Vote),
     ?RAFT_RPC(vote, Term, SenderId, {Vote})).
 
