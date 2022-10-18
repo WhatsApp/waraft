@@ -100,8 +100,6 @@
     partition :: wa_raft:partition(),
     % Data dir
     data_dir :: string(),
-    % Offline peers in current group
-    offline_peers = [] :: [atom()],
     % Log handle and view
     log_view :: wa_raft_log:view(),
     % Storage service name

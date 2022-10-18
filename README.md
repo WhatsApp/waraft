@@ -1,6 +1,6 @@
 # WhatsApp Raft - WARaft
 
-WARaft is a Raft library in Erlang by WhatsApp. It provides an Erlang implementation to obtain consensus among replicated state machines. Consensus is a fundamental problem in fault-tolerant distributed systems. WARaft has been used as consensus provider in WhatsApp message storage, which is a large scale strongly consistent storage system across 5+ datacenters. 
+WARaft is a Raft library in Erlang by WhatsApp. It provides an Erlang implementation to obtain consensus among replicated state machines. Consensus is a fundamental problem in fault-tolerant distributed systems. WARaft has been used as consensus provider in WhatsApp message storage, which is a large scale strongly consistent storage system across 5+ datacenters.
 
 ## Features
 
@@ -13,7 +13,7 @@ WARaft is a Raft library in Erlang by WhatsApp. It provides an Erlang implementa
 
 The following code snippet gives a quick glance about how WARaft works. It creates single node WARaft cluster and write a record.
 
-The [example directory](https://github.com/WhatsApp/waraft/tree/main/examples/kvstore/src) contains a generic key-value store built on top of WARaft. 
+The [example directory](https://github.com/WhatsApp/waraft/tree/main/examples/kvstore/src) contains a generic key-value store built on top of WARaft.
 
 ```
 % Cluster config - single node. table name test, partition 1
@@ -42,7 +42,6 @@ The [example directory](https://github.com/WhatsApp/waraft/tree/main/examples/kv
  {votes,#{}},
  {inflight_applies,0},
  {disable_reason,undefined},
- {offline_peers,[]},
  {config,#{version => 1}}]
 
 % Promote current node as leader
@@ -67,7 +66,6 @@ ok
  {votes,#{}},
  {inflight_applies,0},
  {disable_reason,undefined},
- {offline_peers,[]},
  {config,#{membership => [{raft_server_test_1,nonode@nohost}],
            version => 1}}]
 
@@ -89,4 +87,3 @@ ok
 ## License
 
 WARaft is [Apache licensed](./LICENSE).
-

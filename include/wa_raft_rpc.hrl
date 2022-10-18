@@ -52,5 +52,3 @@
 -define(ENABLE_COMMAND,                             ?RAFT_COMMAND(enable, undefined)).
 -define(DISABLE_COMMAND(Reason),                    ?RAFT_COMMAND(disable, Reason)).
 -define(WITNESS_COMMAND(),                          ?RAFT_COMMAND(witness, undefined)).
-
--define(SET_PEER_OFFLINE_COMMAND(Peer, IsOffline),  ?RAFT_COMMAND(set_peer_offline, {Peer, IsOffline})).

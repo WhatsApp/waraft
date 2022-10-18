@@ -59,7 +59,6 @@
     disable/2,
     enter_witness/1,
     enable/1,
-    set_peer_offline/3,
     cast/3,
     witness/3
 ]).
@@ -142,7 +141,6 @@
     | {inflight_applies, non_neg_integer()}
     | {disable_reason, string()}
     | {witness, boolean()}
-    | {offline_peers, [node()]}
     | {config, config()}
     | {config_index, wa_raft_log:log_index()}.
 
@@ -159,7 +157,7 @@
 -type notify_term_rpc()             :: ?NOTIFY_TERM_RPC            (wa_raft_log:log_term(), atom(), node()).
 
 -type command() :: commit_command() | read_command() | status_command() | promote_command() | resign_command() | adjust_membership_command() | snapshot_available_command() |
-                   handover_candidates_command() | handover_command() | enable_command() | disable_command() | witness_command() | set_peer_offline_command().
+                   handover_candidates_command() | handover_command() | enable_command() | disable_command() | witness_command().
 -type commit_command()              :: ?COMMIT_COMMAND(wa_raft_acceptor:op()).
 -type read_command()                :: ?READ_COMMAND(wa_raft_acceptor:read_op()).
 -type status_command()              :: ?STATUS_COMMAND.
@@ -172,7 +170,6 @@
 -type enable_command()              :: ?ENABLE_COMMAND.
 -type disable_command()             :: ?DISABLE_COMMAND(term()).
 -type witness_command()             :: ?WITNESS_COMMAND().
--type set_peer_offline_command()    :: ?SET_PEER_OFFLINE_COMMAND(node(), boolean()).
 
 -type election_type() :: normal | force | allowed.
 -type timeout_type() :: election | heartbeat.
@@ -318,10 +315,6 @@ enter_witness(Name) ->
 -spec enable(Name :: atom() | pid()) -> ok | {error, ErrorReason :: atom()}.
 enable(Name) ->
     gen_server:call(Name, ?ENABLE_COMMAND, ?RPC_CALL_TIMEOUT_MS).
-
--spec set_peer_offline(Name :: atom() | pid(), Peer :: node(), IsOffline :: boolean()) -> ok | {error, ErrorReason :: atom()}.
-set_peer_offline(Name, Peer, IsOffline) ->
-    gen_server:cast(Name, ?SET_PEER_OFFLINE_COMMAND(Peer, IsOffline)).
 
 %% ==================================================
 %%  gen_statem Callbacks
@@ -1471,7 +1464,6 @@ command(StateName, {call, From}, ?STATUS_COMMAND, State) ->
         {votes, State#raft_state.votes},
         {inflight_applies, wa_raft_queue:apply_queue_size(State#raft_state.table, State#raft_state.partition)},
         {disable_reason, State#raft_state.disable_reason},
-        {offline_peers, State#raft_state.offline_peers},
         {config, config(State)},
         {config_index, config_index(State)},
         {witness, State#raft_state.witness}
@@ -1597,9 +1589,6 @@ command(StateName, cast, ?DISABLE_COMMAND(Reason), #raft_state{name = Name, curr
     State1 = State0#raft_state{disable_reason = Reason},
     wa_raft_durable_state:store(State1),
     {next_state, disabled, State1};
-%% [Set Peer Offline] Update peer status
-command(_StateName, cast, ?SET_PEER_OFFLINE_COMMAND(Peer, IsOffline), #raft_state{} = State) ->
-    {keep_state, update_offline_peers(State, Peer, IsOffline)};
 %% [Fallback] Drop unknown command calls.
 command(StateName, Type, Event, #raft_state{name = Name, current_term = CurrentTerm}) ->
     ?LOG_NOTICE("~p[~p, term ~p] dropping unhandled command ~p event ~p",
@@ -2211,7 +2200,7 @@ reply(Type, Message) ->
     ok.
 
 -spec cast(node() | peer(), rpc(), #raft_state{}) -> ok | {error, term()}.
-cast(DestIdOrPeer, Message, #raft_state{name = Name, offline_peers = OfflinePeers}) when OfflinePeers =:= [] ->
+cast(DestIdOrPeer, Message, #raft_state{name = Name}) ->
     % TODO(hsun324): T112326686 - remove compatability with just node after all RPCs migrated
     DestPeer = case DestIdOrPeer of
         {_, _} -> DestIdOrPeer;
@@ -2232,34 +2221,12 @@ cast(DestIdOrPeer, Message, #raft_state{name = Name, offline_peers = OfflinePeer
             ?RAFT_COUNT({'raft.server.cast.error', E}),
             ?LOG_DEBUG("Cast to ~p error ~100p", [DestPeer, E], #{domain => [whatsapp, wa_raft]}),
             {error, E}
-    end;
-cast(DestIdOrPeer, Message, #raft_state{offline_peers = OfflinePeers} = State) ->
-    DestNode = case DestIdOrPeer of
-        {_, N} -> N;
-        _      -> DestIdOrPeer
-    end,
-    case lists:member(node(), OfflinePeers) orelse lists:member(DestNode, OfflinePeers) of
-        true ->
-            ?RAFT_COUNT('raft.server.cast.error.not_online'),
-            ?LOG_DEBUG("Cast to ~p error not_online", [DestIdOrPeer], #{domain => [whatsapp, wa_raft]}),
-            {error, not_online};
-        _ ->
-            cast(DestIdOrPeer, Message, State#raft_state{offline_peers = []})
     end.
 
 -spec broadcast(rpc(), #raft_state{}) -> ok.
 broadcast(Message, State) ->
     Peers = config_peers(config(State), State),
     lists:foreach(fun({Id, _Addr}) -> catch ok = ?MODULE:cast(Id, Message, State) end, Peers).
-
--spec update_offline_peers(State :: #raft_state{}, Peer :: node(), IsOffline :: boolean()) -> #raft_state{}.
-update_offline_peers(#raft_state{offline_peers = OfflinePeers} = State0, Peer, IsOffline) ->
-    case IsOffline of
-        true ->
-            State0#raft_state{offline_peers = lists:usort([Peer | OfflinePeers])};
-        _ ->
-            State0#raft_state{offline_peers = lists:delete(Peer, OfflinePeers)}
-    end.
 
 -spec maybe_heartbeat(#raft_state{}) -> #raft_state{}.
 maybe_heartbeat(State) ->
