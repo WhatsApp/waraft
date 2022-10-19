@@ -100,28 +100,16 @@ init([#{table := Table, partition := Partition}]) ->
 
 -spec handle_event(Event, #raft_catchup{}) -> {ok, #raft_catchup{}}
     when Event :: {catchup, FollowerId :: node(), FollowerLastIndex :: wa_raft_log:log_index(), LeaderTerm :: wa_raft_log:log_term(), LeaderCommitIndex :: wa_raft_log:log_index(), Witness :: boolean()}.
-handle_event({catchup, FollowerId, FollowerLastIndex, LeaderTerm, LeaderCommitIndex, Witness}, #raft_catchup{name = Name, log = Log} = State) ->
+handle_event({catchup, FollowerId, FollowerLastIndex, LeaderTerm, LeaderCommitIndex, Witness}, #raft_catchup{name = Name} = State) ->
     ?LOG_NOTICE("Leader[~p] catchup follower[~p] with last log index ~p. current leader term ~p",
          [Name, FollowerId, FollowerLastIndex, LeaderTerm], #{domain => [whatsapp, wa_raft]}),
     try
-        case has_log(Log, FollowerLastIndex) of
-            true ->
-                % catchup by incremental logs
-                counter_wait_and_add(?RAFT_GLOBAL_COUNTER_LOG_CATCHUP, raft_max_log_catchup),
-                try
-                    send_logs(FollowerId, FollowerLastIndex, LeaderTerm, LeaderCommitIndex, State, Witness)
-                after
-                    sub(?RAFT_GLOBAL_COUNTER_LOG_CATCHUP)
-                end;
-            false ->
-                % catchup by a full snapshot
-                counter_wait_and_add(?RAFT_GLOBAL_COUNTER_SNAPSHOT_CATCHUP, raft_max_snapshot_catchup),
-                try
-                    {ok, #raft_log_pos{index = LastAppliedIndex}} = send_snapshot(FollowerId, State, Witness),
-                    send_logs(FollowerId, LastAppliedIndex, LeaderTerm, LeaderCommitIndex, State, Witness)
-                after
-                    sub(?RAFT_GLOBAL_COUNTER_SNAPSHOT_CATCHUP)
-                end
+        % catchup by incremental logs
+        counter_wait_and_add(?RAFT_GLOBAL_COUNTER_LOG_CATCHUP, raft_max_log_catchup),
+        try
+            send_logs(FollowerId, FollowerLastIndex, LeaderTerm, LeaderCommitIndex, State, Witness)
+        after
+            sub(?RAFT_GLOBAL_COUNTER_LOG_CATCHUP)
         end
     catch
         Type:Error:Stack ->
@@ -153,9 +141,6 @@ terminate(Reason, #raft_catchup{name = Name}) ->
 %% =======================================================================
 %% Private functions - Send logs to follower
 %%
--spec has_log(wa_raft_log:log(), wa_raft_log:log_index()) -> boolean().
-has_log(Log, FollowerLastIndex) ->
-    FollowerLastIndex > 0 andalso wa_raft_log:get(Log, FollowerLastIndex) =/= not_found.
 
 -spec send_logs(node(), wa_raft_log:log_index(), wa_raft_log:log_term(), wa_raft_log:log_index(), #raft_catchup{}, boolean()) -> no_return().
 send_logs(FollowerId,
@@ -206,63 +191,6 @@ send_logs_loop(FollowerId, PrevLogIndex, LeaderTerm, LeaderCommitIndex,
     % Continue onto the next iteration, starting from the new end index
     % reported by the follower.
     send_logs_loop(FollowerId, FollowerEndIndex, LeaderTerm, LeaderCommitIndex, State, Witness).
-
-%% =======================================================================
-%% Private functions - Send snapshot to follower
-%%
-
--spec send_snapshot(node(), #raft_catchup{}, boolean()) -> term().
-send_snapshot(FollowerId, #raft_catchup{name = Name, table = Table, partition = Partition} = State, Witness) ->
-    LastCompletionTs = update_progress(Name, FollowerId, completion_ts, 0),
-    erlang:system_time(second) - LastCompletionTs < ?RAFT_CONFIG(raft_catchup_min_interval_s, 20) andalso throw(interval_too_short),
-
-    set_state(Name, FollowerId, sending),
-    StartT = os:timestamp(),
-    try
-        StorageRef = ?RAFT_STORAGE_NAME(Table, Partition),
-        case wa_raft_storage:create_snapshot(StorageRef) of
-            {ok, #raft_log_pos{index = Index, term = Term} = LogPos} ->
-                SnapName = ?SNAPSHOT_NAME(Index, Term),
-                Root = ?ROOT_DIR(Table, Partition),
-                try
-                    case Witness of
-                        false ->
-                            send_snapshot_transport(FollowerId, State, LogPos);
-                        _ ->
-                            % If node is a witness, we can bypass the transport process since we don't have to
-                            % send the full log.  Thus, we can run snapshot_available() here directly
-                            ServerName = ?RAFT_SERVER_NAME(Table, Partition),
-                            wa_raft_server:snapshot_available({ServerName, FollowerId}, Root, LogPos)
-                    end
-                after
-                    wa_raft_storage:delete_snapshot(StorageRef, SnapName)
-                end;
-            {error, Reason} = Error ->
-                ?LOG_ERROR("Catchup[~p] create snapshot error ~p", [Name, Reason], #{domain => [whatsapp, wa_raft]}),
-                throw(Error)
-        end
-    after
-        ?RAFT_GATHER('raft.snapshot.catchup.duration', timer:now_diff(os:timestamp(), StartT)),
-        set_progress(Name, FollowerId, completion_ts, erlang:system_time(second))
-    end.
-
-send_snapshot_transport(FollowerId,
-                        #raft_catchup{name = Name, table = Table, partition = Partition},
-                        #raft_log_pos{index = Index, term = Term} = LogPos) ->
-    ?LOG_NOTICE("wa_raft_catchup[~p] starting transport to send snapshot for ~p:~p at ~p:~p",
-        [Name, Table, Partition, Index, Term], #{domain => [whatsapp, wa_raft]}),
-    Path = filename:join(?ROOT_DIR(Table, Partition), ?SNAPSHOT_NAME(Index, Term)),
-    Timeout = ?RAFT_CONFIG(catchup_transport_timeout_secs, 20 * 60) * 1000,
-    case wa_raft_transport:transport_snapshot(FollowerId, Table, Partition, LogPos, Path, Timeout) of
-        {ok, ID} ->
-            ?LOG_NOTICE("wa_raft_catchup[~p] transport ~p for ~p:~p completed",
-                [Name, ID, Table, Partition], #{domain => [whatsapp, wa_raft]}),
-            {ok, LogPos};
-        {error, Reason} ->
-            ?LOG_WARNING("wa_raft_catchup[~p] failed to start transport to send snapshot for ~p:~p at ~p:~p due to ~p",
-                [Name, Table, Partition, Index, Term, Reason], #{domain => [whatsapp, wa_raft]}),
-            error({transport_failed, Reason})
-    end.
 
 -spec set_state(atom(), node(), atom()) -> ok.
 set_state(Tab, FollowerId, Value) ->

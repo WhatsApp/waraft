@@ -45,6 +45,7 @@ init(RaftArgs) ->
         wa_raft_transport:child_spec(),
         wa_raft_transport_sup:child_spec(),
         wa_raft_dist_transport:child_spec(),
+        wa_raft_snapshot_catchup:child_spec(),
         wa_raft_part_top_sup:child_spec(RaftArgs)
     ],
     {ok, {#{strategy => one_for_one, intensity => 5, period => 1}, lists:flatten(ChildSpecs)}}.

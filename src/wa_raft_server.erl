@@ -541,11 +541,14 @@ leader(cast, ?APPEND_ENTRIES_RESPONSE_RPC(CurrentTerm, FollowerId, _PrevIndex, t
         [Name, CurrentTerm, FollowerId, FollowerEndIndex, CommitIndex0], #{domain => [whatsapp, wa_raft]}),
     HeartbeatResponse1 = HeartbeatResponse0#{FollowerId => erlang:system_time(millisecond)},
     State1 = State0#raft_state{heartbeat_response_ts = HeartbeatResponse1},
+
     NewState =
-        case should_catchup_follower(FollowerEndIndex, State1) of
-            true ->
+        case select_follower_replication_mode(FollowerEndIndex, State1) of
+            bulk_logs ->
                 catchup_follower(FollowerId, FollowerEndIndex, State1);
-            false ->
+            Mode ->
+                Mode =:= snapshot andalso request_snapshot_for_follower(FollowerId, State1),
+
                 % Setting the match index to be equal to the follower's last log index does not
                 % strictly match the RAFT spec since the AppendEntries RPC can only establish
                 % that the follower has matching log entries for log entries replicated in the
@@ -571,10 +574,11 @@ leader(cast, ?APPEND_ENTRIES_RESPONSE_RPC(CurrentTerm, FollowerId, _PrevIndex, f
        #raft_state{name = Name, current_term = CurrentTerm, next_index = NextIndex0, match_index = MatchIndex0,
                    first_current_term_log_index = TermStartIndex} = State0) ->
     NewState =
-        case should_catchup_follower(FollowerEndIndex, State0) of
-            true ->
+        case select_follower_replication_mode(FollowerEndIndex, State0) of
+            bulk_logs ->
                 catchup_follower(FollowerId, FollowerEndIndex, State0);
-            false ->
+            Mode ->
+                Mode =:= snapshot andalso request_snapshot_for_follower(FollowerId, State0),
                 Next0 = maps:get(FollowerId, NextIndex0, TermStartIndex),
                 ?RAFT_COUNT('raft.leader.append.failure'),
                 ?LOG_WARNING( "Leader[~p, term ~p] append failure for follower ~p, Next ~p FollowerEndIndex ~p",
@@ -2308,15 +2312,44 @@ check_leader_lagging(#raft_state{name = Name, table = Table, partition = Partiti
             wa_raft_info:set_stale(false, State)
     end.
 
-%% 1. FollowerEndIndex is zero: follower is empty(in stalled state). We need a snapshot catchup.
-%% 2. FollowerEndIndex is behind than FirstIndex: we may need file log or snapshot for catchup
-%% 3. FollowerEndIndex is behind LastAppliedIndex by some threshold: we may need file log or snapshot for catchup.
--spec should_catchup_follower(wa_raft_log:log_index(), #raft_state{}) -> boolean().
-should_catchup_follower(FollowerEndIndex, #raft_state{log_view = View, last_applied = LastAppliedIndex}) ->
-    ?RAFT_CONFIG(catchup_enabled, true) =:= true andalso
-        (FollowerEndIndex =:= 0 orelse
-         FollowerEndIndex < wa_raft_log:first_index(View) orelse
-         LastAppliedIndex - FollowerEndIndex > ?RAFT_CONFIG(catchup_max_follower_lag, 50000)).
+%% Based on information that the leader has available as a result of heartbeat replies, attempt
+%% to discern what the best subsequent replication mode would be for this follower.
+-spec select_follower_replication_mode(wa_raft_log:log_index(), #raft_state{}) -> snapshot | bulk_logs | logs.
+select_follower_replication_mode(FollowerLastIndex, #raft_state{log_view = View, last_applied = LastAppliedIndex}) ->
+    CatchupEnabled = ?RAFT_CONFIG(catchup_enabled, true) =:= true,
+    BulkLogThreshold = ?RAFT_CONFIG(catchup_max_follower_lag, 50000),
+    LeaderFirstIndex = wa_raft_log:first_index(View),
+    if
+        % If catchup modes are not enabled, then always replicate using logs.
+        not CatchupEnabled                                      -> logs;
+        % Snapshot is required if the follower is stalled or we are missing
+        % the logs required for incremental replication.
+        FollowerLastIndex =:= 0                                 -> snapshot;
+        LeaderFirstIndex > FollowerLastIndex                    -> snapshot;
+        % Past a certain threshold, we should try to use bulk log catchup
+        % to quickly bring the follower back up to date.
+        LastAppliedIndex - FollowerLastIndex > BulkLogThreshold -> bulk_logs;
+        % Otherwise, replicate normally.
+        true                                                    -> logs
+    end.
+
+%% Try to start a snapshot transport to a follower if the snapshot transport
+%% service is available. If the follower is a witness or too many snapshot
+%% transports have been started then no transport is created. This function
+%% always performs this request asynchronously.
+-spec request_snapshot_for_follower(node(), #raft_state{}) -> term().
+request_snapshot_for_follower(FollowerId, #raft_state{name = Name, table = Table, partition = Partition, data_dir = DataDir, log_view = View} = State) ->
+    case lists:member({Name, FollowerId}, config_witnesses(config(State))) of
+        true  ->
+            % If node is a witness, we can bypass the transport process since we don't have to
+            % send the full log.  Thus, we can run snapshot_available() here directly
+            LastLogIndex = wa_raft_log:last_index(View),
+            {ok, LastLogTerm} = wa_raft_log:term(View, LastLogIndex),
+            LastLogPos = #raft_log_pos{index = LastLogIndex, term = LastLogTerm},
+            wa_raft_server:snapshot_available({Name, FollowerId}, DataDir, LastLogPos);
+        false ->
+            wa_raft_snapshot_catchup:request_snapshot_transport(FollowerId, Table, Partition)
+    end.
 
 -spec catchup_follower(node(), wa_raft_log:log_index(), #raft_state{}) -> #raft_state{}.
 catchup_follower(FollowerId, FollowerEndIndex,
