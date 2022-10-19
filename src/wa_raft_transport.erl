@@ -20,7 +20,9 @@
 %% Transport API
 -export([
     start/3,
+    start/4,
     start_snapshot/5,
+    start_snapshot/6,
     transport/4,
     transport_snapshot/6,
     cancel/2,
@@ -158,17 +160,25 @@ start_link() ->
 
 -spec start(Peer :: atom(), Meta :: term(), Root :: string()) -> {ok, ID :: transport_id()} | wa_raft:error().
 start(Peer, Meta, Root) ->
-    gen_server:call(?MODULE, {start, Peer, Meta, Root}, 10000).
+    start(Peer, Meta, Root, 10000).
+
+-spec start(Peer :: atom(), Meta :: term(), Root :: string(), Timeout :: timeout()) -> {ok, ID :: transport_id()} | wa_raft:error().
+start(Peer, Meta, Root, Timeout) ->
+    gen_server:call(?MODULE, {start, Peer, Meta, Root}, Timeout).
 
 -spec start_snapshot(Peer :: atom(), Table :: wa_raft:table(), Partition :: wa_raft:partition(), LogPos :: wa_raft_log:log_pos(), Root :: string()) -> {ok, ID :: transport_id()} | wa_raft:error().
 start_snapshot(Peer, Table, Partition, LogPos, Root) ->
-    start(Peer, #{type => snapshot, table => Table, partition => Partition, position => LogPos}, Root).
+    start_snapshot(Peer, Table, Partition, LogPos, Root, 10000).
 
--spec transport(Peer :: atom(), Meta :: map(), Root :: string(), Timeout :: non_neg_integer()) -> {ok, ID :: transport_id()} | wa_raft:error().
+-spec start_snapshot(Peer :: atom(), Table :: wa_raft:table(), Partition :: wa_raft:partition(), LogPos :: wa_raft_log:log_pos(), Root :: string(), Timeout :: timeout()) -> {ok, ID :: transport_id()} | wa_raft:error().
+start_snapshot(Peer, Table, Partition, LogPos, Root, Timeout) ->
+    start(Peer, #{type => snapshot, table => Table, partition => Partition, position => LogPos}, Root, Timeout).
+
+-spec transport(Peer :: atom(), Meta :: map(), Root :: string(), Timeout :: timeout()) -> {ok, ID :: transport_id()} | wa_raft:error().
 transport(Peer, Meta, Root, Timeout) ->
     gen_server:call(?MODULE, {start_wait, Peer, Meta, Root}, Timeout).
 
--spec transport_snapshot(Peer :: atom(), Table :: wa_raft:table(), Partition :: wa_raft:partition(), LogPos :: wa_raft_log:log_pos(), Root :: string(), Timeout :: non_neg_integer()) -> {ok, ID :: transport_id()} | wa_raft:error().
+-spec transport_snapshot(Peer :: atom(), Table :: wa_raft:table(), Partition :: wa_raft:partition(), LogPos :: wa_raft_log:log_pos(), Root :: string(), Timeout :: timeout()) -> {ok, ID :: transport_id()} | wa_raft:error().
 transport_snapshot(Peer, Table, Partition, LogPos, Root, Timeout) ->
     transport(Peer, #{type => snapshot, table => Table, partition => Partition, position => LogPos}, Root, Timeout).
 
