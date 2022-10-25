@@ -343,7 +343,7 @@ init(#{table := Table, partition := Partition} = RaftArgs) ->
         data_dir = DataDir,
         log_view = View,
         storage = Storage,
-        catchup = ?RAFT_CATCHUP(Table, Partition),
+        catchup = ?RAFT_LOG_CATCHUP(Table, Partition),
         current_term = Last#raft_log_pos.term,
         commit_index = Last#raft_log_pos.index,
         last_applied = Last#raft_log_pos.index,
@@ -542,55 +542,85 @@ leader(cast, ?APPEND_ENTRIES_RESPONSE_RPC(CurrentTerm, FollowerId, _PrevIndex, t
     HeartbeatResponse1 = HeartbeatResponse0#{FollowerId => erlang:system_time(millisecond)},
     State1 = State0#raft_state{heartbeat_response_ts = HeartbeatResponse1},
 
-    NewState =
-        case select_follower_replication_mode(FollowerEndIndex, State1) of
-            bulk_logs ->
-                catchup_follower(FollowerId, FollowerEndIndex, State1);
-            Mode ->
-                Mode =:= snapshot andalso request_snapshot_for_follower(FollowerId, State1),
+    case select_follower_replication_mode(FollowerEndIndex, State1) of
+        bulk_logs -> request_bulk_logs_for_follower(FollowerId, FollowerEndIndex, State1);
+        _         -> cancel_bulk_logs_for_follower(FollowerId, State1)
+    end,
 
-                % Setting the match index to be equal to the follower's last log index does not
-                % strictly match the RAFT spec since the AppendEntries RPC can only establish
-                % that the follower has matching log entries for log entries replicated in the
-                % same AppendEntries RPC. However, for our implementation, this does not cause
-                % any issues because replication on a new leader starts at the last log index
-                % and we only advance CommitIndex once we have established a quorum on the next
-                % log index (the leader's FirstCurrentTermLogIndex). Since followers whose log
-                % entries do not match the leader's can never successfully append the first noop,
-                % they will always respond to the appends with a FollowerEndIndex that is less
-                % than FirstCurrentTermLogIndex until they succeed.
-                MatchIndex1 = maps:put(FollowerId, FollowerEndIndex, MatchIndex0),
-                OldNextIndex = maps:get(FollowerId, NextIndex0, TermStartIndex),
-                NextIndex1 = maps:put(FollowerId, erlang:max(OldNextIndex, FollowerEndIndex + 1), NextIndex0),
+    % Here, the RAFT protocol expects that the MatchIndex for the follower be set to
+    % the log index of the last log entry replicated by the AppendEntries RPC that
+    % triggered this AppendEntriesResponse RPC. However, we do not have enough state
+    % here to figure out that log index so instead assume that the follower's log
+    % matches completely after a successful AppendEntries RPC.
+    %
+    % This is perfectly valid during normal operations after the leadership has been
+    % stable for a while since all replication at that point occurs at the end of
+    % the log, and so FollowerEndIndex =:= PrevLogIndex + length(Entries). However,
+    % this may not be true at the start of a term.
+    %
+    % In our implementation of the RAFT protocol, the leader of a new term always
+    % appends a new log entry created by itself (with the new term) to the end of
+    % the log before starting replication (hereinafter the "initial log entry").
+    % We store the index of the initial log entry in FirstCurrentTermLogIndex.
+    % For all followers, NextIndex is initialized to FirstCurrentTermLogIndex so
+    % replication for the new term always starts from the initial log entry. In
+    % addition, the leader will refuse to commit any log entries until it finds
+    % a quorum that contains at least the initial log entry has been established.
+    %
+    % Note that since the initial log entry is created by the RAFT leader at the
+    % start of a new term, it is impossible for followers with a log at least as
+    % long as the leader's to match. After the first round of AppendEntries, all
+    % followers will either match the leader or will have a log whose last log
+    % index is lesser than FirstCurrentTermLogIndex.
+    %
+    %  * For any followers whose log matches, the condition is trivial.
+    %  * For any followers whose log does not match and whose log ends with a log
+    %    entry with an index lesser than (FirstCurrentTermLogIndex - 1), the first
+    %    AppendEntries will fail due to the the previous log entry being missing.
+    %  * For any followers whose log does not match and whose log ends with a log
+    %    entry with an index at least (FirstCurrentTermLogIndex - 1), the first
+    %    AppendEntries RPC will contain the initial log entry, which is guaranteed
+    %    to not match, resulting in the log being truncated to end with the log
+    %    entry at (FirstCurrentTermLogIndex - 1). Subsequent mismatches of this
+    %    type will be detected by mismatching PrevLogIndex and PrevLogTerm.
+    %
+    % By the liveness of the RAFT protocol, since the AppendEntries step always
+    % results in a FollowerEndIndex that is less than FirstCurrentTermLogIndex
+    % if the follower's log does not match the leader's, we can conclude that
+    % once FollowerEndIndex reaches FirstCurrentTermLogIndex, the follower must
+    % have a matching log. Thus, once the quorum MatchIndex reaches a log index
+    % at least FirstCurrentTermLogIndex (a.k.a. the initial log entry), we can
+    % be sure that a quorum has been formed even when setting MatchIndex to
+    % FollowerEndIndex for all AppendEntries.
 
-                State2 = State1#raft_state{match_index = MatchIndex1, next_index = NextIndex1},
-                maybe_apply(FollowerEndIndex, State2)
-        end,
+    MatchIndex1 = maps:put(FollowerId, FollowerEndIndex, MatchIndex0),
+    OldNextIndex = maps:get(FollowerId, NextIndex0, TermStartIndex),
+    NextIndex1 = maps:put(FollowerId, erlang:max(OldNextIndex, FollowerEndIndex + 1), NextIndex0),
+
+    State2 = State1#raft_state{match_index = MatchIndex1, next_index = NextIndex1},
+    State3 = maybe_apply(FollowerEndIndex, State2),
     ?RAFT_GATHER('raft.leader.apply.func', timer:now_diff(os:timestamp(), StartT)),
-    {keep_state, maybe_heartbeat(NewState), ?HEARTBEAT_TIMEOUT};
+    {keep_state, maybe_heartbeat(State3), ?HEARTBEAT_TIMEOUT};
 
 %% and failures.
-leader(cast, ?APPEND_ENTRIES_RESPONSE_RPC(CurrentTerm, FollowerId, _PrevIndex, false, FollowerEndIndex),
-       #raft_state{name = Name, current_term = CurrentTerm, next_index = NextIndex0, match_index = MatchIndex0,
-                   first_current_term_log_index = TermStartIndex} = State0) ->
-    NewState =
-        case select_follower_replication_mode(FollowerEndIndex, State0) of
-            bulk_logs ->
-                catchup_follower(FollowerId, FollowerEndIndex, State0);
-            Mode ->
-                Mode =:= snapshot andalso request_snapshot_for_follower(FollowerId, State0),
-                Next0 = maps:get(FollowerId, NextIndex0, TermStartIndex),
-                ?RAFT_COUNT('raft.leader.append.failure'),
-                ?LOG_WARNING( "Leader[~p, term ~p] append failure for follower ~p, Next ~p FollowerEndIndex ~p",
-                    [Name, CurrentTerm, FollowerId, Next0, FollowerEndIndex], #{domain => [whatsapp, wa_raft]}),
-                NextIndex1 = maps:put(FollowerId, FollowerEndIndex + 1, NextIndex0),
-                % See comment in successful branch of AppendEntriesResponse RPC handling for leader for
-                % precautions about changing match index handling.
-                MatchIndex1 = maps:put(FollowerId, FollowerEndIndex, MatchIndex0),
-                State1 = State0#raft_state{next_index = NextIndex1, match_index = MatchIndex1},
-                maybe_apply(FollowerEndIndex, State1)
-        end,
-    {keep_state, maybe_heartbeat(NewState), ?HEARTBEAT_TIMEOUT};
+leader(cast, ?APPEND_ENTRIES_RESPONSE_RPC(CurrentTerm, FollowerId, PrevLogIndex, false, FollowerEndIndex),
+       #raft_state{name = Name, current_term = CurrentTerm, next_index = NextIndex0, match_index = MatchIndex0} = State0) ->
+    ?RAFT_COUNT('raft.leader.append.failure'),
+    ?LOG_WARNING( "Leader[~p, term ~p] append failure for follower ~p. Follower reports local log ends at ~0p.",
+        [Name, CurrentTerm, FollowerId, FollowerEndIndex], #{domain => [whatsapp, wa_raft]}),
+
+    select_follower_replication_mode(FollowerEndIndex, State0) =:= snapshot andalso
+        request_snapshot_for_follower(FollowerId, State0),
+    cancel_bulk_logs_for_follower(FollowerId, State0),
+
+    % See comment in successful branch of AppendEntriesResponse RPC handling for
+    % reasoning as to why it is safe to set MatchIndex to FollowerEndIndex for this
+    % RAFT implementation.
+    MatchIndex1 = maps:put(FollowerId, FollowerEndIndex, MatchIndex0),
+    NextIndex1 = maps:put(FollowerId, min(PrevLogIndex, FollowerEndIndex) + 1, NextIndex0),
+    State1 = State0#raft_state{next_index = NextIndex1, match_index = MatchIndex1},
+    State2 = maybe_apply(min(PrevLogIndex, FollowerEndIndex), State1),
+    {keep_state, maybe_heartbeat(State2), ?HEARTBEAT_TIMEOUT};
 
 %% [RequestVote RPC] We are already leader for the current term, so always decline votes (5.1, 5.2)
 leader(_Type, ?REQUEST_VOTE_RPC(CurrentTerm, CandidateId, _ElectionType, _LastLogIndex, _LastLogTerm),
@@ -1765,14 +1795,13 @@ apply_single_node_cluster(#raft_state{name = Name, log_view = View0} = State0) -
                 {ok, L} -> L;
                 _       -> View0
             end,
-            LastIndex = wa_raft_log:last_index(View1),
-            maybe_apply(LastIndex, State0#raft_state{log_view = View1});
+            maybe_apply(infinity, State0#raft_state{log_view = View1});
         _ ->
             State0
     end.
 
 %% Leader - check quorum and apply logs if necessary
--spec maybe_apply(EndIndex :: wa_raft_log:log_index(), State0 :: #raft_state{}) -> State1 :: #raft_state{}.
+-spec maybe_apply(EndIndex :: infinity | wa_raft_log:log_index(), State0 :: #raft_state{}) -> State1 :: #raft_state{}.
 maybe_apply(EndIndex, #raft_state{name = Name, log_view = View, current_term = CurrentTerm,
                                   match_index = MatchIndex, commit_index = LastCommitIndex, last_applied = LastAppliedIndex} = State0) when EndIndex > LastCommitIndex ->
     % Raft paper section 5.4.3 - Only log entries from the leader’s current term are committed
@@ -1781,7 +1810,7 @@ maybe_apply(EndIndex, #raft_state{name = Name, log_view = View, current_term = C
     % NOTE: See comment in successful branch of AppendEntriesResponse RPC handling for leader for
     %       precautions about changing match index handling.
     Config = config(State0),
-    case max_index_to_apply(MatchIndex, EndIndex, Config) of
+    case max_index_to_apply(MatchIndex, wa_raft_log:last_index(View), Config) of
         CommitIndex when CommitIndex > LastCommitIndex ->
             case wa_raft_log:term(View, CommitIndex) of
                 {ok, CurrentTerm} ->
@@ -2012,8 +2041,9 @@ heartbeat(FollowerId, #raft_state{name = Name, log_view = View, catchup = Catchu
     PrevLogIndex = FollowerNextIndex - 1,
     PrevLogTermRes = wa_raft_log:term(View, PrevLogIndex),
     FollowerMatchIndex = maps:get(FollowerId, MatchIndex, 0),
-    ?RAFT_GATHER('raft.leader.follower.lag', CommitIndex - FollowerMatchIndex),
-    IsCatchingUp = wa_raft_catchup:is_catching_up(Catchup, FollowerId),
+    FollowerMatchIndex =/= 0 andalso
+        ?RAFT_GATHER('raft.leader.follower.lag', CommitIndex - FollowerMatchIndex),
+    IsCatchingUp = wa_raft_log_catchup:is_catching_up(Catchup, FollowerId),
     NowTs = erlang:system_time(millisecond),
     LastFollowerHeartbeatTs = maps:get(FollowerId, LastHeartbeatTs, undefined),
     State1 = State0#raft_state{last_heartbeat_ts = LastHeartbeatTs#{FollowerId => NowTs}, leader_heartbeat_ts = NowTs},
@@ -2351,20 +2381,13 @@ request_snapshot_for_follower(FollowerId, #raft_state{name = Name, table = Table
             wa_raft_snapshot_catchup:request_snapshot_transport(FollowerId, Table, Partition)
     end.
 
--spec catchup_follower(node(), wa_raft_log:log_index(), #raft_state{}) -> #raft_state{}.
-catchup_follower(FollowerId, FollowerEndIndex,
-                 #raft_state{name = Name, catchup = CatchupProcess, current_term = CurrentTerm,
-                             commit_index = CommitIndex, next_index = NextIndex0, match_index = MatchIndex0,
-                             first_current_term_log_index = TermStartIndex} = State0) ->
-    OldMatchIndex = maps:get(FollowerId, MatchIndex0, 0),
-    OldNextIndex = maps:get(FollowerId, NextIndex0, TermStartIndex),
-    ?LOG_DEBUG("Leader[~p, term ~p] catchup from ~p to ~p is required for follower ~p.",
-        [Name, CurrentTerm, OldMatchIndex, OldNextIndex, FollowerId], #{domain => [whatsapp, wa_raft]}),
+-spec request_bulk_logs_for_follower(node(), wa_raft_log:log_index(), #raft_state{}) -> ok.
+request_bulk_logs_for_follower(FollowerId, FollowerEndIndex, #raft_state{name = Name, catchup = Catchup, current_term = CurrentTerm, commit_index = CommitIndex} = State) ->
+    ?LOG_DEBUG("Leader[~p, term ~p] requesting bulk logs catchup for follower ~0p.",
+        [Name, CurrentTerm, FollowerId], #{domain => [whatsapp, wa_raft]}),
+    Witness = lists:member({Name, FollowerId}, config_witnesses(config(State))),
+    wa_raft_log_catchup:start_catchup_request(Catchup, FollowerId, FollowerEndIndex, CurrentTerm, CommitIndex, Witness).
 
-    MatchIndex1 = maps:put(FollowerId, FollowerEndIndex, MatchIndex0),
-    NextIndex1 = maps:put(FollowerId, FollowerEndIndex + 1, NextIndex0),
-    State1 = State0#raft_state{match_index = MatchIndex1, next_index = NextIndex1},
-    Witnesses = config_witnesses(config(State1)),
-    Witness = lists:member({Name, FollowerId}, Witnesses),
-    wa_raft_catchup:catchup(CatchupProcess, FollowerId, FollowerEndIndex, CurrentTerm, CommitIndex, Witness),
-    State1.
+-spec cancel_bulk_logs_for_follower(node(), #raft_state{}) -> ok.
+cancel_bulk_logs_for_follower(FollowerId, #raft_state{catchup = Catchup}) ->
+    wa_raft_log_catchup:cancel_catchup_request(Catchup, FollowerId).

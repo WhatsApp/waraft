@@ -41,6 +41,7 @@ init(RaftArgs) ->
     init_globals(),
     wa_raft_info:init_tables(),
     wa_raft_transport:setup_tables(),
+    wa_raft_log_catchup:init_tables(),
     ChildSpecs = [
         wa_raft_transport:child_spec(),
         wa_raft_transport_sup:child_spec(),

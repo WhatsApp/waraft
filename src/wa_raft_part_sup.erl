@@ -71,7 +71,7 @@ init([Args]) ->
         wa_raft_queue,
         wa_raft_storage,
         wa_raft_log,
-        wa_raft_catchup,
+        wa_raft_log_catchup,
         wa_raft_server,
         wa_raft_acceptor
     ],

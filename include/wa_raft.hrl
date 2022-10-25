@@ -24,8 +24,8 @@
 -define(RAFT_STORAGE_NAME(Table, Partition), ?TO_ATOM("raft_storage_", Table, Partition)).
 %% Raft acceptor service
 -define(RAFT_ACCEPTOR_NAME(Table, Partition), ?TO_ATOM("raft_acceptor_", Table, Partition)).
-%% RAFT catchup process
--define(RAFT_CATCHUP(Table, Partition), ?TO_ATOM("raft_catchup_", Table, Partition)).
+%% RAFT log catchup process
+-define(RAFT_LOG_CATCHUP(Table, Partition), ?TO_ATOM("raft_log_catchup_", Table, Partition)).
 
 %% RAFT election max weight
 -define(RAFT_ELECTION_MAX_WEIGHT, 10).
