@@ -21,6 +21,7 @@
 
 %% Internal API
 -export([
+    current_snapshot_transports/0,
     request_snapshot_transport/3
 ]).
 
@@ -58,6 +59,10 @@ child_spec() ->
 start_link() ->
     gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
 
+-spec current_snapshot_transports() -> [wa_raft_transport:transport_id()].
+current_snapshot_transports() ->
+    gen_server:call(?MODULE, current_snapshot_transports).
+
 -spec request_snapshot_transport(Peer :: node(), Table :: wa_raft:table(), Partition :: wa_raft:partition()) -> ok.
 request_snapshot_transport(Peer, Table, Partition) ->
     gen_server:cast(?MODULE, {request_snapshot_transport, Peer, Table, Partition}).
@@ -68,7 +73,9 @@ init([]) ->
     schedule_scan(),
     {ok, #state{}}.
 
--spec handle_call(Request :: term(), From :: gen_server:from(), State :: #state{}) -> {noreply, #state{}}.
+-spec handle_call(Request :: term(), From :: gen_server:from(), State :: #state{}) -> {noreply, #state{}} | {reply, term(), #state{}}.
+handle_call(current_snapshot_transports, _From, #state{transports = Transports} = State) ->
+    {reply, maps:values(Transports), State};
 handle_call(Request, From, #state{} = State) ->
     ?LOG_NOTICE("received unrecognized call ~P from ~0p", [Request, 25, From], #{domain => [whatsapp, wa_raft]}),
     {noreply, State}.
