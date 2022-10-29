@@ -303,9 +303,6 @@ append(#log_view{last = Last} = View, Entries) ->
 %% entries provided.
 -spec append(View :: view(), Start :: log_index(), Entries :: [log_entry()]) ->
     {ok, LastIndex :: log_index(), NewView :: view()} | wa_raft:error().
-append(#log_view{log = Log}, Start, _Entries) when Start =< 0 ->
-    ?LOG_ERROR("[~p] rejecting append starting at invalid start index ~p", [Log, Start], #{domain => [whatsapp, wa_raft]}),
-    {error, invalid_start_index};
 append(#log_view{provider = Provider, last = Last} = View0, Start, Entries) ->
     ?RAFT_COUNT('raft.log.append'),
     case Provider:append(View0, Start, Entries, strict) of
@@ -405,6 +402,8 @@ fold_impl(Provider, Log, First, Last, SizeLimit, Func, AccIn) ->
 %% this function may return 'not_found' even if the underlying log entry still
 %% exists if the entry is outside of the log view.
 -spec term(View :: log() | view(), Index :: log_index()) -> {ok, Term :: log_term()} | not_found | wa_raft:error().
+term(_View, 0) ->
+    {ok, 0};
 term(#log_view{first = First, last = Last}, Index) when Index < First orelse Last < Index ->
     not_found;
 term(#log_view{log = Log, provider = Provider}, Index) ->
@@ -417,6 +416,8 @@ term(Log, Index) ->
 %% this function may return 'not_found' even if the underlying log entry still
 %% exists if the entry is outside of the log view.
 -spec get(View :: log() | view(), Index :: log_index()) -> {ok, Entry :: log_entry()} | not_found | wa_raft:error().
+get(_View, 0) ->
+    {ok, {0, undefined}};
 get(#log_view{first = First, last = Last}, Index) when Index < First orelse Last < Index ->
     not_found;
 get(#log_view{log = Log, provider = Provider}, Index) ->
@@ -791,9 +792,6 @@ handle_open(#raft_log_pos{index = Index, term = Term} = Position,
     {ok, NewView :: view(), NewState :: #log_state{}} | wa_raft:error().
 handle_reset(_Position, _View, #log_state{state = ?PROVIDER_NOT_OPENED}) ->
     {error, not_open};
-handle_reset(#raft_log_pos{index = 0, term = Term}, _View, #log_state{log = Log}) when Term =/= 0 ->
-    ?LOG_ERROR("[~p] rejects reset to index 0 with non-zero term ~p", [Log, Term], #{domain => [whatsapp, wa_raft]}),
-    {error, invalid_position};
 handle_reset(#raft_log_pos{index = Index, term = Term} = Position, View0,
              #log_state{log = Log, provider = Provider, state = ProviderState} = State0) ->
     ?RAFT_COUNT('raft.log.reset'),
@@ -812,9 +810,6 @@ handle_reset(#raft_log_pos{index = Index, term = Term} = Position, View0,
     {ok, NewView :: view(), NewState :: #log_state{}} | wa_raft:error().
 handle_truncate(_Index, _View, #log_state{state = ?PROVIDER_NOT_OPENED}) ->
     {error, not_open};
-handle_truncate(Index, #log_view{first = First}, #log_state{log = Log}) when Index =< First ->
-    ?LOG_ERROR("[~p] rejects log deletion by truncation to ~p for log starting at ~p", [Log, Index, First], #{domain => [whatsapp, wa_raft]}),
-    {error, invalid_position};
 handle_truncate(Index, #log_view{last = Last} = View0, #log_state{log = Log, provider = Provider, state = ProviderState} = State0) ->
     ?RAFT_COUNT('raft.log.truncate'),
     ?LOG_NOTICE("[~p] truncating log past ~p", [Log, Index], #{domain => [whatsapp, wa_raft]}),
