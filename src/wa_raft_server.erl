@@ -617,7 +617,11 @@ leader(cast, ?APPEND_ENTRIES_RESPONSE_RPC(CurrentTerm, FollowerId, PrevLogIndex,
     % reasoning as to why it is safe to set MatchIndex to FollowerEndIndex for this
     % RAFT implementation.
     MatchIndex1 = maps:put(FollowerId, FollowerEndIndex, MatchIndex0),
-    NextIndex1 = maps:put(FollowerId, min(PrevLogIndex, FollowerEndIndex) + 1, NextIndex0),
+    % We must trust the follower's last log index here because the follower may have
+    % applied a snapshot since the last successful heartbeat. In such case, we need
+    % to fast-forward the follower's next index so that we resume replication at the
+    % point after the snapshot.
+    NextIndex1 = maps:put(FollowerId, FollowerEndIndex + 1, NextIndex0),
     State1 = State0#raft_state{next_index = NextIndex1, match_index = MatchIndex1},
     State2 = maybe_apply(min(PrevLogIndex, FollowerEndIndex), State1),
     {keep_state, maybe_heartbeat(State2), ?HEARTBEAT_TIMEOUT};
