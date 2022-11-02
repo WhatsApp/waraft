@@ -1939,7 +1939,11 @@ append_entries_to_followers(#raft_state{name = Name, log_view = View0, storage =
                 fun ({_Term, {Ref, _Op}}) -> wa_raft_storage:fulfill_op(Storage, Ref, {error, commit_stalled});
                     (_)                   -> ok
                 end, Pending),
-            State0#raft_state{log_view = View1}
+            State0#raft_state{log_view = View1};
+        {error, Error} ->
+            ?RAFT_COUNT({'raft.server.sync', Error}),
+            ?LOG_ERROR("~p: sync failed due to ~p", [Name, Error], #{domain => [whatsapp, wa_raft]}),
+            error(Error)
     end,
     %% TODO(hsun324): Fix assumption about name when we support multi-partition cluster
     lists:foldl(
