@@ -90,10 +90,27 @@
     term = 0 :: wa_raft_log:log_term()
 }).
 
+%% This record contains the identity of a RAFT server. The intent is
+%% for the RAFT server implementation to avoid destructuring this
+%% record as much as possible to reduce the code change required if
+%% the details about the identity of peers changes. This record
+%% should not be sent between RAFT servers as it is not guaranteed to
+%% be fixed between versions.
+-record(raft_identity, {
+    % The service name (registered name) of the RAFT server that this
+    % identity record refers to.
+    name :: atom(),
+    % The node that the RAFT server that this identity record refers
+    % to is located on.
+    node :: node()
+}).
+
 %% Raft runtime state
 -record(raft_state, {
     % Service name
     name :: atom(),
+    % Self identity
+    self :: #raft_identity{},
     % Table name
     table :: wa_raft:table(),
     % Partition
