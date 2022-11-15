@@ -6,32 +6,48 @@
 %%% This file contains macros defining the form of all RPCs and API
 %%% calls used as part of the RAFT protocol and RAFT server and storage API.
 
+%%-------------------------------------------------------------------
+%% RAFT Server RPC Formats
+%%-------------------------------------------------------------------
+%% As the RAFT process that is intended to performs the cross-node
+%% communication required to provide durability against failure,
+%% RAFT servers across nodes must agree on the RPC formats in use.
+%% This means that RPC formats should not be changed once created.
+%%-------------------------------------------------------------------
+
 -define(RAFT_RPC(Type, Term, SenderId, Payload), {rpc, Type, Term, SenderId, Payload}).
 -define(RAFT_NAMED_RPC(Type, Term, SenderName, SenderNode, Payload), {rpc, Type, Term, SenderName, SenderNode, Payload}).
 
--define(APPEND_ENTRIES_RPC(Term, SenderId, PrevLogIndex, PrevLogTerm, Entries, CommitIndex, TrimIndex),
+%% These two RPCs are used by RAFT catchup to receive the status of
+%% the RAFT server being sent to and should not change.
+-define(LEGACY_APPEND_ENTRIES_RPC(Term, SenderId, PrevLogIndex, PrevLogTerm, Entries, CommitIndex, TrimIndex),
     ?RAFT_RPC(append_entries, Term, SenderId, {PrevLogIndex, PrevLogTerm, Entries, CommitIndex, TrimIndex})).
--define(APPEND_ENTRIES_RESPONSE_RPC(Term, SenderId, PrevLogIndex, Success, LastIndex),
+-define(LEGACY_APPEND_ENTRIES_RESPONSE_RPC(Term, SenderId, PrevLogIndex, Success, LastIndex),
     ?RAFT_RPC(append_entries_response, Term, SenderId, {PrevLogIndex, Success, LastIndex})).
 
--define(REQUEST_VOTE_RPC(Term, SenderId, ElectionType, LastLogIndex, LastLogTerm),
-    ?RAFT_RPC(request_vote, Term, SenderId, {ElectionType, LastLogIndex, LastLogTerm})).
--define(REQUEST_VOTE_NAMED_RPC(Term, SenderName, SenderNode, ElectionType, LastLogIndex, LastLogTerm),
-    ?RAFT_NAMED_RPC(request_vote, Term, SenderName, SenderNode, {ElectionType, LastLogIndex, LastLogTerm})).
--define(VOTE_RPC(Term, SenderId, Vote),
-    ?RAFT_RPC(vote, Term, SenderId, {Vote})).
+%%-------------------------------------------------------------------
+%% RAFT Server Procedure Names
+%%-------------------------------------------------------------------
+%% An RPC received from a peer is intended to trigger one of the
+%% procedures listed below.
+%%-------------------------------------------------------------------
 
--define(HANDOVER_RPC(Term, SenderId, Ref, PrevLogIndex, PrevLogTerm, Entries),
-    ?RAFT_RPC(handover, Term, SenderId, {Ref, PrevLogIndex, PrevLogTerm, Entries})).
--define(HANDOVER_FAILED_RPC(Term, SenderId, Ref),
-    ?RAFT_RPC(handover_failed, Term, SenderId, {Ref})).
+-define(APPEND_ENTRIES,          append_entries).
+-define(APPEND_ENTRIES_RESPONSE, append_entries_response).
+-define(REQUEST_VOTE,            request_vote).
+-define(VOTE,                    vote).
+-define(HANDOVER,                handover).
+-define(HANDOVER_FAILED,         handover_failed).
+-define(NOTIFY_TERM,             notify_term).
 
--define(NOTIFY_TERM_RPC(Term, SenderName, SenderNode),
-    ?RAFT_NAMED_RPC(notify_term, Term, SenderName, SenderNode, undefined)).
-
-%% ==================================================
-%%  RAFT server API definitions
-%% ==================================================
+%%-------------------------------------------------------------------
+%% RAFT Server API
+%%-------------------------------------------------------------------
+%% The RAFT server also accepts commands issued from other processes
+%% on the local node. These commands are not guaranteed to have the
+%% same format between versions and so should only be used locally.
+%% Prefer to use `wa_raft_server` module exports when possible.
+%%-------------------------------------------------------------------
 
 -define(RAFT_COMMAND(Type, Payload), {command, Type, Payload}).
 

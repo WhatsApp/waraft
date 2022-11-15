@@ -225,15 +225,15 @@ send_logs_impl(FollowerId, NextLogIndex, LeaderTerm, LeaderCommitIndex, Witness,
         _ ->
             % Replicate the log entries to our peer.
             Dest = {Server, FollowerId},
-            Command = ?APPEND_ENTRIES_RPC(LeaderTerm, node(), PrevLogIndex, PrevLogTerm, Entries, LeaderCommitIndex, 0),
+            Command = ?LEGACY_APPEND_ENTRIES_RPC(LeaderTerm, node(), PrevLogIndex, PrevLogTerm, Entries, LeaderCommitIndex, 0),
             Timeout = ?RAFT_CONFIG(raft_catchup_rpc_timeout_ms, 5000),
 
             try ?RAFT_DISTRIBUTION_MODULE:call(Dest, Command, Timeout) of
-                ?APPEND_ENTRIES_RESPONSE_RPC(LeaderTerm, FollowerId, PrevLogIndex, true, FollowerEndIndex) ->
+                ?LEGACY_APPEND_ENTRIES_RESPONSE_RPC(LeaderTerm, FollowerId, PrevLogIndex, true, FollowerEndIndex) ->
                     send_logs_impl(FollowerId, FollowerEndIndex + 1, LeaderTerm, LeaderCommitIndex, Witness, State);
-                ?APPEND_ENTRIES_RESPONSE_RPC(_Term, _FollowerId, PrevLogIndex, false, _FollowerEndIndex) ->
+                ?LEGACY_APPEND_ENTRIES_RESPONSE_RPC(_Term, _FollowerId, PrevLogIndex, false, _FollowerEndIndex) ->
                     exit(append_failed);
-                ?APPEND_ENTRIES_RESPONSE_RPC(NewTerm, _FollowerId, PrevLogIndex, _Success, _FollowerEndIndex) ->
+                ?LEGACY_APPEND_ENTRIES_RESPONSE_RPC(NewTerm, _FollowerId, PrevLogIndex, _Success, _FollowerEndIndex) ->
                     exit({new_term, NewTerm});
                 Other ->
                     exit({bad_response, Other})
