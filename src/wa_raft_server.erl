@@ -144,7 +144,7 @@
     | {config, config()}
     | {config_index, wa_raft_log:log_index()}.
 
--type event() :: rpc() | normalized_procedure_call() | command() | timeout_type().
+-type event() :: rpc() | remote(normalized_procedure()) | command() | timeout_type().
 
 -type rpc() :: rpc_id() | rpc_named().
 -type rpc_id() :: ?RAFT_RPC(atom(), wa_raft_log:log_term(), node(), undefined | tuple()).
@@ -374,39 +374,43 @@ callback_mode() ->
 %% have been issued locally or as a result of a remote procedure
 %% call. The peer (if exists and could be oneself) that issued the
 %% procedure call will be provided as the sender.
--define(PROCEDURE_CALL(Type, Term, Sender, Payload), {procedure, Type, Term, Sender, Payload}).
--define(APPEND_ENTRIES_RPC(Term, Sender, PrevLogIndex, PrevLogTerm, Entries, CommitIndex, TrimIndex), ?PROCEDURE_CALL(?APPEND_ENTRIES, Term, Sender, {PrevLogIndex, PrevLogTerm, Entries, CommitIndex, TrimIndex})).
--define(APPEND_ENTRIES_RESPONSE_RPC(Term, Sender, PrevLogIndex, Success, LastIndex),                  ?PROCEDURE_CALL(?APPEND_ENTRIES_RESPONSE, Term, Sender, {PrevLogIndex, Success, LastIndex})).
--define(REQUEST_VOTE_RPC(Term, Sender, ElectionType, LastLogIndex, LastLogTerm),                      ?PROCEDURE_CALL(?REQUEST_VOTE, Term, Sender, {ElectionType, LastLogIndex, LastLogTerm})).
--define(VOTE_RPC(Term, Sender, Vote),                                                                 ?PROCEDURE_CALL(?VOTE, Term, Sender, {Vote})).
--define(HANDOVER_RPC(Term, Sender, Ref, PrevLogIndex, PrevLogTerm, Entries),                          ?PROCEDURE_CALL(?HANDOVER, Term, Sender, {Ref, PrevLogIndex, PrevLogTerm, Entries})).
--define(HANDOVER_FAILED_RPC(Term, Sender, Ref),                                                       ?PROCEDURE_CALL(?HANDOVER_FAILED, Term, Sender, {Ref})).
--define(NOTIFY_TERM_RPC(Term, Sender),                                                                ?PROCEDURE_CALL(?NOTIFY_TERM, Term, Sender, {})).
+-define(REMOTE(Sender, Call), {remote, Sender, Call}).
+-define(PROCEDURE(Type, Payload), {procedure, Type, Payload}).
+
+%% Definitions of each of the standard procedures.
+-define(APPEND_ENTRIES(PrevLogIndex, PrevLogTerm, Entries, CommitIndex, TrimIndex), ?PROCEDURE(?APPEND_ENTRIES, {PrevLogIndex, PrevLogTerm, Entries, CommitIndex, TrimIndex})).
+-define(APPEND_ENTRIES_RESPONSE(PrevLogIndex, Success, LastIndex),                  ?PROCEDURE(?APPEND_ENTRIES_RESPONSE, {PrevLogIndex, Success, LastIndex})).
+-define(REQUEST_VOTE(ElectionType, LastLogIndex, LastLogTerm),                      ?PROCEDURE(?REQUEST_VOTE, {ElectionType, LastLogIndex, LastLogTerm})).
+-define(VOTE(Vote),                                                                 ?PROCEDURE(?VOTE, {Vote})).
+-define(HANDOVER(Ref, PrevLogIndex, PrevLogTerm, Entries),                          ?PROCEDURE(?HANDOVER, {Ref, PrevLogIndex, PrevLogTerm, Entries})).
+-define(HANDOVER_FAILED(Ref),                                                       ?PROCEDURE(?HANDOVER_FAILED, {Ref})).
+-define(NOTIFY_TERM(),                                                              ?PROCEDURE(?NOTIFY_TERM, {})).
 
 %% TODO(hsun324): T112326686
-%%   - Remove unnecessary term from procedure structure and rename without "RPC".
 %%   - Switch to some identity record to unify node() and peer().
--type procedure_call() :: ?PROCEDURE_CALL(atom(), wa_raft_log:log_term(), peer() | node(), tuple()).
--type normalized_procedure_call() :: append_entries() | append_entries_response() | request_vote() | vote() | handover() | handover_failed() | notify_term().
--type append_entries()          :: ?APPEND_ENTRIES_RPC         (wa_raft_log:log_term(), node(), wa_raft_log:log_index(), wa_raft_log:log_term(), [wa_raft_log:log_entry()], wa_raft_log:log_index(), wa_raft_log:log_index()).
--type append_entries_response() :: ?APPEND_ENTRIES_RESPONSE_RPC(wa_raft_log:log_term(), node(), wa_raft_log:log_index(), boolean(), wa_raft_log:log_index()).
--type request_vote()            :: ?REQUEST_VOTE_RPC           (wa_raft_log:log_term(), node(), election_type(), wa_raft_log:log_index(), wa_raft_log:log_term()).
--type vote()                    :: ?VOTE_RPC                   (wa_raft_log:log_term(), node(), boolean()).
--type handover()                :: ?HANDOVER_RPC               (wa_raft_log:log_term(), node(), reference(), wa_raft_log:log_index(), wa_raft_log:log_term(), [wa_raft_log:log_entry()]).
--type handover_failed()         :: ?HANDOVER_FAILED_RPC        (wa_raft_log:log_term(), node(), reference()).
--type notify_term()             :: ?NOTIFY_TERM_RPC            (wa_raft_log:log_term(), peer()).
+-type remote(Call) :: ?REMOTE(node(), Call).
+-type procedure()  :: ?PROCEDURE(atom(), tuple()).
+
+-type normalized_procedure() :: append_entries() | append_entries_response() | request_vote() | vote() | handover() | handover_failed() | notify_term().
+-type append_entries()          :: ?APPEND_ENTRIES         (wa_raft_log:log_index(), wa_raft_log:log_term(), [wa_raft_log:log_entry()], wa_raft_log:log_index(), wa_raft_log:log_index()).
+-type append_entries_response() :: ?APPEND_ENTRIES_RESPONSE(wa_raft_log:log_index(), boolean(), wa_raft_log:log_index()).
+-type request_vote()            :: ?REQUEST_VOTE           (election_type(), wa_raft_log:log_index(), wa_raft_log:log_term()).
+-type vote()                    :: ?VOTE                   (boolean()).
+-type handover()                :: ?HANDOVER               (reference(), wa_raft_log:log_index(), wa_raft_log:log_term(), [wa_raft_log:log_entry()]).
+-type handover_failed()         :: ?HANDOVER_FAILED        (reference()).
+-type notify_term()             :: ?NOTIFY_TERM            ().
 
 -type election_type() :: normal | force | allowed.
 
--spec protocol() -> #{atom() => procedure_call()}.
+-spec protocol() -> #{atom() => procedure()}.
 protocol() ->
     #{
-        ?APPEND_ENTRIES          => ?APPEND_ENTRIES_RPC(0, undefined, 0, 0, [], 0, 0),
-        ?APPEND_ENTRIES_RESPONSE => ?APPEND_ENTRIES_RESPONSE_RPC(0, undefined, 0, false, 0),
-        ?REQUEST_VOTE            => ?REQUEST_VOTE_RPC(0, undefined, normal, 0, 0),
-        ?VOTE                    => ?VOTE_RPC(0, undefined, false),
-        ?HANDOVER                => ?HANDOVER_RPC(0, undefined, undefined, 0, 0, []),
-        ?HANDOVER_FAILED         => ?HANDOVER_FAILED_RPC(0, undefined, undefined)
+        ?APPEND_ENTRIES          => ?APPEND_ENTRIES(0, 0, [], 0, 0),
+        ?APPEND_ENTRIES_RESPONSE => ?APPEND_ENTRIES_RESPONSE(0, false, 0),
+        ?REQUEST_VOTE            => ?REQUEST_VOTE(normal, 0, 0),
+        ?VOTE                    => ?VOTE(false),
+        ?HANDOVER                => ?HANDOVER(undefined, 0, 0, []),
+        ?HANDOVER_FAILED         => ?HANDOVER_FAILED(undefined)
     }.
 
 -spec handle_rpc(Type :: gen_statem:event_type(), RPC :: rpc(), State :: state(), Data :: #raft_state{}) -> gen_statem:event_handler_result(state(), #raft_state{}).
@@ -429,7 +433,7 @@ handle_rpc_impl(Type, Event, Key, Term, Sender, undefined, State, Data) ->
 handle_rpc_impl(_Type, _Event, Key, Term, Sender, _Payload, State, #raft_state{name = Name, current_term = CurrentTerm} = Data) when Term < CurrentTerm ->
     ?LOG_NOTICE("~0p[~0p, term ~0p] received stale ~0p from ~0p with old term ~0p. Dropping.",
         [State, Name, CurrentTerm, Key, Sender, Term], #{domain => [whatsapp, wa_raft]}),
-    send_rpc(Sender, ?NOTIFY_TERM_RPC(Term, {Name, node()}), Data),
+    send_rpc(Sender, ?NOTIFY_TERM(), Data),
     keep_state_and_data;
 %% [RequestVote RPC]
 %% RAFT servers should completely ignore normal RequestVote RPCs that it receives
@@ -469,10 +473,10 @@ handle_rpc_impl(Type, Event, Key, Term, Sender, _Payload, State, #raft_state{nam
 handle_rpc_impl(_Type, _Event, ?NOTIFY_TERM, _Term, _Sender, _Payload, _State, _Data) ->
     keep_state_and_data;
 %% [Protocol] Convert any valid remote procedure call to the appropriate local procedure call.
-handle_rpc_impl(Type, _Event, Key, Term, {_, SenderNode}, Payload, State, #raft_state{name = Name, current_term = CurrentTerm} = Data) when is_tuple(Payload) ->
+handle_rpc_impl(Type, _Event, Key, _Term, {_, SenderNode}, Payload, State, #raft_state{name = Name, current_term = CurrentTerm} = Data) when is_tuple(Payload) ->
     case protocol() of
-        #{Key := ?PROCEDURE_CALL(Procedure, _ZeroTerm, _NoIdentity, Defaults)} ->
-            handle_procedure(Type, ?PROCEDURE_CALL(Procedure, Term, SenderNode, defaultize_payload(Defaults, Payload)), State, Data);
+        #{Key := ?PROCEDURE(Procedure, Defaults)} ->
+            handle_procedure(Type, ?REMOTE(SenderNode, ?PROCEDURE(Procedure, defaultize_payload(Defaults, Payload))), State, Data);
         #{} ->
             ?RAFT_COUNT({'raft', State, 'rpc.unknown'}),
             ?LOG_NOTICE("~0p[~0p, term ~0p] receives unknown RPC type ~0p with payload ~0P",
@@ -480,9 +484,9 @@ handle_rpc_impl(Type, _Event, Key, Term, {_, SenderNode}, Payload, State, #raft_
             keep_state_and_data
     end.
 
--spec handle_procedure(Type :: gen_statem:event_type(), ProcedureCall :: normalized_procedure_call(), State :: state(), Data :: #raft_state{}) -> gen_statem:event_handler_result(state(), #raft_state{}).
+-spec handle_procedure(Type :: gen_statem:event_type(), ProcedureCall :: remote(procedure()), State :: state(), Data :: #raft_state{}) -> gen_statem:event_handler_result(state(), #raft_state{}).
 %% [AppendEntries] If we haven't discovered leader for this term, record it
-handle_procedure(Type, ?APPEND_ENTRIES_RPC(_Term, SenderNode, _, _, _, _, _) = Procedure, _State, #raft_state{leader_id = undefined} = Data) ->
+handle_procedure(Type, ?REMOTE(SenderNode, ?APPEND_ENTRIES(_, _, _, _, _)) = Procedure, _State, #raft_state{leader_id = undefined} = Data) ->
     NewData = Data#raft_state{leader_id = SenderNode},
     notify_leader_change(NewData),
     {keep_state, NewData, {next_event, Type, Procedure}};
@@ -521,18 +525,18 @@ stalled(Type, Event, State) when is_tuple(Event), element(1, Event) =:= rpc ->
     handle_rpc(Type, Event, ?FUNCTION_NAME, State);
 
 %% [AppendEntries] If we haven't discovered leader for this term, record it
-stalled(_Type, ?APPEND_ENTRIES_RPC(CurrentTerm, LeaderId, PrevLogIndex, _PrevLogTerm, _Entries, _LeaderCommit, _TrimIndex),
-        #raft_state{current_term = CurrentTerm, leader_id = undefined} = State) ->
+stalled(_Type, ?REMOTE(LeaderId, ?APPEND_ENTRIES(PrevLogIndex, _PrevLogTerm, _Entries, _LeaderCommit, _TrimIndex)),
+        #raft_state{leader_id = undefined} = State) ->
     NewState = State#raft_state{leader_id = LeaderId, leader_heartbeat_ts = erlang:system_time(millisecond)},
     notify_leader_change(NewState),
-    send_rpc(LeaderId, ?APPEND_ENTRIES_RESPONSE_RPC(CurrentTerm, node(), PrevLogIndex, false, 0), NewState),
+    send_rpc(LeaderId, ?APPEND_ENTRIES_RESPONSE(PrevLogIndex, false, 0), NewState),
     {keep_state, NewState};
 
 %% [AppendEntries] Otherwise, stalled nodes always discard AppendEntries
-stalled(_Type, ?APPEND_ENTRIES_RPC(CurrentTerm, LeaderId, PrevLogIndex, _PrevLogTerm, _Entries, _LeaderCommit, _TrimIndex),
-        #raft_state{current_term = CurrentTerm} = State) ->
+stalled(_Type, ?REMOTE(LeaderId, ?APPEND_ENTRIES(PrevLogIndex, _PrevLogTerm, _Entries, _LeaderCommit, _TrimIndex)),
+        #raft_state{} = State) ->
     NewState = State#raft_state{leader_heartbeat_ts = erlang:system_time(millisecond)},
-    send_rpc(LeaderId, ?APPEND_ENTRIES_RESPONSE_RPC(CurrentTerm, node(), PrevLogIndex, false, 0), NewState),
+    send_rpc(LeaderId, ?APPEND_ENTRIES_RESPONSE(PrevLogIndex, false, 0), NewState),
     {keep_state, NewState};
 
 stalled({call, From}, ?SNAPSHOT_AVAILABLE_COMMAND(Root, #raft_log_pos{index = SnapshotIndex, term = SnapshotTerm} = SnapshotPos),
@@ -603,16 +607,16 @@ leader(Type, Event, State) when is_tuple(Event), element(1, Event) =:= rpc ->
 %% [Leader] Handle AppendEntries RPC (5.1, 5.2)
 %% [AppendEntries] We are leader for the current term, so we should never see an
 %%                 AppendEntries RPC from another node for this term
-leader(_Type, ?APPEND_ENTRIES_RPC(CurrentTerm, SenderId, PrevLogIndex, _PrevLogTerm, _Entries, _LeaderCommit, _TrimIndex),
+leader(_Type, ?REMOTE(SenderId, ?APPEND_ENTRIES(PrevLogIndex, _PrevLogTerm, _Entries, _LeaderCommit, _TrimIndex)),
        #raft_state{current_term = CurrentTerm, name = Name, commit_index = CommitIndex} = State) ->
     ?LOG_ERROR("Leader[~p, term ~p] got invalid heartbeat from conflicting leader ~p.",
         [Name, CurrentTerm, SenderId], #{domain => [whatsapp, wa_raft]}),
-    send_rpc(SenderId, ?APPEND_ENTRIES_RESPONSE_RPC(CurrentTerm, node(), PrevLogIndex, false, CommitIndex), State),
+    send_rpc(SenderId, ?APPEND_ENTRIES_RESPONSE(PrevLogIndex, false, CommitIndex), State),
     keep_state_and_data;
 
 %% [Leader] Handle AppendEntries RPC responses (5.2, 5.3, 7).
 %% Handle normal-case successes
-leader(cast, ?APPEND_ENTRIES_RESPONSE_RPC(CurrentTerm, FollowerId, _PrevIndex, true, FollowerEndIndex),
+leader(cast, ?REMOTE(FollowerId, ?APPEND_ENTRIES_RESPONSE(_PrevIndex, true, FollowerEndIndex)),
     #raft_state{
         name = Name,
         current_term = CurrentTerm,
@@ -688,7 +692,7 @@ leader(cast, ?APPEND_ENTRIES_RESPONSE_RPC(CurrentTerm, FollowerId, _PrevIndex, t
     {keep_state, maybe_heartbeat(State3), ?HEARTBEAT_TIMEOUT};
 
 %% and failures.
-leader(cast, ?APPEND_ENTRIES_RESPONSE_RPC(CurrentTerm, FollowerId, PrevLogIndex, false, FollowerEndIndex),
+leader(cast, ?REMOTE(FollowerId, ?APPEND_ENTRIES_RESPONSE(PrevLogIndex, false, FollowerEndIndex)),
        #raft_state{name = Name, current_term = CurrentTerm, next_index = NextIndex0, match_index = MatchIndex0} = State0) ->
     ?RAFT_COUNT('raft.leader.append.failure'),
     ?LOG_WARNING( "Leader[~p, term ~p] append failure for follower ~p. Follower reports local log ends at ~0p.",
@@ -712,34 +716,34 @@ leader(cast, ?APPEND_ENTRIES_RESPONSE_RPC(CurrentTerm, FollowerId, PrevLogIndex,
     {keep_state, maybe_heartbeat(State2), ?HEARTBEAT_TIMEOUT};
 
 %% [RequestVote RPC] We are already leader for the current term, so always decline votes (5.1, 5.2)
-leader(_Type, ?REQUEST_VOTE_RPC(CurrentTerm, CandidateId, _ElectionType, _LastLogIndex, _LastLogTerm),
-       #raft_state{current_term = CurrentTerm} = State) ->
-    send_rpc(CandidateId, ?VOTE_RPC(CurrentTerm, node(), false), State),
+leader(_Type, ?REMOTE(CandidateId, ?REQUEST_VOTE(_ElectionType, _LastLogIndex, _LastLogTerm)),
+       #raft_state{} = State) ->
+    send_rpc(CandidateId, ?VOTE(false), State),
     keep_state_and_data;
 
 %% [Vote RPC] We are already leader, so we don't need to consider any more votes (5.1)
-leader(_Type, ?VOTE_RPC(CurrentTerm, VoterId, Vote), #raft_state{name = Name, current_term = CurrentTerm}) ->
+leader(_Type, ?REMOTE(VoterId, ?VOTE(Vote)), #raft_state{name = Name, current_term = CurrentTerm}) ->
     ?LOG_NOTICE("Leader[~p, term ~p] receives vote ~p from ~p after being elected. Ignore it.",
         [Name, CurrentTerm, Vote, VoterId], #{domain => [whatsapp, wa_raft]}),
     keep_state_and_data;
 
 %% [Handover RPC] We are already leader so ignore any handover requests.
-leader(_Type, ?HANDOVER_RPC(CurrentTerm, NodeId, Ref, _PrevLogIndex, _PrevLogTerm, _LogEntries),
+leader(_Type, ?REMOTE(NodeId, ?HANDOVER(Ref, _PrevLogIndex, _PrevLogTerm, _LogEntries)),
        #raft_state{name = Name, current_term = CurrentTerm} = State) ->
     ?LOG_WARNING("Leader[~p, term ~p] got orphan handover request from ~p while leader.",
         [Name, CurrentTerm, NodeId], #{domain => [whatsapp, wa_raft]}),
-    send_rpc(NodeId, ?HANDOVER_FAILED_RPC(CurrentTerm, node(), Ref), State),
+    send_rpc(NodeId, ?HANDOVER_FAILED(Ref), State),
     keep_state_and_data;
 
 %% [Handover Failed RPC] Our handover failed, so clear the handover status.
-leader(_Type, ?HANDOVER_FAILED_RPC(CurrentTerm, NodeId, Ref),
+leader(_Type, ?REMOTE(NodeId, ?HANDOVER_FAILED(Ref)),
        #raft_state{name = Name, current_term = CurrentTerm, handover = {NodeId, Ref, _Timeout}} = State) ->
     ?LOG_NOTICE("Leader[~p, term ~p] resuming normal operations after failed handover to ~p.",
         [Name, CurrentTerm, NodeId], #{domain => [whatsapp, wa_raft]}),
     {keep_state, State#raft_state{handover = undefined}};
 
 %% [Handover Failed RPC] Got a handover failed with an unknown ID. Ignore.
-leader(_Type, ?HANDOVER_FAILED_RPC(CurrentTerm, NodeId, _Ref),
+leader(_Type, ?REMOTE(NodeId, ?HANDOVER_FAILED(_Ref)),
        #raft_state{name = Name, current_term = CurrentTerm, handover = Handover}) ->
     ?LOG_NOTICE("Leader[~p, term ~p] got handover failed RPC from ~p that does not match current handover ~p.",
         [Name, CurrentTerm, NodeId, Handover], #{domain => [whatsapp, wa_raft]}),
@@ -935,7 +939,7 @@ leader(Type, ?HANDOVER_COMMAND(Peer),
                     % before initiating a handover.
                     case PrevLogIndex + length(LogEntries) of
                         LastIndex ->
-                            send_rpc(Peer, ?HANDOVER_RPC(CurrentTerm, node(), Ref, PrevLogIndex, PrevLogTerm, LogEntries), State1),
+                            send_rpc(Peer, ?HANDOVER(Ref, PrevLogIndex, PrevLogTerm, LogEntries), State1),
                             reply(Type, {ok, Peer}),
                             {keep_state, State1};
                         _ ->
@@ -1001,7 +1005,7 @@ follower(Type, Event, State) when is_tuple(Event), element(1, Event) =:= rpc ->
 
 %% [Follower] Handle AppendEntries RPC (5.2, 5.3)
 %% Follower receives AppendEntries from leader
-follower(Type, ?APPEND_ENTRIES_RPC(CurrentTerm, LeaderId, PrevLogIndex, PrevLogTerm, Entries, LeaderCommitIndex, LeaderTrimIndex),
+follower(Type, ?REMOTE(LeaderId, ?APPEND_ENTRIES(PrevLogIndex, PrevLogTerm, Entries, LeaderCommitIndex, LeaderTrimIndex)),
          #raft_state{current_term = CurrentTerm} = State0) ->
     case append_entries(CurrentTerm, LeaderId, PrevLogIndex, PrevLogTerm, Entries, State0) of
         {{disable, Reason}, State1} ->
@@ -1015,7 +1019,7 @@ follower(Type, ?APPEND_ENTRIES_RPC(CurrentTerm, LeaderId, PrevLogIndex, PrevLogT
             end,
             LastIndex = wa_raft_log:last_index(View),
             NewCommitIndex = erlang:min(LeaderCommitIndex, LastIndex),
-            send_rpc(LeaderId, ?APPEND_ENTRIES_RESPONSE_RPC(CurrentTerm, node(), PrevLogIndex, Result =:= ok, LastIndex), State2),
+            send_rpc(LeaderId, ?APPEND_ENTRIES_RESPONSE(PrevLogIndex, Result =:= ok, LastIndex), State2),
             reply(Type, ?LEGACY_APPEND_ENTRIES_RESPONSE_RPC(CurrentTerm, node(), PrevLogIndex, Result =:= ok, LastIndex)),
             State3 = case Result of
                 ok -> apply_log(State2, NewCommitIndex, TrimIndex);
@@ -1027,7 +1031,7 @@ follower(Type, ?APPEND_ENTRIES_RPC(CurrentTerm, LeaderId, PrevLogIndex, PrevLogT
 
 %% [Follower] Handle AppendEntries RPC response (5.2)
 %% [AppendEntriesResponse] Followers do not send AppendEntries and so should not get responses
-follower(_Type, ?APPEND_ENTRIES_RESPONSE_RPC(CurrentTerm, SenderId, _PrevLogIndex, _Success, _LastLogIndex),
+follower(_Type, ?REMOTE(SenderId, ?APPEND_ENTRIES_RESPONSE(_PrevLogIndex, _Success, _LastLogIndex)),
          #raft_state{name = Name, current_term = CurrentTerm}) ->
     ?LOG_WARNING("Follower[~p, term ~p] got conflicting response from ~p.",
         [Name, CurrentTerm, SenderId], #{domain => [whatsapp, wa_raft]}),
@@ -1035,21 +1039,21 @@ follower(_Type, ?APPEND_ENTRIES_RESPONSE_RPC(CurrentTerm, SenderId, _PrevLogInde
 
 %% [Follower] Handle RequestVote RPC (5.2)
 %% [RequestVote] Follower receives a vote request from another node
-follower(_Type, ?REQUEST_VOTE_RPC(CurrentTerm, CandidateId, _ElectionType, LastLogIndex, LastLogTerm),
-         #raft_state{current_term = CurrentTerm} = State) ->
+follower(_Type, ?REMOTE(CandidateId, ?REQUEST_VOTE(_ElectionType, LastLogIndex, LastLogTerm)),
+         #raft_state{} = State) ->
     State1 = vote(CandidateId, LastLogIndex, LastLogTerm, State),
     {keep_state, State1};
 
 %% [Follower] Handle RequestVote RPC response (5.2)
 %% [Vote] A follower has already lost the election for a term, so drop any vote responses
-follower(_Type, ?VOTE_RPC(CurrentTerm, VoterId, Voted),
+follower(_Type, ?REMOTE(VoterId, ?VOTE(Voted)),
          #raft_state{name = Name, current_term = CurrentTerm}) ->
     ?LOG_WARNING("Follower[~p, term ~p] got extra vote ~p from ~p.",
         [Name, CurrentTerm, Voted, VoterId], #{domain => [whatsapp, wa_raft]}),
     keep_state_and_data;
 
 %% [Handover Extension] Another leader is asking for this follower to take over
-follower(_Type, ?HANDOVER_RPC(CurrentTerm, NodeId, Ref, PrevLogIndex, PrevLogTerm, LogEntries),
+follower(_Type, ?REMOTE(NodeId, ?HANDOVER(Ref, PrevLogIndex, PrevLogTerm, LogEntries)),
          #raft_state{name = Name, current_term = CurrentTerm} = State0) ->
     ?RAFT_COUNT('wa_raft.follower.handover'),
     ?LOG_NOTICE("Follower[~p, term ~p] evaluating handover RPC from ~p.",
@@ -1058,7 +1062,7 @@ follower(_Type, ?HANDOVER_RPC(CurrentTerm, NodeId, Ref, PrevLogIndex, PrevLogTer
         0 ->
             ?LOG_NOTICE("Follower[~p, term ~p] not considering handover RPC due to election weight 0.",
                 [Name, CurrentTerm], #{domain => [whatsapp, wa_raft]}),
-            send_rpc(NodeId, ?HANDOVER_FAILED_RPC(CurrentTerm, node(), Ref), State0),
+            send_rpc(NodeId, ?HANDOVER_FAILED(Ref), State0),
             {keep_state, State0};
         _ ->
             case append_entries(CurrentTerm, NodeId, PrevLogIndex, PrevLogTerm, LogEntries, State0) of
@@ -1070,13 +1074,13 @@ follower(_Type, ?HANDOVER_RPC(CurrentTerm, NodeId, Ref, PrevLogIndex, PrevLogTer
                     ?RAFT_COUNT('wa.raft.follower.handover.failed'),
                     ?LOG_WARNING("Follower[~p, term ~p] failing handover request due to non-ok append result of ~p",
                         [Name, CurrentTerm, Error], #{domain => [whatsapp, wa_raft]}),
-                    send_rpc(NodeId, ?HANDOVER_FAILED_RPC(CurrentTerm, node(), Ref), State1),
+                    send_rpc(NodeId, ?HANDOVER_FAILED(Ref), State1),
                     {keep_state, State1}
             end
     end;
 
 %% [HandoverFailed Extension] Followers cannot initiate handovers
-follower(_Type, ?HANDOVER_FAILED_RPC(CurrentTerm, NodeId, _Ref),
+follower(_Type, ?REMOTE(NodeId, ?HANDOVER_FAILED(_Ref)),
          #raft_state{name = Name, current_term = CurrentTerm}) ->
     ?LOG_WARNING("Follower[~p, term ~p] got conflicting handover failed from ~p.",
         [Name, CurrentTerm, NodeId], #{domain => [whatsapp, wa_raft]}),
@@ -1138,8 +1142,8 @@ candidate(enter, _PreviousState,
 
     % Broadcast vote requests and also send a vote-for-self.
     % (Candidates always implicitly vote for themselves.)
-    broadcast(?REQUEST_VOTE_RPC(CurrentTerm + 1, node(), ElectionType, LastLogIndex, LastLogTerm), State3),
-    send_rpc(node(), ?VOTE_RPC(CurrentTerm + 1, node(), true), State3),
+    broadcast(?REQUEST_VOTE(ElectionType, LastLogIndex, LastLogTerm), State3),
+    send_rpc(node(), ?VOTE(true), State3),
 
     {keep_state, State3, ?ELECTION_TIMEOUT};
 
@@ -1148,20 +1152,20 @@ candidate(Type, Event, State) when is_tuple(Event), element(1, Event) =:= rpc ->
     handle_rpc(Type, Event, ?FUNCTION_NAME, State);
 
 %% [AppendEntries RPC] Switch to follower because current term now has a leader (5.2, 5.3)
-candidate(Type, ?APPEND_ENTRIES_RPC(CurrentTerm, LeaderId, _PrevLogIndex, _PrevLogTerm, _Entries, _LeaderCommit, _TrimIndex) = Event,
+candidate(Type, ?REMOTE(LeaderId, ?APPEND_ENTRIES(_PrevLogIndex, _PrevLogTerm, _Entries, _LeaderCommit, _TrimIndex)) = Event,
           #raft_state{name = Name, current_term = CurrentTerm} = State) ->
     ?LOG_NOTICE("Candidate[~p, term ~p] gets first heartbeat of the term from ~p. Switch to follower.",
         [Name, CurrentTerm, LeaderId], #{domain => [whatsapp, wa_raft]}),
     {next_state, follower, State, {next_event, Type, Event}};
 
 %% [RequestVote RPC] Candidate has always voted for itself, so vote false on anyone else (5.2)
-candidate(_Type, ?REQUEST_VOTE_RPC(CurrentTerm, CandidateId, _ElectionType, _LastLogIndex, _LastLogTerm),
-          #raft_state{current_term = CurrentTerm} = State) ->
-    send_rpc(CandidateId, ?VOTE_RPC(CurrentTerm, node(), false), State),
+candidate(_Type, ?REMOTE(CandidateId, ?REQUEST_VOTE(_ElectionType, _LastLogIndex, _LastLogTerm)),
+          #raft_state{} = State) ->
+    send_rpc(CandidateId, ?VOTE(false), State),
     keep_state_and_data;
 
 %% [Vote RPC] Candidate receives an affirmative vote (5.2)
-candidate(cast, ?VOTE_RPC(CurrentTerm, NodeId, true),
+candidate(cast, ?REMOTE(NodeId, ?VOTE(true)),
           #raft_state{
               name = Name,
               log_view = View,
@@ -1188,19 +1192,19 @@ candidate(cast, ?VOTE_RPC(CurrentTerm, NodeId, true),
 
 %% [Vote RPC] Candidate receives a negative vote (Candidate cannot become leader here. Losing
 %%            an election does not need to convert candidate to follower.) (5.2)
-candidate(cast, ?VOTE_RPC(CurrentTerm, NodeId, false),
-          #raft_state{current_term = CurrentTerm, votes = Votes} = State) ->
+candidate(cast, ?REMOTE(NodeId, ?VOTE(false)),
+          #raft_state{votes = Votes} = State) ->
     {keep_state, State#raft_state{votes = maps:put(NodeId, false, Votes)}};
 
 %% [Handover RPC] Got a message from the leader of this term. Switch to follower
-candidate(Type, ?HANDOVER_RPC(CurrentTerm, _NodeId, _Ref, _PrevLogIndex, _PrevLogTerm, _LogEntries) = Event,
+candidate(Type, ?REMOTE(_NodeId, ?HANDOVER(_Ref, _PrevLogIndex, _PrevLogTerm, _LogEntries)) = Event,
           #raft_state{name = Name, current_term = CurrentTerm} = State) ->
     ?LOG_NOTICE("Candidate[~p, term ~p] switching to follower to handle handover.",
         [Name, CurrentTerm], #{domain => [whatsapp, wa_raft]}),
     {next_state, follower, State, {next_event, Type, Event}};
 
 %% [HandoverFailed RPC] Candidates cannot initiate handovers
-candidate(_Type, ?HANDOVER_FAILED_RPC(CurrentTerm, NodeId, _Ref),
+candidate(_Type, ?REMOTE(NodeId, ?HANDOVER_FAILED(_Ref)),
           #raft_state{name = Name, current_term = CurrentTerm}) ->
     ?LOG_WARNING("Candidate[~p, term ~p] got conflicting handover failed from ~p.",
         [Name, CurrentTerm, NodeId], #{domain => [whatsapp, wa_raft]}),
@@ -1252,20 +1256,20 @@ disabled(enter, FromState, #raft_state{name = Name, current_term = CurrentTerm} 
 disabled(Type, Event, State) when is_tuple(Event), element(1, Event) =:= rpc ->
     handle_rpc(Type, Event, ?FUNCTION_NAME, State);
 
-disabled(_Type, ?APPEND_ENTRIES_RPC(CurrentTerm, SenderId, _PrevLogIndex, _PrevLogTerm, _Entries, _CommitIndex, _TrimIndex),
-         #raft_state{current_term = CurrentTerm, leader_id = undefined} = State0) ->
+disabled(_Type, ?REMOTE(SenderId, ?APPEND_ENTRIES(_PrevLogIndex, _PrevLogTerm, _Entries, _CommitIndex, _TrimIndex)),
+         #raft_state{leader_id = undefined} = State0) ->
     %% When we detect the leader for the current term, then set cache so that we can handle redirects.
     State1 = State0#raft_state{leader_id = SenderId},
     notify_leader_change(State1),
     {keep_state, State1};
 
-disabled(_Type, ?APPEND_ENTRIES_RPC(CurrentTerm, _SenderId, _PrevLogIndex, _PrevLogTerm, _Entries, _CommitIndex, _TrimIndex),
-         #raft_state{current_term = CurrentTerm}) ->
+disabled(_Type, ?REMOTE(_SenderId, ?APPEND_ENTRIES(_PrevLogIndex, _PrevLogTerm, _Entries, _CommitIndex, _TrimIndex)),
+         #raft_state{}) ->
     %% Ignore any other AppendEntries RPC calls because a disabled node should be invisible to the cluster.
     keep_state_and_data;
 
-disabled(_Type, ?REQUEST_VOTE_RPC(CurrentTerm, _SenderId, _ElectionType, _LastLogIndex, _LastLogTerm),
-         #raft_state{current_term = CurrentTerm}) ->
+disabled(_Type, ?REMOTE(_SenderId, ?REQUEST_VOTE(_ElectionType, _LastLogIndex, _LastLogTerm)),
+         #raft_state{}) ->
     %% Ignore any RequestVote RPC calls because a disabled node should be invisible to the cluster.
     keep_state_and_data;
 
@@ -1327,7 +1331,7 @@ witness(state_timeout, _,
 
 %% [Witness] Handle AppendEntries RPC (5.2, 5.3)
 %% Witness receives AppendEntries from leader
-witness(Type, ?APPEND_ENTRIES_RPC(CurrentTerm, LeaderId, PrevLogIndex, PrevLogTerm, Entries, LeaderCommitIndex, LeaderTrimIndex),
+witness(Type, ?REMOTE(LeaderId, ?APPEND_ENTRIES(PrevLogIndex, PrevLogTerm, Entries, LeaderCommitIndex, LeaderTrimIndex)),
         #raft_state{current_term = CurrentTerm} = State0) ->
     case append_entries(CurrentTerm, LeaderId, PrevLogIndex, PrevLogTerm, Entries, State0) of
         {{disable, Reason}, State1} ->
@@ -1341,7 +1345,7 @@ witness(Type, ?APPEND_ENTRIES_RPC(CurrentTerm, LeaderId, PrevLogIndex, PrevLogTe
             end,
             LastIndex = wa_raft_log:last_index(View),
             NewCommitIndex = erlang:min(LeaderCommitIndex, LastIndex),
-            send_rpc(LeaderId, ?APPEND_ENTRIES_RESPONSE_RPC(CurrentTerm, node(), PrevLogIndex, Result =:= ok, LastIndex), State2),
+            send_rpc(LeaderId, ?APPEND_ENTRIES_RESPONSE(PrevLogIndex, Result =:= ok, LastIndex), State2),
             reply(Type, ?LEGACY_APPEND_ENTRIES_RESPONSE_RPC(CurrentTerm, node(), PrevLogIndex, Result =:= ok, LastIndex)),
             State3 = case Result of
                 ok -> apply_log(State2, NewCommitIndex, TrimIndex);
@@ -1353,21 +1357,21 @@ witness(Type, ?APPEND_ENTRIES_RPC(CurrentTerm, LeaderId, PrevLogIndex, PrevLogTe
 
 %% [Witness] Handle AppendEntries RPC response (5.2)
 %% [AppendEntriesResponse] Witnesses do not send AppendEntries and so should not get responses
-witness(_Type, ?APPEND_ENTRIES_RESPONSE_RPC(CurrentTerm, SenderId, _PrevLogIndex, _Success, _LastLogIndex),
+witness(_Type, ?REMOTE(SenderId, ?APPEND_ENTRIES_RESPONSE(_PrevLogIndex, _Success, _LastLogIndex)),
          #raft_state{name = Name, current_term = CurrentTerm}) ->
     ?LOG_WARNING("Follower[~p, term ~p] got conflicting response from ~p.",
         [Name, CurrentTerm, SenderId], #{domain => [whatsapp, wa_raft]}),
     keep_state_and_data;
 
 % [Witness] Witnesses ignore any handover requests.
-witness(_Type, ?HANDOVER_RPC(CurrentTerm, NodeId, Ref, _PrevLogIndex, _PrevLogTerm, _LogEntries),
+witness(_Type, ?REMOTE(NodeId, ?HANDOVER(Ref, _PrevLogIndex, _PrevLogTerm, _LogEntries)),
        #raft_state{name = Name, current_term = CurrentTerm} = State) ->
     ?LOG_WARNING("Witness[~p, term ~p] got orphan handover request from ~p while witness.",
         [Name, CurrentTerm, NodeId], #{domain => [whatsapp, wa_raft]}),
-    send_rpc(NodeId, ?HANDOVER_FAILED_RPC(CurrentTerm, node(), Ref), State),
+    send_rpc(NodeId, ?HANDOVER_FAILED(Ref), State),
     keep_state_and_data;
 
-witness(_Type, ?HANDOVER_FAILED_RPC(CurrentTerm, NodeId, _Ref),
+witness(_Type, ?REMOTE(NodeId, ?HANDOVER_FAILED(_Ref)),
          #raft_state{name = Name, current_term = CurrentTerm}) ->
     ?LOG_WARNING("Witness[~p, term ~p] got conflicting handover failed from ~p.",
         [Name, CurrentTerm, NodeId], #{domain => [whatsapp, wa_raft]}),
@@ -1909,7 +1913,7 @@ cast_vote(CandidateId, Vote, #raft_state{name = Name, current_term = CurrentTerm
     {ok, MyLastTerm} = wa_raft_log:term(View, MyLastIndex),
     ?LOG_NOTICE("~p vote ~p to candidate ~p in term ~p. Current last log ~p:~p",
         [Name, Vote, CandidateId, CurrentTerm, MyLastIndex, MyLastTerm], #{domain => [whatsapp, wa_raft]}),
-    send_rpc(CandidateId, ?VOTE_RPC(CurrentTerm, node(), Vote), State),
+    send_rpc(CandidateId, ?VOTE(Vote), State),
     ok.
 
 -spec reset_state(#raft_state{}) -> #raft_state{}.
@@ -1987,7 +1991,7 @@ heartbeat(FollowerId, #raft_state{name = Name, log_view = View, catchup = Catchu
             ?LOG_DEBUG("Leader[~p term ~p last log ~p] send empty heartbeat to follower ~p(prev ~p, catching-up ~p)",
                 [Name, CurrentTerm, LastIndex, FollowerId, PrevLogIndex, IsCatchingUp], #{domain => [whatsapp, wa_raft]}),
             % Send append entries request.
-            send_rpc(FollowerId, ?APPEND_ENTRIES_RPC(CurrentTerm, node(), LastIndex, LastTerm, [], CommitIndex, 0), State1),
+            send_rpc(FollowerId, ?APPEND_ENTRIES(LastIndex, LastTerm, [], CommitIndex, 0), State1),
             LastFollowerHeartbeatTs =/= undefined andalso ?RAFT_GATHER('raft.leader.heartbeat.interval_ms', erlang:system_time(millisecond) - LastFollowerHeartbeatTs),
             State1;
         false ->
@@ -2010,7 +2014,7 @@ heartbeat(FollowerId, #raft_state{name = Name, log_view = View, catchup = Catchu
             % Compute trim index.
             TrimIndex = lists:min(to_member_list(MatchIndex#{node() => LastIndex}, 0, config(State1))),
             % Send append entries request.
-            CastResult = send_rpc(FollowerId, ?APPEND_ENTRIES_RPC(CurrentTerm, node(), PrevLogIndex, PrevLogTerm, Entries, CommitIndex, TrimIndex), State1),
+            CastResult = send_rpc(FollowerId, ?APPEND_ENTRIES(PrevLogIndex, PrevLogTerm, Entries, CommitIndex, TrimIndex), State1),
             NextIndex1 =
                 case CastResult of
                     ok ->
@@ -2165,11 +2169,11 @@ reply(Type, Message) ->
         [Type, Message, 100], #{domain => [whatsapp, wa_raft]}),
     ok.
 
--spec send_rpc(node() | peer(), normalized_procedure_call(), #raft_state{}) -> term().
-send_rpc(NodeOrPeer, ?NOTIFY_TERM_RPC(_Term, {Name, Node}), #raft_state{current_term = Term} = State) ->
-    ?MODULE:cast(NodeOrPeer, ?RAFT_NAMED_RPC(?NOTIFY_TERM, Term, Name, Node, undefined), State);
-send_rpc(NodeOrPeer, ?PROCEDURE_CALL(Procedure, _Term, Node, Payload), #raft_state{current_term = Term} = State) ->
-    ?MODULE:cast(NodeOrPeer, ?RAFT_RPC(Procedure, Term, Node, Payload), State).
+-spec send_rpc(node() | peer(), normalized_procedure(), #raft_state{}) -> term().
+send_rpc(NodeOrPeer, ?NOTIFY_TERM(), #raft_state{name = Name, current_term = Term} = State) ->
+    ?MODULE:cast(NodeOrPeer, ?RAFT_NAMED_RPC(?NOTIFY_TERM, Term, Name, node(), undefined), State);
+send_rpc(NodeOrPeer, ?PROCEDURE(Procedure, Payload), #raft_state{current_term = Term} = State) ->
+    ?MODULE:cast(NodeOrPeer, ?RAFT_RPC(Procedure, Term, node(), Payload), State).
 
 -spec cast(node() | peer(), rpc(), #raft_state{}) -> ok | {error, term()}.
 cast(DestIdOrPeer, Message, #raft_state{name = Name}) ->
@@ -2195,7 +2199,7 @@ cast(DestIdOrPeer, Message, #raft_state{name = Name}) ->
             {error, E}
     end.
 
--spec broadcast(normalized_procedure_call(), #raft_state{}) -> ok.
+-spec broadcast(normalized_procedure(), #raft_state{}) -> ok.
 broadcast(Message, State) ->
     Peers = config_peers(config(State), State),
     lists:foreach(fun({Id, _Addr}) -> catch ok = send_rpc(Id, Message, State) end, Peers).
