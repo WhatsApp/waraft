@@ -19,7 +19,9 @@
 -export([
     commit/2,
     commit/3,
-    read/2
+    commit_async/3,
+    read/2,
+    read/3
 ]).
 
 %% gen_server callbacks
@@ -87,14 +89,22 @@ start_link(#{table := Table, partition := Partition} = RaftArgs) ->
 commit(Pid, Op) ->
     gen_server:call(Pid, {commit, Op}, ?RPC_CALL_TIMEOUT_MS).
 
--spec commit(Dest :: pid() | Local :: atom() | {Service :: atom(), Node :: node()}, From :: {pid(), term()}, Op :: op()) -> ok.
-commit(Dest, From, Op) ->
+-spec commit(Pid :: pid() | Local :: atom() | {Service :: atom(), Node :: node()}, Op :: op(), Timeout :: timeout()) -> {ok, term()} | wa_raft:error().
+commit(Pid, Op, Timeout) ->
+    gen_server:call(Pid, {commit, Op}, Timeout).
+
+-spec commit_async(Dest :: pid() | Local :: atom() | {Service :: atom(), Node :: node()}, From :: {pid(), term()}, Op :: op()) -> ok.
+commit_async(Dest, From, Op) ->
     gen_server:cast(Dest, {commit, From, Op}).
 
 % Strong-read
 -spec read(ServerRef :: gen_server:server_ref(), Command :: command()) -> {ok, Result :: term()} | wa_raft:error().
 read(Dest, Command) ->
     gen_server:call(Dest, {read, Command}, ?RPC_CALL_TIMEOUT_MS).
+
+-spec read(ServerRef :: gen_server:server_ref(), Command :: command(), Timeout :: timeout()) -> {ok, Result :: term()} | wa_raft:error().
+read(Dest, Command, Timeout) ->
+    gen_server:call(Dest, {read, Command}, Timeout).
 
 %% gen_server callbacks
 -spec init([wa_raft:args()]) -> {ok, #raft_acceptor{}}.
