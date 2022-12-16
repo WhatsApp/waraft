@@ -12,14 +12,14 @@
 -compile(warn_missing_spec).
 -behaviour(supervisor).
 
+%% OTP Supervision
 -export([
-    child_spec/1
+    child_spec/0,
+    start_link/1
 ]).
 
-%% API
+%% Internal API
 -export([
-    start_link/2,
-    stop/3,
     raft_sup/2
 ]).
 
@@ -28,37 +28,26 @@
     init/1
 ]).
 
--include_lib("kernel/include/logger.hrl").
 -include("wa_raft.hrl").
 
--spec child_spec(wa_raft:args()) -> supervisor:child_spec().
-child_spec(#{table := Table, partition := Partition} = RaftArgs) ->
-    Name = raft_sup(Table, Partition),
+%% Returns a spec suitable for use with a `simple_one_for_one` supervisor.
+-spec child_spec() -> supervisor:child_spec().
+child_spec() ->
     #{
-        id => Name,
-        start => {?MODULE, start_link, [Name, RaftArgs]},
+        id => ?MODULE,
+        start => {?MODULE, start_link, []},
         restart => permanent,
         shutdown => infinity,
         type => supervisor,
         modules => [?MODULE]
     }.
 
--spec start_link(atom(), [term()]) -> supervisor:startlink_ret().
-start_link(Name, RaftSpec) ->
-    supervisor:start_link({local, Name}, ?MODULE, [RaftSpec]).
+-spec start_link(Spec :: wa_raft:args()) -> supervisor:startlink_ret().
+start_link(#{table := Table, partition := Partition} = RaftSpec) ->
+    supervisor:start_link({local, raft_sup(Table, Partition)}, ?MODULE, RaftSpec).
 
--spec stop(Supervisor :: atom() | pid(), Table :: atom(), Partition :: pos_integer()) -> ok | {error, 'running' | 'restarting' | 'not_found' | 'simple_one_for_one'}.
-stop(Supervisor, Table, Partition) ->
-    Name = raft_sup(Table, Partition),
-    case supervisor:terminate_child(Supervisor, Name) of
-        ok ->
-            supervisor:delete_child(Supervisor, Name);
-        Error ->
-            ?LOG_WARNING("Failed to stop child ~p. Error ~p", [Name, Error], #{domain => [whatsapp, wa_raft]})
-    end.
-
--spec init([wa_raft:args()]) -> {ok, {supervisor:sup_flags(), list(supervisor:child_spec())}}.
-init([Args]) ->
+-spec init(wa_raft:args()) -> {ok, {supervisor:sup_flags(), [supervisor:child_spec()]}}.
+init(Args) ->
     StorageModule = application:get_env(?APP, raft_storage_module, wa_raft_ast),
     code:ensure_loaded(StorageModule),
     Modules0 = case erlang:function_exported(StorageModule, child_spec, 1) of

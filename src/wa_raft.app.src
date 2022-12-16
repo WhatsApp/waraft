@@ -15,5 +15,6 @@
         kernel,
         stdlib
     ]},
-    {env, []}
+    {env, []},
+    {mod, {wa_raft_app, []}}
 ]}.
