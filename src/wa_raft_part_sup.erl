@@ -14,8 +14,8 @@
 
 %% OTP Supervision
 -export([
-    child_spec/0,
-    start_link/1
+    child_spec/1,
+    start_link/2
 ]).
 
 %% Internal API
@@ -30,43 +30,59 @@
 
 -include("wa_raft.hrl").
 
+%%-------------------------------------------------------------------
+%% OTP supervision
+%%-------------------------------------------------------------------
+
 %% Returns a spec suitable for use with a `simple_one_for_one` supervisor.
--spec child_spec() -> supervisor:child_spec().
-child_spec() ->
+-spec child_spec(Application :: atom()) -> supervisor:child_spec().
+child_spec(Application) ->
     #{
         id => ?MODULE,
-        start => {?MODULE, start_link, []},
+        start => {?MODULE, start_link, [Application]},
         restart => permanent,
         shutdown => infinity,
         type => supervisor,
         modules => [?MODULE]
     }.
 
--spec start_link(Spec :: wa_raft:args()) -> supervisor:startlink_ret().
-start_link(#{table := Table, partition := Partition} = RaftSpec) ->
-    supervisor:start_link({local, raft_sup(Table, Partition)}, ?MODULE, RaftSpec).
+-spec start_link(Application :: atom(), Spec :: wa_raft:args()) -> supervisor:startlink_ret().
+start_link(Application, Spec) ->
+    #{table := Table, partition := Partition} = Options = normalize_spec(Application, Spec),
+    supervisor:start_link({local, raft_sup(Table, Partition)}, ?MODULE, Options).
 
--spec init(wa_raft:args()) -> {ok, {supervisor:sup_flags(), [supervisor:child_spec()]}}.
-init(Args) ->
-    StorageModule = application:get_env(?APP, raft_storage_module, wa_raft_ast),
-    code:ensure_loaded(StorageModule),
-    Modules0 = case erlang:function_exported(StorageModule, child_spec, 1) of
-                   true ->
-                       [StorageModule];
-                   _ ->
-                       []
-               end,
-    Modules = Modules0 ++ [
-        wa_raft_queue,
-        wa_raft_storage,
-        wa_raft_log,
-        wa_raft_log_catchup,
-        wa_raft_server,
-        wa_raft_acceptor
-    ],
-    Specs = [M:child_spec(Args) || M <- Modules],
-    {ok, {#{strategy => one_for_all, intensity => 10, period => 1}, Specs}}.
+%%-------------------------------------------------------------------
+%% Internal API
+%%-------------------------------------------------------------------
 
 -spec raft_sup(wa_raft:table(), wa_raft:partition()) -> atom().
 raft_sup(Table, Partition) ->
     list_to_atom("raft_sup_" ++ atom_to_list(Table) ++ "_" ++ integer_to_list(Partition)).
+
+-spec normalize_spec(Application :: atom(), Spec :: wa_raft:args()) -> wa_raft:options().
+normalize_spec(Application, #{table := Table, partition := Partition} = Spec) ->
+    % TODO(hsun324) - T133215915: Application-specific default log/storage module
+    #{
+        application => Application,
+        table => Table,
+        partition => Partition,
+        witness => maps:get(witness, Spec, false),
+        log_module => maps:get(log_module, Spec, application:get_env(?APP, raft_log_module, wa_raft_log_ets)),
+        storage_module => maps:get(storage_module, Spec, application:get_env(?APP, raft_storage_module, wa_raft_storage_ets))
+    }.
+
+%%-------------------------------------------------------------------
+%% Supervisor callbacks
+%%-------------------------------------------------------------------
+
+-spec init(Options :: wa_raft:options()) -> {ok, {supervisor:sup_flags(), [supervisor:child_spec()]}}.
+init(Options) ->
+    ChildSpecs = [
+        wa_raft_queue:child_spec(Options),
+        wa_raft_storage:child_spec(Options),
+        wa_raft_log:child_spec(Options),
+        wa_raft_log_catchup:child_spec(Options),
+        wa_raft_server:child_spec(Options),
+        wa_raft_acceptor:child_spec(Options)
+    ],
+    {ok, {#{strategy => one_for_all, intensity => 10, period => 1}, ChildSpecs}}.

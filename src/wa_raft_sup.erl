@@ -120,9 +120,9 @@ reg_name(Application) ->
 %%-------------------------------------------------------------------
 
 -spec init(Application :: atom()) -> {ok, {supervisor:sup_flags(), [supervisor:child_spec()]}}.
-init(_Application) ->
+init(Application) ->
     init_globals(),
-    {ok, {#{strategy => simple_one_for_one, intensity => 10, period => 1}, [wa_raft_part_sup:child_spec()]}}.
+    {ok, {#{strategy => simple_one_for_one, intensity => 10, period => 1}, [wa_raft_part_sup:child_spec(Application)]}}.
 
 %%-------------------------------------------------------------------
 %% Test API

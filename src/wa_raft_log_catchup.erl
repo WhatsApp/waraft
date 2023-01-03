@@ -80,19 +80,19 @@
 init_tables() ->
     ?MODULE = ets:new(?MODULE, [set, public, named_table, {read_concurrency, true}]).
 
--spec child_spec(RaftArgs :: [term()]) -> supervisor:child_spec().
-child_spec(RaftArgs) ->
+-spec child_spec(Options :: wa_raft:options()) -> supervisor:child_spec().
+child_spec(Options) ->
     #{
         id => ?MODULE,
-        start => {?MODULE, start_link, [RaftArgs]},
+        start => {?MODULE, start_link, [Options]},
         restart => transient,
         shutdown => 30000,
         modules => [?MODULE]
     }.
 
--spec start_link(wa_raft:args()) -> supervisor:startlink_ret().
-start_link(#{table := Table, partition := Partition} = Args) ->
-    gen_server:start_link({local, ?RAFT_LOG_CATCHUP(Table, Partition)}, ?MODULE, Args, []).
+-spec start_link(Options :: wa_raft:options()) -> supervisor:startlink_ret().
+start_link(#{table := Table, partition := Partition} = Options) ->
+    gen_server:start_link({local, ?RAFT_LOG_CATCHUP(Table, Partition)}, ?MODULE, Options, []).
 
 %% Submit a request to trigger log catchup for a particular follower starting at the index provided.
 -spec start_catchup_request(Catchup :: atom(), FollowerId :: node(), FollowerLastIndex :: wa_raft_log:log_index(),
@@ -117,7 +117,7 @@ is_catching_up(Catchup, FollowerId) ->
     end.
 
 %% RAFT log catchup server implementation
--spec init(wa_raft:args()) -> {ok, #state{}, timeout()}.
+-spec init(Options :: wa_raft:options()) -> {ok, #state{}, timeout()}.
 init(#{table := Table, partition := Partition}) ->
     process_flag(trap_exit, true),
 

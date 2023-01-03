@@ -270,19 +270,19 @@
 %% RAFT log provider interface for writing new log data
 %%-------------------------------------------------------------------
 
--spec child_spec(RaftArgs :: wa_raft:args()) -> supervisor:child_spec().
-child_spec(RaftArgs) ->
+-spec child_spec(Options :: wa_raft:options()) -> supervisor:child_spec().
+child_spec(Options) ->
     #{
         id => ?MODULE,
-        start => {?MODULE, start_link, [RaftArgs]},
+        start => {?MODULE, start_link, [Options]},
         restart => permanent,
         shutdown => 30000,
         modules => [?MODULE]
     }.
 
--spec start_link(RaftArgs :: wa_raft:args()) -> {ok, Pid :: pid()} | ignore | {error, Reason :: term()}.
-start_link(#{table := Table, partition := Partition} = RaftArgs) ->
-    gen_server:start_link({local, ?RAFT_LOG_NAME(Table, Partition)}, ?MODULE, [RaftArgs], []).
+-spec start_link(Options :: wa_raft:options()) -> {ok, Pid :: pid()} | ignore | {error, Reason :: term()}.
+start_link(#{table := Table, partition := Partition} = Options) ->
+    gen_server:start_link({local, ?RAFT_LOG_NAME(Table, Partition)}, ?MODULE, Options, []).
 
 %%-------------------------------------------------------------------
 %% APIs for writing new log data
@@ -639,12 +639,11 @@ metadata_table(Log) ->
 %% gen_server Callbacks
 %%-------------------------------------------------------------------
 
--spec init(Args :: [wa_raft:args()]) -> {ok, State :: #log_state{}}.
-init([#{table := Table, partition := Partition} = RaftArgs]) ->
+-spec init(Options :: wa_raft:options()) -> {ok, State :: #log_state{}}.
+init(#{table := Table, partition := Partition, log_module := Provider}) ->
     process_flag(trap_exit, true),
 
     Log = ?RAFT_LOG_NAME(Table, Partition),
-    Provider = maps:get(log_module, RaftArgs, ?RAFT_CONFIG(raft_log_module, wa_raft_log_ets)),
     Metadata = metadata_table(Log),
     Metadata = ets:new(Metadata, [set, public, named_table]),
     State = #log_state{

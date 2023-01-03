@@ -8,6 +8,7 @@
 -module(wa_raft).
 -compile(warn_missing_spec).
 
+%% Public Types
 -export_type([
     table/0,
     partition/0,
@@ -15,10 +16,16 @@
     args/0
 ]).
 
+%% Internal Types
+-export_type([
+    options/0
+]).
+
 -type table() :: atom().
 -type partition() :: pos_integer().
 -type error() :: {error, term()}.
 
+%% Specification for starting a RAFT partition.
 -type args() ::
     #{
         % Table name
@@ -31,4 +38,16 @@
         storage_module => module(),
         % Witness flag
         witness => boolean()
+    }.
+
+%% Normalized options produced by `wa_raft_part_sup` for passing into RAFT processes.
+%% Not to be created externally.
+-type options() ::
+    #{
+        application := atom(),
+        table := table(),
+        partition := partition(),
+        witness := boolean(),
+        log_module := module(),
+        storage_module := module()
     }.

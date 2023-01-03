@@ -173,19 +173,19 @@
 %%  OTP Supervision Callbacks
 %% ==================================================
 
--spec child_spec(RaftArgs :: wa_raft:args()) -> supervisor:child_spec().
-child_spec(RaftArgs) ->
+-spec child_spec(Options :: wa_raft:options()) -> supervisor:child_spec().
+child_spec(Options) ->
     #{
         id => ?MODULE,
-        start => {?MODULE, start_link, [RaftArgs]},
+        start => {?MODULE, start_link, [Options]},
         restart => transient,
         shutdown => 30000,
         modules => [?MODULE]
     }.
 
--spec start_link(RaftArgs :: wa_raft:args()) -> {ok, Pid :: pid()} | ignore | wa_raft:error().
-start_link(#{table := Table, partition := Partition} = RaftArgs) ->
-    gen_statem:start_link({local, ?RAFT_SERVER_NAME(Table, Partition)}, ?MODULE, RaftArgs, []).
+-spec start_link(Options :: wa_raft:options()) -> {ok, Pid :: pid()} | ignore | wa_raft:error().
+start_link(#{table := Table, partition := Partition} = Options) ->
+    gen_statem:start_link({local, ?RAFT_SERVER_NAME(Table, Partition)}, ?MODULE, Options, []).
 
 %% ==================================================
 %%  RAFT Server Internal API
@@ -314,15 +314,14 @@ enable(Name) ->
 %% ==================================================
 
 %% gen_statem callbacks
--spec init(wa_raft:args()) -> gen_statem:init_result(state()).
-init(#{table := Table, partition := Partition} = RaftArgs) ->
+-spec init(Options :: wa_raft:options()) -> gen_statem:init_result(state()).
+init(#{table := Table, partition := Partition, witness := Witness} = Options) ->
     process_flag(trap_exit, true),
 
     Name = ?RAFT_SERVER_NAME(Table, Partition),
-    Witness = maps:get(witness, RaftArgs, false),
     Storage = ?RAFT_STORAGE_NAME(Table, Partition),
 
-    ?LOG_NOTICE("Server[~p] starting with options ~p", [Name, RaftArgs], #{domain => [whatsapp, wa_raft]}),
+    ?LOG_NOTICE("Server[~0p] starting with options ~0p", [Name, Options], #{domain => [whatsapp, wa_raft]}),
 
     % Open storage and the log
     {ok, Last} = wa_raft_storage:open(Storage),

@@ -64,27 +64,23 @@
 -type op() :: {Ref :: term(), Command :: command()}.
 -type read_op() :: {From :: gen_server:from(), Command :: command()}.
 
--spec child_spec(Config :: [term()]) -> supervisor:child_spec().
-child_spec(Config) ->
+-spec child_spec(Options :: wa_raft:options()) -> supervisor:child_spec().
+child_spec(Options) ->
     #{
         id => ?MODULE,
-        start => {?MODULE, start_link, [Config]},
+        start => {?MODULE, start_link, [Options]},
         restart => transient,
         shutdown => 30000,
         modules => [?MODULE]
     }.
 
 %% Public API
--spec start_link(RaftArgs :: wa_raft:args()) -> {ok, Pid :: pid()} | ignore | wa_raft:error().
-start_link(#{table := Table, partition := Partition} = RaftArgs) ->
-    Name = ?RAFT_ACCEPTOR_NAME(Table, Partition),
-    gen_server:start_link({local, Name}, ?MODULE, [RaftArgs], []).
+-spec start_link(Options :: wa_raft:options()) -> {ok, Pid :: pid()} | ignore | wa_raft:error().
+start_link(#{table := Table, partition := Partition} = Options) ->
+    gen_server:start_link({local, ?RAFT_ACCEPTOR_NAME(Table, Partition)}, ?MODULE, Options, []).
 
 %% Commit a change on leader node specified by pid. It's a blocking call. It returns until it
 %% is acknowledged on quorum nodes.
-%%
-%% See wa_raft_storage:execute() to find all supported commands.
-%%
 -spec commit(Pid :: pid() | Local :: atom() | {Service :: atom(), Node :: node()}, Op :: op()) -> {ok, term()} | wa_raft:error().
 commit(Pid, Op) ->
     gen_server:call(Pid, {commit, Op}, ?RPC_CALL_TIMEOUT_MS).
@@ -107,8 +103,8 @@ read(Dest, Command, Timeout) ->
     gen_server:call(Dest, {read, Command}, Timeout).
 
 %% gen_server callbacks
--spec init([wa_raft:args()]) -> {ok, #raft_acceptor{}}.
-init([#{table := Table, partition := Partition}]) ->
+-spec init(Options :: wa_raft:args()) -> {ok, #raft_acceptor{}}.
+init(#{table := Table, partition := Partition}) ->
     process_flag(trap_exit, true),
     ?LOG_NOTICE("Starting raft acceptor on ~p:~p", [Table, Partition], #{domain => [whatsapp, wa_raft]}),
 
