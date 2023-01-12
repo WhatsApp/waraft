@@ -9,25 +9,57 @@
 -module(wa_raft_metrics).
 -compile(warn_missing_spec).
 
+%% Public API
 -export([
-  count/1,
-  countv/2,
-  gather/2
+    install/1
 ]).
 
+%% Default Implementation
+-export([
+    count/1,
+    countv/2,
+    gather/2
+]).
+
+%% Public Types
 -export_type([
-  metric/0,
-  value/0
+    metric/0,
+    value/0
 ]).
 
 -include("wa_raft.hrl").
 
+%%-------------------------------------------------------------------
+%% RAFT Metrics Behaviour
+%%-------------------------------------------------------------------
+
+%% Report a single occurence of some metric.
+-callback count(metric()) -> ok.
+%% Report a number of occurences of some metric.
+-callback countv(metric(), value()) -> ok.
+%% Report the measured value of an occurence of some metric.
+-callback gather(metric(), value()) -> ok.
+
+%%-------------------------------------------------------------------
+%% Public Types
+%%-------------------------------------------------------------------
+
 -type metric() :: atom() | tuple().
 -type value() :: integer().
 
--callback count(metric()) -> ok.
--callback countv(metric(), value()) -> ok.
--callback gather(metric(), value()) -> ok.
+%%-------------------------------------------------------------------
+%% Public API
+%%-------------------------------------------------------------------
+
+%% Replace the previously installed or default module used to report
+%% RAFT metrics with the provided module.
+-spec install(Module :: module()) -> ok.
+install(Module) ->
+    persistent_term:put(?RAFT_METRICS_MODULE_KEY, Module).
+
+%%-------------------------------------------------------------------
+%% Default Implementation
+%%-------------------------------------------------------------------
 
 -spec count(metric()) -> ok.
 count(_Metric) ->

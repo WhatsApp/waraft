@@ -29,6 +29,12 @@ start_link() ->
 
 -spec init(Arg :: term()) -> {ok, {supervisor:sup_flags(), list(supervisor:child_spec())}}.
 init(_) ->
+    % Cache certain commonly used configuration values.
+    case application:get_env(?APP, raft_metrics_module) of
+        {ok, Module} -> wa_raft_metrics:install(Module);
+        _Other       -> ok
+    end,
+
     % Setup tables used by shared services.
     wa_raft_info:init_tables(),
     wa_raft_transport:setup_tables(),
