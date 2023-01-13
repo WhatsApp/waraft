@@ -122,7 +122,7 @@
     | {last_applied, wa_raft_log:log_index()}
     | ModuleSpecificStatus :: {atom(), term()}.
 
--spec child_spec(Options :: wa_raft:options()) -> supervisor:child_spec().
+-spec child_spec(Options :: #raft_options{}) -> supervisor:child_spec().
 child_spec(Options) ->
     #{
         id => ?MODULE,
@@ -133,8 +133,8 @@ child_spec(Options) ->
     }.
 
 %% Public API
--spec start_link(Options :: wa_raft:options()) -> {'ok', Pid::pid()} | 'ignore' | {'error', Reason::term()}.
-start_link(#{table := Table, partition := Partition} = Options) ->
+-spec start_link(Options :: #raft_options{}) -> {'ok', Pid::pid()} | 'ignore' | {'error', Reason::term()}.
+start_link(#raft_options{table = Table, partition = Partition} = Options) ->
     gen_server:start_link({local, ?RAFT_STORAGE_NAME(Table, Partition)}, ?MODULE, Options, []).
 
 -spec status(ServiceRef :: pid() | atom()) -> status().
@@ -182,8 +182,8 @@ read_metadata(ServiceRef, Key) ->
     gen_server:call(ServiceRef, {read_metadata, Key}, ?STORAGE_CALL_TIMEOUT_MS).
 
 %% gen_server callbacks
--spec init(Options :: wa_raft:options()) -> {ok, #raft_storage{}}.
-init(#{table := Table, partition := Partition, storage_module := Module}) ->
+-spec init(Options :: #raft_options{}) -> {ok, #raft_storage{}}.
+init(#raft_options{table = Table, partition = Partition, storage_module = Module}) ->
     process_flag(trap_exit, true),
     ?LOG_NOTICE("Starting raft storage module ~p on ~p:~p", [Module, Table, Partition], #{domain => [whatsapp, wa_raft]}),
     Name = ?RAFT_STORAGE_NAME(Table, Partition),

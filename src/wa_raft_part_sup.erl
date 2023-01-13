@@ -28,6 +28,11 @@
     init/1
 ]).
 
+%% Test API
+-export([
+    normalize_spec/2
+]).
+
 -include("wa_raft.hrl").
 
 %%-------------------------------------------------------------------
@@ -48,7 +53,7 @@ child_spec(Application) ->
 
 -spec start_link(Application :: atom(), Spec :: wa_raft:args()) -> supervisor:startlink_ret().
 start_link(Application, Spec) ->
-    #{table := Table, partition := Partition} = Options = normalize_spec(Application, Spec),
+    #raft_options{table = Table, partition = Partition} = Options = normalize_spec(Application, Spec),
     supervisor:start_link({local, raft_sup(Table, Partition)}, ?MODULE, Options).
 
 %%-------------------------------------------------------------------
@@ -59,23 +64,23 @@ start_link(Application, Spec) ->
 raft_sup(Table, Partition) ->
     list_to_atom("raft_sup_" ++ atom_to_list(Table) ++ "_" ++ integer_to_list(Partition)).
 
--spec normalize_spec(Application :: atom(), Spec :: wa_raft:args()) -> wa_raft:options().
+-spec normalize_spec(Application :: atom(), Spec :: wa_raft:args()) -> #raft_options{}.
 normalize_spec(Application, #{table := Table, partition := Partition} = Spec) ->
     % TODO(hsun324) - T133215915: Application-specific default log/storage module
-    #{
-        application => Application,
-        table => Table,
-        partition => Partition,
-        witness => maps:get(witness, Spec, false),
-        log_module => maps:get(log_module, Spec, application:get_env(?APP, raft_log_module, wa_raft_log_ets)),
-        storage_module => maps:get(storage_module, Spec, application:get_env(?APP, raft_storage_module, wa_raft_storage_ets))
+    #raft_options{
+        application = Application,
+        table = Table,
+        partition = Partition,
+        witness = maps:get(witness, Spec, false),
+        log_module = maps:get(log_module, Spec, application:get_env(?APP, raft_log_module, wa_raft_log_ets)),
+        storage_module = maps:get(storage_module, Spec, application:get_env(?APP, raft_storage_module, wa_raft_storage_ets))
     }.
 
 %%-------------------------------------------------------------------
 %% Supervisor callbacks
 %%-------------------------------------------------------------------
 
--spec init(Options :: wa_raft:options()) -> {ok, {supervisor:sup_flags(), [supervisor:child_spec()]}}.
+-spec init(Options :: #raft_options{}) -> {ok, {supervisor:sup_flags(), [supervisor:child_spec()]}}.
 init(Options) ->
     ChildSpecs = [
         wa_raft_queue:child_spec(Options),

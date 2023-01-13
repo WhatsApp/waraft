@@ -270,7 +270,7 @@
 %% RAFT log provider interface for writing new log data
 %%-------------------------------------------------------------------
 
--spec child_spec(Options :: wa_raft:options()) -> supervisor:child_spec().
+-spec child_spec(Options :: #raft_options{}) -> supervisor:child_spec().
 child_spec(Options) ->
     #{
         id => ?MODULE,
@@ -280,8 +280,8 @@ child_spec(Options) ->
         modules => [?MODULE]
     }.
 
--spec start_link(Options :: wa_raft:options()) -> {ok, Pid :: pid()} | ignore | {error, Reason :: term()}.
-start_link(#{table := Table, partition := Partition} = Options) ->
+-spec start_link(Options :: #raft_options{}) -> {ok, Pid :: pid()} | ignore | {error, Reason :: term()}.
+start_link(#raft_options{table = Table, partition = Partition} = Options) ->
     gen_server:start_link({local, ?RAFT_LOG_NAME(Table, Partition)}, ?MODULE, Options, []).
 
 %%-------------------------------------------------------------------
@@ -639,8 +639,8 @@ metadata_table(Log) ->
 %% gen_server Callbacks
 %%-------------------------------------------------------------------
 
--spec init(Options :: wa_raft:options()) -> {ok, State :: #log_state{}}.
-init(#{table := Table, partition := Partition, log_module := Provider}) ->
+-spec init(Options :: #raft_options{}) -> {ok, State :: #log_state{}}.
+init(#raft_options{table = Table, partition = Partition, log_module = Provider}) ->
     process_flag(trap_exit, true),
 
     Log = ?RAFT_LOG_NAME(Table, Partition),

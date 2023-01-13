@@ -173,7 +173,7 @@
 %%  OTP Supervision Callbacks
 %% ==================================================
 
--spec child_spec(Options :: wa_raft:options()) -> supervisor:child_spec().
+-spec child_spec(Options :: #raft_options{}) -> supervisor:child_spec().
 child_spec(Options) ->
     #{
         id => ?MODULE,
@@ -183,8 +183,8 @@ child_spec(Options) ->
         modules => [?MODULE]
     }.
 
--spec start_link(Options :: wa_raft:options()) -> {ok, Pid :: pid()} | ignore | wa_raft:error().
-start_link(#{table := Table, partition := Partition} = Options) ->
+-spec start_link(Options :: #raft_options{}) -> {ok, Pid :: pid()} | ignore | wa_raft:error().
+start_link(#raft_options{table = Table, partition = Partition} = Options) ->
     gen_statem:start_link({local, ?RAFT_SERVER_NAME(Table, Partition)}, ?MODULE, Options, []).
 
 %% ==================================================
@@ -314,8 +314,8 @@ enable(Name) ->
 %% ==================================================
 
 %% gen_statem callbacks
--spec init(Options :: wa_raft:options()) -> gen_statem:init_result(state()).
-init(#{table := Table, partition := Partition, witness := Witness} = Options) ->
+-spec init(Options :: #raft_options{}) -> gen_statem:init_result(state()).
+init(#raft_options{table = Table, partition = Partition, witness = Witness} = Options) ->
     process_flag(trap_exit, true),
 
     Name = ?RAFT_SERVER_NAME(Table, Partition),

@@ -83,6 +83,17 @@
 %% Distribution
 -define(RAFT_DISTRIBUTION_MODULE, (persistent_term:get(raft_distribution_module))).
 
+%% Normalized options produced by `wa_raft_part_sup` for passing into RAFT processes.
+%% Not to be created externally.
+-record(raft_options, {
+    application :: atom(),
+    table :: wa_raft:table(),
+    partition :: wa_raft:partition(),
+    witness :: boolean(),
+    log_module :: module(),
+    storage_module :: module()
+}).
+
 %% Log position
 -record(raft_log_pos, {
     %% log sequence number

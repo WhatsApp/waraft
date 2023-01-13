@@ -269,7 +269,7 @@ fulfill_apply(Table, Partition) ->
 %% OTP SUPERVISION
 %%-------------------------------------------------------------------
 
--spec child_spec(Options :: wa_raft:options()) -> supervisor:child_spec().
+-spec child_spec(Options :: #raft_options{}) -> supervisor:child_spec().
 child_spec(Options) ->
     #{
         id => ?MODULE,
@@ -279,16 +279,16 @@ child_spec(Options) ->
         modules => [?MODULE]
     }.
 
--spec start_link(Options :: wa_raft:options()) -> {ok, Pid :: pid()} | ignore | wa_raft:error().
-start_link(#{table := Table, partition := Partition} = Options) ->
+-spec start_link(Options :: #raft_options{}) -> {ok, Pid :: pid()} | ignore | wa_raft:error().
+start_link(#raft_options{table = Table, partition = Partition} = Options) ->
     gen_server:start_link({local, name(Table, Partition)}, ?MODULE, Options, []).
 
 %%-------------------------------------------------------------------
 %% QUEUE SERVER CALLBACKS
 %%-------------------------------------------------------------------
 
--spec init(Options :: wa_raft:options()) -> {ok, #state{}}.
-init(#{table := Table, partition := Partition}) ->
+-spec init(Options :: #raft_options{}) -> {ok, #state{}}.
+init(#raft_options{table = Table, partition = Partition}) ->
     ?LOG_NOTICE("Queue[~p] starting", [name(Table, Partition)], #{domain => [whatsapp, wa_raft]}),
 
     process_flag(trap_exit, true),
