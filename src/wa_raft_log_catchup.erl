@@ -46,8 +46,9 @@
     table :: wa_raft:table(),
     partition :: wa_raft:partition(),
 
-    server :: atom(),
-    log :: wa_raft_log:log(),
+    server_name :: atom(),
+    log_name :: wa_raft_log:log(),
+
     lockouts = #{} :: #{node() => non_neg_integer()}
 }).
 
@@ -91,8 +92,8 @@ child_spec(Options) ->
     }.
 
 -spec start_link(Options :: #raft_options{}) -> supervisor:startlink_ret().
-start_link(#raft_options{table = Table, partition = Partition} = Options) ->
-    gen_server:start_link({local, ?RAFT_LOG_CATCHUP(Table, Partition)}, ?MODULE, Options, []).
+start_link(#raft_options{log_catchup_name = Name} = Options) ->
+    gen_server:start_link({local, Name}, ?MODULE, Options, []).
 
 %% Submit a request to trigger log catchup for a particular follower starting at the index provided.
 -spec start_catchup_request(Catchup :: atom(), FollowerId :: node(), FollowerLastIndex :: wa_raft_log:log_index(),
@@ -118,20 +119,19 @@ is_catching_up(Catchup, FollowerId) ->
 
 %% RAFT log catchup server implementation
 -spec init(Options :: #raft_options{}) -> {ok, #state{}, timeout()}.
-init(#raft_options{table = Table, partition = Partition}) ->
+init(#raft_options{table = Table, partition = Partition, log_name = Log, log_catchup_name = Name, server_name = Server}) ->
     process_flag(trap_exit, true),
 
-    ?LOG_NOTICE("Start catchup process for ~p:~p",
-        [Table, Partition], #{domain => [whatsapp, wa_raft]}),
+    ?LOG_NOTICE("Catchup[~0p] starting for partition ~0p/~0p",
+        [Name, Table, Partition], #{domain => [whatsapp, wa_raft]}),
 
-    Name = ?RAFT_LOG_CATCHUP(Table, Partition),
     Name = ets:new(Name, [set, public, named_table, {write_concurrency, true}]),
     State = #state{
         name = Name,
         table = Table,
         partition = Partition,
-        server = ?RAFT_SERVER_NAME(Table, Partition),
-        log = ?RAFT_LOG_NAME(Table, Partition)
+        server_name = Server,
+        log_name = Log
     },
 
     {ok, State, ?CONTINUE_TIMEOUT}.
@@ -203,7 +203,7 @@ send_logs(FollowerId, NextLogIndex, LeaderTerm, LeaderCommitIndex, Witness, #sta
     NewState.
 
 -spec send_logs_impl(node(), wa_raft_log:log_index(), wa_raft_log:log_term(), wa_raft_log:log_index(), boolean(), #state{}) -> term().
-send_logs_impl(FollowerId, NextLogIndex, LeaderTerm, LeaderCommitIndex, Witness, #state{name = Name, server = Server, log = Log} = State) ->
+send_logs_impl(FollowerId, NextLogIndex, LeaderTerm, LeaderCommitIndex, Witness, #state{name = Name, server_name = Server, log_name = Log} = State) ->
     PrevLogIndex = NextLogIndex - 1,
     {ok, PrevLogTerm} = wa_raft_log:term(Log, PrevLogIndex),
 

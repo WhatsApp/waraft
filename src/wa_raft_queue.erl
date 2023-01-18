@@ -62,13 +62,6 @@
 %% ETS table creation options shared by all queue tables
 -define(RAFT_QUEUE_TABLE_OPTIONS, [named_table, public, {read_concurrency, true}, {write_concurrency, true}]).
 
-%% Name and ETS table options for the commit queue
--define(RAFT_COMMIT_QUEUE_TABLE(Table, Partition), ?TO_ATOM("raft_commit_queue_", Table, Partition)).
--define(RAFT_COMMIT_QUEUE_TABLE_OPTIONS, [set | ?RAFT_QUEUE_TABLE_OPTIONS]).
-%% Name and ETS table optiosn for the read queue
--define(RAFT_READ_QUEUE_TABLE(Table, Partition), ?TO_ATOM("raft_read_queue_", Table, Partition)).
--define(RAFT_READ_QUEUE_TABLE_OPTIONS, [ordered_set | ?RAFT_QUEUE_TABLE_OPTIONS]).
-
 %% Total number of counters for RAFT partition specfic counters
 -define(RAFT_NUMBER_OF_QUEUE_SIZE_COUNTERS, 3).
 %% Index into counter reference for counter tracking apply queue size
@@ -280,25 +273,27 @@ child_spec(Options) ->
     }.
 
 -spec start_link(Options :: #raft_options{}) -> {ok, Pid :: pid()} | ignore | wa_raft:error().
-start_link(#raft_options{table = Table, partition = Partition} = Options) ->
-    gen_server:start_link({local, name(Table, Partition)}, ?MODULE, Options, []).
+start_link(#raft_options{queue_name = Name} = Options) ->
+    gen_server:start_link({local, Name}, ?MODULE, Options, []).
 
 %%-------------------------------------------------------------------
 %% QUEUE SERVER CALLBACKS
 %%-------------------------------------------------------------------
 
 -spec init(Options :: #raft_options{}) -> {ok, #state{}}.
-init(#raft_options{table = Table, partition = Partition}) ->
-    ?LOG_NOTICE("Queue[~p] starting", [name(Table, Partition)], #{domain => [whatsapp, wa_raft]}),
-
+init(#raft_options{table = Table, partition = Partition, queue_name = Name, queue_commits = CommitQueueName, queue_reads = ReadQueueName}) ->
     process_flag(trap_exit, true),
+
+    ?LOG_NOTICE("Queue[~p] starting for partition ~0p/~0p with read queue ~0p and commit queue ~0p",
+        [Name, Table, Partition, ReadQueueName, CommitQueueName], #{domain => [whatsapp, wa_raft]}),
+
     init_counters(Table, Partition),
 
     % Create ETS tables for pending commits and reads.
-    ets:new(?RAFT_COMMIT_QUEUE_TABLE(Table, Partition), ?RAFT_COMMIT_QUEUE_TABLE_OPTIONS),
-    ets:new(?RAFT_READ_QUEUE_TABLE(Table, Partition), ?RAFT_READ_QUEUE_TABLE_OPTIONS),
+    CommitQueueName = ets:new(CommitQueueName, [set | ?RAFT_QUEUE_TABLE_OPTIONS]),
+    ReadQueueName = ets:new(ReadQueueName, [ordered_set | ?RAFT_QUEUE_TABLE_OPTIONS]),
 
-    {ok, #state{name = name(Table, Partition)}}.
+    {ok, #state{name = Name}}.
 
 -spec handle_call(Request :: term(), From :: gen_server:from(), State :: #state{}) -> {noreply, #state{}}.
 handle_call(Request, From, #state{name = Name} = State) ->

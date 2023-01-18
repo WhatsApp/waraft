@@ -53,8 +53,8 @@ child_spec(Application) ->
 
 -spec start_link(Application :: atom(), Spec :: wa_raft:args()) -> supervisor:startlink_ret().
 start_link(Application, Spec) ->
-    #raft_options{table = Table, partition = Partition} = Options = normalize_spec(Application, Spec),
-    supervisor:start_link({local, raft_sup(Table, Partition)}, ?MODULE, Options).
+    Options = normalize_spec(Application, Spec),
+    supervisor:start_link({local, Options#raft_options.supervisor_name}, ?MODULE, Options).
 
 %%-------------------------------------------------------------------
 %% Internal API
@@ -72,8 +72,18 @@ normalize_spec(Application, #{table := Table, partition := Partition} = Spec) ->
         table = Table,
         partition = Partition,
         witness = maps:get(witness, Spec, false),
+        database = ?ROOT_DIR(Table, Partition),
+        acceptor_name = ?RAFT_ACCEPTOR_NAME(Table, Partition),
+        log_name = ?RAFT_LOG_NAME(Table, Partition),
         log_module = maps:get(log_module, Spec, application:get_env(?APP, raft_log_module, wa_raft_log_ets)),
-        storage_module = maps:get(storage_module, Spec, application:get_env(?APP, raft_storage_module, wa_raft_storage_ets))
+        log_catchup_name = ?RAFT_LOG_CATCHUP(Table, Partition),
+        queue_name = wa_raft_queue:name(Table, Partition),
+        queue_commits = ?RAFT_COMMIT_QUEUE_TABLE(Table, Partition),
+        queue_reads = ?RAFT_READ_QUEUE_TABLE(Table, Partition),
+        server_name = ?RAFT_SERVER_NAME(Table, Partition),
+        storage_name = ?RAFT_STORAGE_NAME(Table, Partition),
+        storage_module = maps:get(storage_module, Spec, application:get_env(?APP, raft_storage_module, wa_raft_storage_ets)),
+        supervisor_name = raft_sup(Table, Partition)
     }.
 
 %%-------------------------------------------------------------------

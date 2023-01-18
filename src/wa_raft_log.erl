@@ -281,8 +281,8 @@ child_spec(Options) ->
     }.
 
 -spec start_link(Options :: #raft_options{}) -> {ok, Pid :: pid()} | ignore | {error, Reason :: term()}.
-start_link(#raft_options{table = Table, partition = Partition} = Options) ->
-    gen_server:start_link({local, ?RAFT_LOG_NAME(Table, Partition)}, ?MODULE, Options, []).
+start_link(#raft_options{log_name = Name} = Options) ->
+    gen_server:start_link({local, Name}, ?MODULE, Options, []).
 
 %%-------------------------------------------------------------------
 %% APIs for writing new log data
@@ -640,10 +640,9 @@ metadata_table(Log) ->
 %%-------------------------------------------------------------------
 
 -spec init(Options :: #raft_options{}) -> {ok, State :: #log_state{}}.
-init(#raft_options{table = Table, partition = Partition, log_module = Provider}) ->
+init(#raft_options{table = Table, partition = Partition, log_name = Log, log_module = Provider}) ->
     process_flag(trap_exit, true),
 
-    Log = ?RAFT_LOG_NAME(Table, Partition),
     Metadata = metadata_table(Log),
     Metadata = ets:new(Metadata, [set, public, named_table]),
     State = #log_state{

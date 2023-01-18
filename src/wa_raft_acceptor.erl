@@ -51,9 +51,9 @@
     % Partition
     partition :: wa_raft:partition(),
     % Server service name
-    server :: atom(),
+    server_name :: atom(),
     % Storage service name
-    storage :: atom()
+    storage_name :: atom()
 }).
 
 -type command() ::
@@ -76,8 +76,8 @@ child_spec(Options) ->
 
 %% Public API
 -spec start_link(Options :: #raft_options{}) -> {ok, Pid :: pid()} | ignore | wa_raft:error().
-start_link(#raft_options{table = Table, partition = Partition} = Options) ->
-    gen_server:start_link({local, ?RAFT_ACCEPTOR_NAME(Table, Partition)}, ?MODULE, Options, []).
+start_link(#raft_options{acceptor_name = Name} = Options) ->
+    gen_server:start_link({local, Name}, ?MODULE, Options, []).
 
 %% Commit a change on leader node specified by pid. It's a blocking call. It returns until it
 %% is acknowledged on quorum nodes.
@@ -104,19 +104,19 @@ read(Dest, Command, Timeout) ->
 
 %% gen_server callbacks
 -spec init(Options :: #raft_options{}) -> {ok, #raft_acceptor{}}.
-init(#raft_options{table = Table, partition = Partition}) ->
+init(#raft_options{table = Table, partition = Partition, acceptor_name = Name, server_name = Server, storage_name = Storage}) ->
     process_flag(trap_exit, true),
-    ?LOG_NOTICE("Starting raft acceptor on ~p:~p", [Table, Partition], #{domain => [whatsapp, wa_raft]}),
 
-    Name = ?RAFT_ACCEPTOR_NAME(Table, Partition),
-    State = #raft_acceptor{
+    ?LOG_NOTICE("Acceptor[~0p] starting for partition ~0p/~0p",
+        [Name, Table, Partition], #{domain => [whatsapp, wa_raft]}),
+
+    {ok, #raft_acceptor{
         name = Name,
         table = Table,
         partition = Partition,
-        server = ?RAFT_SERVER_NAME(Table, Partition),
-        storage = ?RAFT_STORAGE_NAME(Table, Partition)
-    },
-    {ok, State}.
+        server_name = Server,
+        storage_name = Storage
+    }}.
 
 -spec handle_call(Request, From :: gen_server:from(), State :: #raft_acceptor{}) ->
     {noreply, NewState :: #raft_acceptor{}} | {stop, Reason :: term(), Reply :: term(), NewState :: #raft_acceptor{}}
@@ -162,7 +162,7 @@ terminate(Reason, #raft_acceptor{name = Name} = State) ->
 %% Private functions
 
 -spec commit_impl(From :: gen_server:from(), Request :: op(), State :: #raft_acceptor{}) -> NewState :: #raft_acceptor{}.
-commit_impl(From, {Ref, _} = Op, #raft_acceptor{table = Table, partition = Partition, server = Server, name = Name} = State) ->
+commit_impl(From, {Ref, _} = Op, #raft_acceptor{table = Table, partition = Partition, server_name = Server, name = Name} = State) ->
     StartT = os:timestamp(),
     ?LOG_DEBUG("[~p] Commit starts", [Name], #{domain => [whatsapp, wa_raft]}),
     case wa_raft_queue:commit(Table, Partition, Ref, From) of
@@ -188,7 +188,7 @@ commit_impl(From, {Ref, _} = Op, #raft_acceptor{table = Table, partition = Parti
                 Command :: command(),
                 State0 :: #raft_acceptor{}) -> State1 :: #raft_acceptor{}.
 %% Strongly-consistent read.
-read_impl(From, Command, #raft_acceptor{name = Name, table = Table, partition = Partition, server = Server} = State) ->
+read_impl(From, Command, #raft_acceptor{name = Name, table = Table, partition = Partition, server_name = Server} = State) ->
     StartT = os:timestamp(),
     ?LOG_DEBUG("Acceptor[~p] starts to handle read of ~0P from ~0p.",
         [Name, Command, 100, From], #{domain => [whatsapp, wa_raft]}),

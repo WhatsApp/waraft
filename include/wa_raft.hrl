@@ -27,6 +27,11 @@
 %% RAFT log catchup process
 -define(RAFT_LOG_CATCHUP(Table, Partition), ?TO_ATOM("raft_log_catchup_", Table, Partition)).
 
+%% Name for the commit queue
+-define(RAFT_COMMIT_QUEUE_TABLE(Table, Partition), ?TO_ATOM("raft_commit_queue_", Table, Partition)).
+%% Name for the read queue
+-define(RAFT_READ_QUEUE_TABLE(Table, Partition), ?TO_ATOM("raft_read_queue_", Table, Partition)).
+
 %% RAFT election max weight
 -define(RAFT_ELECTION_MAX_WEIGHT, 10).
 %% Raft election default weight
@@ -86,12 +91,37 @@
 %% Normalized options produced by `wa_raft_part_sup` for passing into RAFT processes.
 %% Not to be created externally.
 -record(raft_options, {
+    % General options
     application :: atom(),
     table :: wa_raft:table(),
     partition :: wa_raft:partition(),
     witness :: boolean(),
+    database :: string(),
+
+    % Acceptor options
+    acceptor_name :: atom(),
+
+    % Log options
+    log_name :: atom(),
     log_module :: module(),
-    storage_module :: module()
+
+    % Log catchup options
+    log_catchup_name :: atom(),
+
+    % Queue options
+    queue_name :: atom(),
+    queue_commits :: atom(),
+    queue_reads :: atom(),
+
+    % Server options
+    server_name :: atom(),
+
+    % Storage options
+    storage_name :: atom(),
+    storage_module :: module(),
+
+    % Partition supervisor options
+    supervisor_name :: atom()
 }).
 
 %% Log position

@@ -134,8 +134,8 @@ child_spec(Options) ->
 
 %% Public API
 -spec start_link(Options :: #raft_options{}) -> {'ok', Pid::pid()} | 'ignore' | {'error', Reason::term()}.
-start_link(#raft_options{table = Table, partition = Partition} = Options) ->
-    gen_server:start_link({local, ?RAFT_STORAGE_NAME(Table, Partition)}, ?MODULE, Options, []).
+start_link(#raft_options{storage_name = Name} = Options) ->
+    gen_server:start_link({local, Name}, ?MODULE, Options, []).
 
 -spec status(ServiceRef :: pid() | atom()) -> status().
 status(ServiceRef) ->
@@ -183,11 +183,12 @@ read_metadata(ServiceRef, Key) ->
 
 %% gen_server callbacks
 -spec init(Options :: #raft_options{}) -> {ok, #raft_storage{}}.
-init(#raft_options{table = Table, partition = Partition, storage_module = Module}) ->
+init(#raft_options{table = Table, partition = Partition, database = RootDir, storage_name = Name, storage_module = Module}) ->
     process_flag(trap_exit, true),
-    ?LOG_NOTICE("Starting raft storage module ~p on ~p:~p", [Module, Table, Partition], #{domain => [whatsapp, wa_raft]}),
-    Name = ?RAFT_STORAGE_NAME(Table, Partition),
-    RootDir = ?ROOT_DIR(Table, Partition),
+
+    ?LOG_NOTICE("Storage[~0p] starting for partition ~0p/~0p at ~0p using ~0p",
+        [Name, Table, Partition, RootDir, Module], #{domain => [whatsapp, wa_raft]}),
+
     State0 = #raft_storage{name = Name, table = Table, partition = Partition, root_dir = RootDir, module = Module},
     {LastApplied, Handle} = Module:storage_open(State0),
     State1 = State0#raft_storage{last_applied = LastApplied, handle = Handle},

@@ -184,8 +184,8 @@ child_spec(Options) ->
     }.
 
 -spec start_link(Options :: #raft_options{}) -> {ok, Pid :: pid()} | ignore | wa_raft:error().
-start_link(#raft_options{table = Table, partition = Partition} = Options) ->
-    gen_statem:start_link({local, ?RAFT_SERVER_NAME(Table, Partition)}, ?MODULE, Options, []).
+start_link(#raft_options{server_name = Name} = Options) ->
+    gen_statem:start_link({local, Name}, ?MODULE, Options, []).
 
 %% ==================================================
 %%  RAFT Server Internal API
@@ -315,19 +315,15 @@ enable(Name) ->
 
 %% gen_statem callbacks
 -spec init(Options :: #raft_options{}) -> gen_statem:init_result(state()).
-init(#raft_options{table = Table, partition = Partition, witness = Witness} = Options) ->
+init(#raft_options{table = Table, partition = Partition, witness = Witness, database = DataDir, log_name = Log, log_catchup_name = Catchup, server_name = Name, storage_name = Storage} = Options) ->
     process_flag(trap_exit, true),
-
-    Name = ?RAFT_SERVER_NAME(Table, Partition),
-    Storage = ?RAFT_STORAGE_NAME(Table, Partition),
 
     ?LOG_NOTICE("Server[~0p] starting with options ~0p", [Name, Options], #{domain => [whatsapp, wa_raft]}),
 
     % Open storage and the log
     {ok, Last} = wa_raft_storage:open(Storage),
-    {ok, View} = wa_raft_log:open(?RAFT_LOG_NAME(Table, Partition), Last),
+    {ok, View} = wa_raft_log:open(Log, Last),
 
-    DataDir = ?ROOT_DIR(Table, Partition),
     State0 = #raft_state{
         name = Name,
         self = #raft_identity{name = Name, node = node()},
@@ -336,7 +332,7 @@ init(#raft_options{table = Table, partition = Partition, witness = Witness} = Op
         data_dir = DataDir,
         log_view = View,
         storage = Storage,
-        catchup = ?RAFT_LOG_CATCHUP(Table, Partition),
+        catchup = Catchup,
         current_term = Last#raft_log_pos.term,
         commit_index = Last#raft_log_pos.index,
         last_applied = Last#raft_log_pos.index,
