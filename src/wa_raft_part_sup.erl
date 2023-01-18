@@ -23,6 +23,11 @@
     raft_sup/2
 ]).
 
+%% Internal API
+-export([
+    options/2
+]).
+
 %% Supervisor callbacks
 -export([
     init/1
@@ -30,10 +35,14 @@
 
 %% Test API
 -export([
-    normalize_spec/2
+    prepare_spec/2
 ]).
 
+-include_lib("kernel/include/logger.hrl").
 -include("wa_raft.hrl").
+
+%% Key in persistent_term for the options associated with a RAFT partition.
+-define(OPTIONS_KEY(Table, Partition), {?MODULE, Table, Partition}).
 
 %%-------------------------------------------------------------------
 %% OTP supervision
@@ -53,8 +62,21 @@ child_spec(Application) ->
 
 -spec start_link(Application :: atom(), Spec :: wa_raft:args()) -> supervisor:startlink_ret().
 start_link(Application, Spec) ->
-    Options = normalize_spec(Application, Spec),
-    supervisor:start_link({local, Options#raft_options.supervisor_name}, ?MODULE, Options).
+    %% First normalize the provided specification into a full options record.
+    Options = #raft_options{table = Table, partition = Partition, supervisor_name = Name} = normalize_spec(Application, Spec),
+
+    %% Then put the declared options for the current RAFT partition into
+    %% persistent term for access by shared resources and other services.
+    %% The RAFT options for a table are not expected to change during the
+    %% runtime of the RAFT application and so repeated updates should not
+    %% result in any GC load. Warn if this is case.
+    PrevOptions = persistent_term:get(?OPTIONS_KEY(Table, Partition), Options),
+    PrevOptions =/= Options andalso
+        ?LOG_WARNING(?MODULE_STRING " storing changed options for RAFT partitition ~0p/~0p",
+            [Table, Partition], #{domain => [whatsapp, wa_raft]}),
+    ok = persistent_term:put(?OPTIONS_KEY(Table, Partition), Options),
+
+    supervisor:start_link({local, Name}, ?MODULE, Options).
 
 %%-------------------------------------------------------------------
 %% Internal API
@@ -63,6 +85,10 @@ start_link(Application, Spec) ->
 -spec raft_sup(wa_raft:table(), wa_raft:partition()) -> atom().
 raft_sup(Table, Partition) ->
     list_to_atom("raft_sup_" ++ atom_to_list(Table) ++ "_" ++ integer_to_list(Partition)).
+
+-spec options(Table :: wa_raft:table(), Partition :: wa_raft:partition()) -> #raft_options{} | undefined.
+options(Table, Partition) ->
+    persistent_term:get(?OPTIONS_KEY(Table, Partition), undefined).
 
 -spec normalize_spec(Application :: atom(), Spec :: wa_raft:args()) -> #raft_options{}.
 normalize_spec(Application, #{table := Table, partition := Partition} = Spec) ->
@@ -85,6 +111,16 @@ normalize_spec(Application, #{table := Table, partition := Partition} = Spec) ->
         storage_module = maps:get(storage_module, Spec, application:get_env(?APP, raft_storage_module, wa_raft_storage_ets)),
         supervisor_name = raft_sup(Table, Partition)
     }.
+
+%%-------------------------------------------------------------------
+%% Test API
+%%-------------------------------------------------------------------
+
+-spec prepare_spec(Application :: atom(), Spec :: wa_raft:args()) -> #raft_options{}.
+prepare_spec(Application, Spec) ->
+    Options = #raft_options{table = Table, partition = Partition} = normalize_spec(Application, Spec),
+    ok = persistent_term:put(?OPTIONS_KEY(Table, Partition), Options),
+    Options.
 
 %%-------------------------------------------------------------------
 %% Supervisor callbacks
