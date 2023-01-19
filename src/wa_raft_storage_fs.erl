@@ -57,9 +57,9 @@
 %% Last applied log id
 -define(LAST_LOG_ID, "__LAST__").
 %% Raft version cache LRU
--define(RAFT_VERSION_CACHE_LRU(Table, Partition), ?TO_ATOM("raft_version_cache_lru_", Table, Partition)).
+-define(RAFT_VERSION_CACHE_LRU(Table, Partition), list_to_atom("raft_version_cache_lru_" ++ atom_to_list(Table) ++ "_" ++ integer_to_list(Partition))).
 %% Raft version cache
--define(RAFT_VERSION_CACHE(Table, Partition), ?TO_ATOM("raft_version_cache_", Table, Partition)).
+-define(RAFT_VERSION_CACHE(Table, Partition), list_to_atom("raft_version_cache_" ++ atom_to_list(Table) ++ "_" ++ integer_to_list(Partition))).
 
 %%%-------------------------------------------------------------------
 %%%

@@ -20,7 +20,8 @@
 
 %% Internal API
 -export([
-    raft_sup/2
+    default_name/2,
+    registered_name/2
 ]).
 
 %% Internal API
@@ -82,9 +83,20 @@ start_link(Application, Spec) ->
 %% Internal API
 %%-------------------------------------------------------------------
 
--spec raft_sup(wa_raft:table(), wa_raft:partition()) -> atom().
-raft_sup(Table, Partition) ->
+%% Get the default name for the RAFT partition supervisor associated with the
+%% provided RAFT partition.
+-spec default_name(Table :: wa_raft:table(), Partition :: wa_raft:partition()) -> Name :: atom().
+default_name(Table, Partition) ->
     list_to_atom("raft_sup_" ++ atom_to_list(Table) ++ "_" ++ integer_to_list(Partition)).
+
+%% Get the registered name for the RAFT partition supervisor associated with the
+%% provided RAFT partition or the default name if no registration exists.
+-spec registered_name(Table :: wa_raft:table(), Partition :: wa_raft:partition()) -> Name :: atom().
+registered_name(Table, Partition) ->
+    case wa_raft_part_sup:options(Table, Partition) of
+        undefined -> default_name(Table, Partition);
+        Options   -> Options#raft_options.supervisor_name
+    end.
 
 -spec options(Table :: wa_raft:table(), Partition :: wa_raft:partition()) -> #raft_options{} | undefined.
 options(Table, Partition) ->
@@ -99,17 +111,18 @@ normalize_spec(Application, #{table := Table, partition := Partition} = Spec) ->
         partition = Partition,
         witness = maps:get(witness, Spec, false),
         database = ?ROOT_DIR(Table, Partition),
-        acceptor_name = ?RAFT_ACCEPTOR_NAME(Table, Partition),
-        log_name = ?RAFT_LOG_NAME(Table, Partition),
+        acceptor_name = wa_raft_acceptor:default_name(Table, Partition),
+        log_name = wa_raft_log:default_name(Table, Partition),
         log_module = maps:get(log_module, Spec, application:get_env(?APP, raft_log_module, wa_raft_log_ets)),
-        log_catchup_name = ?RAFT_LOG_CATCHUP(Table, Partition),
-        queue_name = wa_raft_queue:name(Table, Partition),
-        queue_commits = ?RAFT_COMMIT_QUEUE_TABLE(Table, Partition),
-        queue_reads = ?RAFT_READ_QUEUE_TABLE(Table, Partition),
-        server_name = ?RAFT_SERVER_NAME(Table, Partition),
-        storage_name = ?RAFT_STORAGE_NAME(Table, Partition),
+        log_catchup_name = wa_raft_log_catchup:default_name(Table, Partition),
+        queue_name = wa_raft_queue:default_name(Table, Partition),
+        queue_counters = wa_raft_queue:default_counters(),
+        queue_commits = wa_raft_queue:default_commit_queue_name(Table, Partition),
+        queue_reads = wa_raft_queue:default_read_queue_name(Table, Partition),
+        server_name = wa_raft_server:default_name(Table, Partition),
+        storage_name = wa_raft_storage:default_name(Table, Partition),
         storage_module = maps:get(storage_module, Spec, application:get_env(?APP, raft_storage_module, wa_raft_storage_ets)),
-        supervisor_name = raft_sup(Table, Partition)
+        supervisor_name = default_name(Table, Partition)
     }.
 
 %%-------------------------------------------------------------------

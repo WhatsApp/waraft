@@ -705,17 +705,17 @@ maybe_notify_complete(_ID, #{type := sender}, _State) ->
 maybe_notify_complete(_ID, #{status := Status}, _State) when Status =/= completed ->
     ok;
 maybe_notify_complete(ID, #{type := receiver, root := Root, meta := #{type := snapshot, table := Table, partition := Partition, position := LogPos}}, #state{}) ->
-    try wa_raft_server:snapshot_available(?RAFT_SERVER_NAME(Table, Partition), Root, LogPos) of
+    try wa_raft_server:snapshot_available(wa_raft_server:registered_name(Table, Partition), Root, LogPos) of
         ok ->
             ok;
         {error, Reason} ->
             ?LOG_NOTICE("wa_raft_transport failed to notify ~p of transport ~p completion due to ~p",
-                [?RAFT_SERVER_NAME(Table, Partition), ID, Reason], #{domain => [whatsapp, wa_raft]}),
+                [wa_raft_server:registered_name(Table, Partition), ID, Reason], #{domain => [whatsapp, wa_raft]}),
             {error, Reason}
     catch
         T:E:S ->
             ?LOG_NOTICE("wa_raft_transport failed to notify ~p of transport ~p completion due to ~p ~p: ~n~p",
-                [?RAFT_SERVER_NAME(Table, Partition), ID, T, E, S], #{domain => [whatsapp, wa_raft]}),
+                [wa_raft_server:registered_name(Table, Partition), ID, T, E, S], #{domain => [whatsapp, wa_raft]}),
             {error, {T, E, S}}
     end;
 maybe_notify_complete(ID, _Info, #state{}) ->

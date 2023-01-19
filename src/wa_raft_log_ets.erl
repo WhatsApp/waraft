@@ -136,7 +136,7 @@ append_impl(_Log, _Start, [_|_], _First, _Last) ->
 
 -spec init(Table :: wa_raft:table(), Partition :: wa_raft:partition()) -> ok.
 init(Table, Partition) ->
-    Log = ?RAFT_LOG_NAME(Table, Partition),
+    Log = wa_raft_log:registered_name(Table, Partition),
     Log = ets:new(Log, [ordered_set, public, named_table]),
     ok.
 

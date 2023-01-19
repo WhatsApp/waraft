@@ -94,7 +94,7 @@ stop_partition(Supervisor, Pid) ->
 
 -spec stop_partition(Supervisor :: atom() | pid(), Table :: wa_raft:table(), Partition :: wa_raft:partition()) -> ok | {error, atom()}.
 stop_partition(Supervisor, Table, Partition) ->
-    case whereis(wa_raft_part_sup:raft_sup(Table, Partition)) of
+    case whereis(wa_raft_part_sup:registered_name(Table, Partition)) of
         Pid when is_pid(Pid) -> stop_partition(Supervisor, Pid);
         _                    -> {error, not_found}
     end.

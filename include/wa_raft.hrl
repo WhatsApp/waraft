@@ -15,22 +15,18 @@
 %% Persistent root directory
 -define(ROOT_DIR(Table, Partition), lists:concat([?DB, "/", Table, ".", Partition, "/"])).
 
--define(TO_ATOM(Prefix, Table, Partition), list_to_atom(lists:concat([Prefix, Table, "_" , Partition]))).
-%% Raft server name
--define(RAFT_SERVER_NAME(Table, Partition), ?TO_ATOM("raft_server_", Table, Partition)).
-%% Raft log service
--define(RAFT_LOG_NAME(Table, Partition), ?TO_ATOM("raft_log_", Table, Partition)).
-%% Raft storage service
--define(RAFT_STORAGE_NAME(Table, Partition), ?TO_ATOM("raft_storage_", Table, Partition)).
-%% Raft acceptor service
--define(RAFT_ACCEPTOR_NAME(Table, Partition), ?TO_ATOM("raft_acceptor_", Table, Partition)).
-%% RAFT log catchup process
--define(RAFT_LOG_CATCHUP(Table, Partition), ?TO_ATOM("raft_log_catchup_", Table, Partition)).
-
-%% Name for the commit queue
--define(RAFT_COMMIT_QUEUE_TABLE(Table, Partition), ?TO_ATOM("raft_commit_queue_", Table, Partition)).
-%% Name for the read queue
--define(RAFT_READ_QUEUE_TABLE(Table, Partition), ?TO_ATOM("raft_read_queue_", Table, Partition)).
+%% Registered name of the RAFT partition supervisor for a RAFT partition
+-define(RAFT_SUPERVISOR_NAME(Table, Partition), wa_raft_part_sup:registered_name(Table, Partition)).
+%% Registered name of the RAFT acceptor server for a RAFT partition
+-define(RAFT_ACCEPTOR_NAME(Table, Partition), wa_raft_acceptor:registered_name(Table, Partition)).
+%% Registered name of the RAFT log server for a RAFT partition
+-define(RAFT_LOG_NAME(Table, Partition), wa_raft_log:registered_name(Table, Partition)).
+%% Registered name of the RAFT log catchup server for a RAFT partition
+-define(RAFT_LOG_CATCHUP_NAME(Table, Partition), wa_raft_log_catchup:registered_name(Table, Partition)).
+%% Registered name of the RAFT server for a RAFT partition
+-define(RAFT_SERVER_NAME(Table, Partition), wa_raft_server:registered_name(Table, Partition)).
+%% Registered name of the RAFT storage server for a RAFT partition
+-define(RAFT_STORAGE_NAME(Table, Partition), wa_raft_storage:registered_name(Table, Partition)).
 
 %% RAFT election max weight
 -define(RAFT_ELECTION_MAX_WEIGHT, 10).
@@ -110,6 +106,7 @@
 
     % Queue options
     queue_name :: atom(),
+    queue_counters :: counters:counters_ref(),
     queue_commits :: atom(),
     queue_reads :: atom(),
 

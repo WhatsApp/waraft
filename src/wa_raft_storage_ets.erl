@@ -50,7 +50,7 @@ storage_open(#raft_storage{table = Table, partition = Partition}) ->
 
 -spec storage_close(storage_handle(), #raft_storage{}) -> ok.
 storage_close({Table, Partition}, _State) ->
-    Tab = ?RAFT_STORAGE_NAME(Table, Partition),
+    Tab = wa_raft_storage:registered_name(Table, Partition),
     catch ets:delete(Tab),
     ok.
 
@@ -116,14 +116,14 @@ storage_apply(Command, LogPos, Handle) ->
 
 -spec storage_write(storage_handle(), wa_raft_log:log_pos(), term(), binary(), map()) -> {ok, wa_raft_log:log_index()} | wa_raft_storage:error().
 storage_write({Table, Partition}, #raft_log_pos{index = LogIndex, term = LogTerm}, Key, Value, Header) ->
-    Tab = ?RAFT_STORAGE_NAME(Table, Partition),
+    Tab = wa_raft_storage:registered_name(Table, Partition),
     true = ets:insert(Tab, {Key, {LogIndex, LogTerm, Header, Value}}),
     {ok, LogIndex}.
 
 -spec storage_read(storage_handle(), term()) ->
     {ok, {wa_raft_log:log_index(), wa_raft_log:log_term(), map(), binary()} | {undefined, undefined, map(), undefined}} | wa_raft_storage:error().
 storage_read({Table, Partition}, Key) ->
-    Tab = ?RAFT_STORAGE_NAME(Table, Partition),
+    Tab = wa_raft_storage:registered_name(Table, Partition),
     try ets:lookup(Tab, Key) of
         [{_, {LogIndex, LogTerm, Header, Value}}] -> {ok, {LogIndex, LogTerm, Header, Value}};
         [] -> {ok, {undefined, undefined, #{}, undefined}}
@@ -136,7 +136,7 @@ storage_read({Table, Partition}, Key) ->
 
 -spec storage_read_version(storage_handle(), term()) -> wa_raft_log:log_index() | undefined | wa_raft_storage:error().
 storage_read_version({Table, Partition}, Key) ->
-    Tab = ?RAFT_STORAGE_NAME(Table, Partition),
+    Tab = wa_raft_storage:registered_name(Table, Partition),
     try ets:lookup(Tab, Key) of
         [{_, {LogIndex, _LogTerm, _Header, _Value}}] -> LogIndex;
         [] -> undefined
@@ -149,13 +149,13 @@ storage_read_version({Table, Partition}, Key) ->
 
 -spec storage_delete(storage_handle(), wa_raft_log:log_pos(), term()) -> ok.
 storage_delete({Table, Partition}, _LogPos, Key) ->
-    Tab = ?RAFT_STORAGE_NAME(Table, Partition),
+    Tab = wa_raft_storage:registered_name(Table, Partition),
     true = ets:delete(Tab, Key),
     ok.
 
 -spec storage_match_delete(storage_handle(), term(), wa_raft_log:log_index(), wa_raft_log:log_term()) -> ok.
 storage_match_delete({Table, Partition}, Key, MatchLogIndex, MatchLogTerm) ->
-    Tab = ?RAFT_STORAGE_NAME(Table, Partition),
+    Tab = wa_raft_storage:registered_name(Table, Partition),
     true = ets:match_delete(Tab, {Key, {MatchLogIndex, MatchLogTerm, '_', '_'}}),
     ok.
 
@@ -177,4 +177,4 @@ storage_read_metadata(Handle, Key) ->
 
 -spec new_table(wa_raft:table(), wa_raft:partition()) -> ets:tid() | atom().
 new_table(Table, Partition) ->
-    ets:new(?RAFT_STORAGE_NAME(Table, Partition), [set, named_table, public, {read_concurrency, true}, {write_concurrency, true}]).
+    ets:new(wa_raft_storage:registered_name(Table, Partition), [set, named_table, public, {read_concurrency, true}, {write_concurrency, true}]).

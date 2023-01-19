@@ -48,6 +48,12 @@
     status/1
 ]).
 
+%% Internal API
+-export([
+    default_name/2,
+    registered_name/2
+]).
+
 %% gen_server callbacks
 -export([
     init/1,
@@ -180,6 +186,25 @@ delete_snapshot(ServiceRef, Name) ->
 -spec read_metadata(ServiceRef :: pid() | atom(), Key :: metadata()) -> {ok, Version :: wa_raft_log:log_pos(), Value :: eqwalizer:dynamic()} | undefined | error().
 read_metadata(ServiceRef, Key) ->
     gen_server:call(ServiceRef, {read_metadata, Key}, ?STORAGE_CALL_TIMEOUT_MS).
+
+%%-------------------------------------------------------------------
+%% Internal API
+%%-------------------------------------------------------------------
+
+%% Get the default name for the RAFT storage server associated with the
+%% provided RAFT partition.
+-spec default_name(Table :: wa_raft:table(), Partition :: wa_raft:partition()) -> Name :: atom().
+default_name(Table, Partition) ->
+    list_to_atom("raft_storage_" ++ atom_to_list(Table) ++ "_" ++ integer_to_list(Partition)).
+
+%% Get the registered name for the RAFT storage server associated with the
+%% provided RAFT partition or the default name if no registration exists.
+-spec registered_name(Table :: wa_raft:table(), Partition :: wa_raft:partition()) -> Name :: atom().
+registered_name(Table, Partition) ->
+    case wa_raft_part_sup:options(Table, Partition) of
+        undefined -> default_name(Table, Partition);
+        Options   -> Options#raft_options.storage_name
+    end.
 
 %% gen_server callbacks
 -spec init(Options :: #raft_options{}) -> {ok, #raft_storage{}}.

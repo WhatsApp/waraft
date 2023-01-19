@@ -89,7 +89,7 @@ handle_cast({request_snapshot_transport, Peer, Table, Partition}, #state{transpo
             case maps:size(Transports) < ?RAFT_CONFIG(raft_max_snapshot_catchup, 5) of
                 true ->
                     try
-                        StorageRef = ?RAFT_STORAGE_NAME(Table, Partition),
+                        StorageRef = wa_raft_storage:registered_name(Table, Partition),
                         {ok, #raft_log_pos{index = Index, term = Term} = LogPos} = wa_raft_storage:create_snapshot(StorageRef),
                         Path = filename:join(?ROOT_DIR(Table, Partition), ?SNAPSHOT_NAME(Index, Term)),
                         {ok, ID} = wa_raft_transport:start_snapshot(Peer, Table, Partition, LogPos, Path, infinity),
@@ -119,7 +119,7 @@ handle_info(scan, #state{transports = Transports} = State) ->
                     {ok, #{status := Status}} -> Status =/= requested andalso Status =/= running;
                     _                         -> true
                 end,
-                Drop andalso wa_raft_storage:delete_snapshot(?RAFT_STORAGE_NAME(Table, Partition), ?SNAPSHOT_NAME(Index, Term)),
+                Drop andalso wa_raft_storage:delete_snapshot(wa_raft_storage:registered_name(Table, Partition), ?SNAPSHOT_NAME(Index, Term)),
                 not Drop
             end, Transports),
     schedule_scan(),
@@ -133,7 +133,7 @@ terminate(_Reason, #state{transports = Transport}) ->
     maps:foreach(
         fun ({_Peer, Table, Partition}, #transport{id = ID, snapshot = #raft_log_pos{index = Index, term = Term}}) ->
             wa_raft_transport:cancel(ID, terminating),
-            wa_raft_storage:delete_snapshot(?RAFT_STORAGE_NAME(Table, Partition), ?SNAPSHOT_NAME(Index, Term))
+            wa_raft_storage:delete_snapshot(wa_raft_storage:registered_name(Table, Partition), ?SNAPSHOT_NAME(Index, Term))
         end, Transport).
 
 -spec schedule_scan() -> reference().

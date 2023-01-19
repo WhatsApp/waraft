@@ -31,6 +31,12 @@
     read/2
 ]).
 
+%% Internal API
+-export([
+    default_name/2,
+    registered_name/2
+]).
+
 %% gen_statem callbacks
 -export([
     init/1,
@@ -308,6 +314,25 @@ enter_witness(Name) ->
 -spec enable(Name :: atom() | pid()) -> ok | {error, ErrorReason :: atom()}.
 enable(Name) ->
     gen_server:call(Name, ?ENABLE_COMMAND, ?RPC_CALL_TIMEOUT_MS).
+
+%%-------------------------------------------------------------------
+%% Internal API
+%%-------------------------------------------------------------------
+
+%% Get the default name for the RAFT server associated with the provided
+%% RAFT partition.
+-spec default_name(Table :: wa_raft:table(), Partition :: wa_raft:partition()) -> Name :: atom().
+default_name(Table, Partition) ->
+    list_to_atom("raft_server_" ++ atom_to_list(Table) ++ "_" ++ integer_to_list(Partition)).
+
+%% Get the registered name for the RAFT server associated with the provided
+%% RAFT partition or the default name if no registration exists.
+-spec registered_name(Table :: wa_raft:table(), Partition :: wa_raft:partition()) -> Name :: atom().
+registered_name(Table, Partition) ->
+    case wa_raft_part_sup:options(Table, Partition) of
+        undefined -> default_name(Table, Partition);
+        Options   -> Options#raft_options.server_name
+    end.
 
 %% ==================================================
 %%  gen_statem Callbacks
