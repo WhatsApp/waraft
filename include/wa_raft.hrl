@@ -33,10 +33,6 @@
 %% Raft election default weight
 -define(RAFT_ELECTION_DEFAULT_WEIGHT, ?RAFT_ELECTION_MAX_WEIGHT).
 
-%% Current db directory
--define(DATA, "db").
-%% Data directory
--define(DATA_DIR(Table, Partition), ?ROOT_DIR(Table, Partition) ++ ?DATA ++ "/").
 %% Name of server state persist file
 -define(STATE_FILE_NAME, "state").
 %% Name prefix for snapshots
