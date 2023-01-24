@@ -92,7 +92,7 @@
     table :: wa_raft:table(),
     partition :: wa_raft:partition(),
     witness :: boolean(),
-    database :: string(),
+    database :: file:filename(),
 
     % Acceptor options
     acceptor_name :: atom(),
@@ -118,7 +118,12 @@
     storage_module :: module(),
 
     % Partition supervisor options
-    supervisor_name :: atom()
+    supervisor_name :: atom(),
+
+    % Transport options
+    transport_cleanup_name :: atom(),
+    transport_directory :: file:filename(),
+    transport_module :: module()
 }).
 
 %% Log position

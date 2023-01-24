@@ -92,7 +92,7 @@ handle_cast({request_snapshot_transport, Peer, Table, Partition}, #state{transpo
                         StorageRef = wa_raft_storage:registered_name(Table, Partition),
                         {ok, #raft_log_pos{index = Index, term = Term} = LogPos} = wa_raft_storage:create_snapshot(StorageRef),
                         Path = filename:join(?ROOT_DIR(Table, Partition), ?SNAPSHOT_NAME(Index, Term)),
-                        {ok, ID} = wa_raft_transport:start_snapshot(Peer, Table, Partition, LogPos, Path, infinity),
+                        {ok, ID} = wa_raft_transport:start_snapshot_transfer(Peer, Table, Partition, LogPos, Path, infinity),
                         ?LOG_NOTICE("started sending snapshot for ~0p:~0p at ~0p:~0p over transport ~0p",
                             [Table, Partition, Index, Term, ID], #{domain => [whatsapp, wa_raft]}),
                         {noreply, State#state{transports = Transports#{{Peer, Table, Partition} => #transport{id = ID, snapshot = LogPos}}}}

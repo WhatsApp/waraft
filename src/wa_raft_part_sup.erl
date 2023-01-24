@@ -105,12 +105,13 @@ options(Table, Partition) ->
 -spec normalize_spec(Application :: atom(), Spec :: wa_raft:args()) -> #raft_options{}.
 normalize_spec(Application, #{table := Table, partition := Partition} = Spec) ->
     % TODO(hsun324) - T133215915: Application-specific default log/storage module
+    Database = ?ROOT_DIR(Table, Partition),
     #raft_options{
         application = Application,
         table = Table,
         partition = Partition,
         witness = maps:get(witness, Spec, false),
-        database = ?ROOT_DIR(Table, Partition),
+        database = Database,
         acceptor_name = wa_raft_acceptor:default_name(Table, Partition),
         log_name = wa_raft_log:default_name(Table, Partition),
         log_module = maps:get(log_module, Spec, application:get_env(?APP, raft_log_module, wa_raft_log_ets)),
@@ -122,7 +123,10 @@ normalize_spec(Application, #{table := Table, partition := Partition} = Spec) ->
         server_name = wa_raft_server:default_name(Table, Partition),
         storage_name = wa_raft_storage:default_name(Table, Partition),
         storage_module = maps:get(storage_module, Spec, application:get_env(?APP, raft_storage_module, wa_raft_storage_ets)),
-        supervisor_name = default_name(Table, Partition)
+        supervisor_name = default_name(Table, Partition),
+        transport_cleanup_name = wa_raft_transport_cleanup:default_name(Table, Partition),
+        transport_directory = wa_raft_transport:default_directory(Database),
+        transport_module = maps:get(transport_module, Spec, wa_raft_transport:default_module())
     }.
 
 %%-------------------------------------------------------------------
@@ -147,6 +151,7 @@ init(Options) ->
         wa_raft_log:child_spec(Options),
         wa_raft_log_catchup:child_spec(Options),
         wa_raft_server:child_spec(Options),
-        wa_raft_acceptor:child_spec(Options)
+        wa_raft_acceptor:child_spec(Options),
+        wa_raft_transport_cleanup:child_spec(Options)
     ],
     {ok, {#{strategy => one_for_all, intensity => 10, period => 1}, ChildSpecs}}.

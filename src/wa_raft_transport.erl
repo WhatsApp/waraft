@@ -17,19 +17,25 @@
     start_link/0
 ]).
 
+%% Bulk Transfer API
+-export([
+    start_transfer/4,
+    start_transfer/5,
+    transfer/5
+]).
+
+%% Snapshot Transfer API
+-export([
+    start_snapshot_transfer/5,
+    start_snapshot_transfer/6,
+    transfer_snapshot/6
+]).
+
 %% Transport API
 -export([
-    start/3,
-    start/4,
-    start_snapshot/5,
-    start_snapshot/6,
-    transport/4,
-    transport_snapshot/6,
     cancel/2,
     complete/3,
-    complete/4,
-    pin/1,
-    unpin/1
+    complete/4
 ]).
 
 %% ETS API
@@ -40,6 +46,14 @@
     transport_info/2,
     file_info/2,
     update_file_info/3
+]).
+
+%% Internal API
+-export([
+    default_directory/1,
+    default_module/0,
+    registered_directory/2,
+    registered_module/2
 ]).
 
 %% gen_server callbacks
@@ -57,14 +71,11 @@
     file_info/0
 ]).
 
--define(RAFT_TRANSPORT_DIRNAME, "transport").
-
--define(RAFT_TRANSPORT_MODULE(), application:get_env(?APP, transport_module, wa_raft_dist_transport)).
+-define(RAFT_TRANSPORT_PARTITION_SUBDIRECTORY, "transport").
+-define(RAFT_TRANSPORT_DEFAULT_MODULE, wa_raft_dist_transport).
 
 -define(RAFT_TRANSPORT_SCAN_INTERVAL_SECS, 30).
 -define(RAFT_TRANSPORT_MAX_IDLE_SECS(), application:get_env(?APP, transport_idle_timeout_secs, 30)).
-
--define(RAFT_TRANSPORT_RETAIN_MIN_SECS(), application:get_env(?APP, transport_retain_min_secs, 300)).
 
 -define(INFO_KEY(ID), {ID, info}).
 -define(FILE_KEY(ID, FileID), {ID, {file, FileID}}).
@@ -77,8 +88,8 @@
 
     peer := atom(),
     module := module(),
-    meta := term(),
-    notify => term(),
+    meta := meta(),
+    notify => gen_server:from(),
 
     root := string(),
 
@@ -90,6 +101,19 @@
     completed_files := non_neg_integer(),
 
     error => term()
+}.
+
+-type meta() :: meta_transfer() | meta_snapshot().
+-type meta_transfer() :: #{
+    type := transfer,
+    table := wa_raft:table(),
+    partition := wa_raft:partition()
+}.
+-type meta_snapshot() :: #{
+    type := snapshot,
+    table := wa_raft:table(),
+    partition := wa_raft:partition(),
+    position := wa_raft_log:log_pos()
 }.
 
 -type file_id() :: pos_integer().
@@ -111,11 +135,7 @@
     error => Reason :: term()
 }.
 
--record(state, {
-    pins = #{} :: #{transport_id() => non_neg_integer()},
-    monitors = #{} :: #{reference() => transport_id()}
-}).
--type state() :: #state{}.
+-record(state, {}).
 
 %%% ------------------------------------------------------------------------
 %%%  Behaviour callbacks
@@ -155,32 +175,52 @@ start_link() ->
     gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
 
 %%% ------------------------------------------------------------------------
-%%%  Transport API
+%%%  Internal API
 %%%
 
--spec start(Peer :: atom(), Meta :: term(), Root :: string()) -> {ok, ID :: transport_id()} | wa_raft:error().
-start(Peer, Meta, Root) ->
-    start(Peer, Meta, Root, 10000).
-
--spec start(Peer :: atom(), Meta :: term(), Root :: string(), Timeout :: timeout()) -> {ok, ID :: transport_id()} | wa_raft:error().
-start(Peer, Meta, Root, Timeout) ->
+-spec start_transport(Peer :: atom(), Meta :: meta(), Root :: string(), Timeout :: timeout()) -> {ok, ID :: transport_id()} | wa_raft:error().
+start_transport(Peer, Meta, Root, Timeout) ->
     gen_server:call(?MODULE, {start, Peer, Meta, Root}, Timeout).
 
--spec start_snapshot(Peer :: atom(), Table :: wa_raft:table(), Partition :: wa_raft:partition(), LogPos :: wa_raft_log:log_pos(), Root :: string()) -> {ok, ID :: transport_id()} | wa_raft:error().
-start_snapshot(Peer, Table, Partition, LogPos, Root) ->
-    start_snapshot(Peer, Table, Partition, LogPos, Root, 10000).
-
--spec start_snapshot(Peer :: atom(), Table :: wa_raft:table(), Partition :: wa_raft:partition(), LogPos :: wa_raft_log:log_pos(), Root :: string(), Timeout :: timeout()) -> {ok, ID :: transport_id()} | wa_raft:error().
-start_snapshot(Peer, Table, Partition, LogPos, Root, Timeout) ->
-    start(Peer, #{type => snapshot, table => Table, partition => Partition, position => LogPos}, Root, Timeout).
-
--spec transport(Peer :: atom(), Meta :: map(), Root :: string(), Timeout :: timeout()) -> {ok, ID :: transport_id()} | wa_raft:error().
-transport(Peer, Meta, Root, Timeout) ->
+-spec start_transport_and_wait(Peer :: atom(), Meta :: meta(), Root :: string(), Timeout :: timeout()) -> {ok, ID :: transport_id()} | wa_raft:error().
+start_transport_and_wait(Peer, Meta, Root, Timeout) ->
     gen_server:call(?MODULE, {start_wait, Peer, Meta, Root}, Timeout).
 
--spec transport_snapshot(Peer :: atom(), Table :: wa_raft:table(), Partition :: wa_raft:partition(), LogPos :: wa_raft_log:log_pos(), Root :: string(), Timeout :: timeout()) -> {ok, ID :: transport_id()} | wa_raft:error().
-transport_snapshot(Peer, Table, Partition, LogPos, Root, Timeout) ->
-    transport(Peer, #{type => snapshot, table => Table, partition => Partition, position => LogPos}, Root, Timeout).
+%%% ------------------------------------------------------------------------
+%%%  Bulk Transfer API
+%%%
+
+-spec start_transfer(Peer :: atom(), Table :: wa_raft:table(), Partition :: wa_raft:partition(), Root :: string()) -> {ok, ID :: transport_id()} | wa_raft:error().
+start_transfer(Peer, Table, Partition, Root) ->
+    start_transfer(Peer, Table, Partition, Root, 10000).
+
+-spec start_transfer(Peer :: atom(), Table :: wa_raft:table(), Partition :: wa_raft:partition(), Root :: string(), Timeout :: timeout()) -> {ok, ID :: transport_id()} | wa_raft:error().
+start_transfer(Peer, Table, Partition, Root, Timeout) ->
+    start_transport(Peer, #{type => transfer, table => Table, partition => Partition}, Root, Timeout).
+
+-spec transfer(Peer :: atom(), Table :: wa_raft:table(), Partition :: wa_raft:partition(), Root :: string(), Timeout :: timeout()) -> {ok, ID :: transport_id()} | wa_raft:error().
+transfer(Peer, Table, Partition, Root, Timeout) ->
+    start_transport_and_wait(Peer, #{type => transfer, table => Table, partition => Partition}, Root, Timeout).
+
+%%% ------------------------------------------------------------------------
+%%%  Snapshot Transfer API
+%%%
+
+-spec start_snapshot_transfer(Peer :: atom(), Table :: wa_raft:table(), Partition :: wa_raft:partition(), LogPos :: wa_raft_log:log_pos(), Root :: string()) -> {ok, ID :: transport_id()} | wa_raft:error().
+start_snapshot_transfer(Peer, Table, Partition, LogPos, Root) ->
+    start_snapshot_transfer(Peer, Table, Partition, LogPos, Root, 10000).
+
+-spec start_snapshot_transfer(Peer :: atom(), Table :: wa_raft:table(), Partition :: wa_raft:partition(), LogPos :: wa_raft_log:log_pos(), Root :: string(), Timeout :: timeout()) -> {ok, ID :: transport_id()} | wa_raft:error().
+start_snapshot_transfer(Peer, Table, Partition, LogPos, Root, Timeout) ->
+    start_transport(Peer, #{type => snapshot, table => Table, partition => Partition, position => LogPos}, Root, Timeout).
+
+-spec transfer_snapshot(Peer :: atom(), Table :: wa_raft:table(), Partition :: wa_raft:partition(), LogPos :: wa_raft_log:log_pos(), Root :: string(), Timeout :: timeout()) -> {ok, ID :: transport_id()} | wa_raft:error().
+transfer_snapshot(Peer, Table, Partition, LogPos, Root, Timeout) ->
+    start_transport_and_wait(Peer, #{type => snapshot, table => Table, partition => Partition, position => LogPos}, Root, Timeout).
+
+%%% ------------------------------------------------------------------------
+%%%  Transport API
+%%%
 
 -spec cancel(ID :: transport_id(), Reason :: term()) -> ok | wa_raft:error().
 cancel(ID, Reason) ->
@@ -193,14 +233,6 @@ complete(ID, FileID, Status) ->
 -spec complete(ID :: transport_id(), FileID :: file_id(), Status :: term(), Pid :: pid() | undefined) -> ok | invalid.
 complete(ID, FileID, Status, Pid) ->
     gen_server:cast(?MODULE, {complete, ID, FileID, Status, Pid}).
-
--spec pin(ID :: transport_id()) -> {ok, Ref :: reference()} | wa_raft:error().
-pin(ID) ->
-    gen_server:call(?MODULE, {pin, ID}).
-
--spec unpin(Ref :: reference()) -> ok | wa_raft:error().
-unpin(Ref) ->
-    gen_server:call(?MODULE, {unpin, Ref}).
 
 %%% ------------------------------------------------------------------------
 %%%  ETS table helper functions
@@ -290,29 +322,61 @@ update_file_info(ID, FileID, Fun) ->
             not_found
     end.
 
+%%-------------------------------------------------------------------
+%% Internal API
+%%-------------------------------------------------------------------
+
+%% Get the default directory for incoming transports associated with the
+%% provided RAFT partition given that RAFT partition's database directory.
+-spec default_directory(Database :: file:filename()) -> Directory :: file:filename().
+default_directory(Database) ->
+    filename:join(Database, ?RAFT_TRANSPORT_PARTITION_SUBDIRECTORY).
+
+%% Get the default module for outgoing transports associated with the
+%% provided RAFT partition.
+-spec default_module() -> Module :: module().
+default_module() ->
+    application:get_env(?APP, transport_module, ?RAFT_TRANSPORT_DEFAULT_MODULE).
+
+%% Get the registered directory for incoming transports associated with the
+%% provided RAFT partition or 'undefined' if no registration exists.
+-spec registered_directory(Table :: wa_raft:table(), Partition :: wa_raft:partition()) -> Directory :: file:filename() | undefined.
+registered_directory(Table, Partition) ->
+    case wa_raft_part_sup:options(Table, Partition) of
+        undefined -> undefined;
+        Options   -> Options#raft_options.transport_directory
+    end.
+
+%% Get the registered module for outgoing transports associated with the
+%% provided RAFT partition or the default transport module if no registration exists.
+-spec registered_module(Table :: wa_raft:table(), Partition :: wa_raft:partition()) -> Module :: module() | undefined.
+registered_module(Table, Partition) ->
+    case wa_raft_part_sup:options(Table, Partition) of
+        undefined -> ?RAFT_TRANSPORT_DEFAULT_MODULE;
+        Options   -> Options#raft_options.transport_module
+    end.
+
 %%% ------------------------------------------------------------------------
 %%%  gen_server callbacks
 %%%
 
--spec init(Args :: term()) -> {ok, State :: state()}.
+-spec init(Args :: term()) -> {ok, State :: #state{}}.
 init(_) ->
     process_flag(trap_exit, true),
     schedule_scan(),
     {ok, #state{}}.
 
--spec handle_call(Request, From :: {Pid :: pid(), Tag :: term()}, State :: state()) -> {reply, Reply :: term(), NewState :: state()} | {noreply, NewState :: state()}
+-spec handle_call(Request, From :: gen_server:from(), State :: #state{}) -> {reply, Reply :: term(), NewState :: #state{}} | {noreply, NewState :: #state{}}
     when
         Request ::
-            {start, node(), term(), string()} |
-            {start_wait, node(), term(), string()} |
-            {transport, ID :: transport_id(), Peer :: node(), Module :: module(), From :: term(), Files :: [{file_id(), RelPath :: string(), Size :: integer()}]} |
-            {cancel, ID :: transport_id(), Reason :: term()} |
-            {pin, ID :: transport_id()} |
-            {unpin, ID :: transport_id()}.
+            {start, Peer :: node(), Meta :: meta(), Root :: string()} |
+            {start_wait, Peer :: node(), Meta :: meta(), Root :: string()} |
+            {transport, ID :: transport_id(), Peer :: node(), Module :: module(), Meta :: meta(), Files :: [{file_id(), RelPath :: string(), Size :: integer()}]} |
+            {cancel, ID :: transport_id(), Reason :: term()}.
 handle_call({start, Peer, Meta, Root}, _From, #state{} = State) ->
-    {reply, start_transport(undefined, Peer, Meta, Root), State};
+    {reply, handle_transport_start(undefined, Peer, Meta, Root), State};
 handle_call({start_wait, Peer, Meta, Root}, From, #state{} = State) ->
-    case start_transport(From, Peer, Meta, Root) of
+    case handle_transport_start(From, Peer, Meta, Root) of
         {ok, _ID}       -> {noreply, State};
         {error, Reason} -> {reply, {error, Reason}, State}
     end;
@@ -329,7 +393,7 @@ handle_call({transport, ID, Peer, Module, Meta, Files}, From, #state{} = State) 
                     [ID], #{domain => [whatsapp, wa_raft]}),
 
                 TransportAtomics = atomics:new(?RAFT_TRANSPORT_TRANSPORT_ATOMICS_COUNT, []),
-                RootDir = transport_destination(ID),
+                RootDir = transport_destination(ID, Meta),
                 NowMillis = erlang:system_time(millisecond),
                 TotalFiles = length(Files),
 
@@ -400,30 +464,13 @@ handle_call({cancel, ID, Reason}, _From, #state{} = State) ->
         not_found -> {error, not_found}
     end,
     {reply, Reply, State};
-handle_call({pin, ID}, {Pid, _Tag}, #state{pins = Pins0, monitors = Monitors0} = State0) ->
-    Ref = monitor(process, Pid),
-    Pins1 = maps:update_with(ID, fun (V) -> V + 1 end, 1, Pins0),
-    Monitors1 = Monitors0#{Ref => ID},
-    {reply, {ok, Ref}, State0#state{pins = Pins1, monitors = Monitors1}};
-handle_call({unpin, Ref}, _, #state{pins = Pins0, monitors = Monitors0} = State0) ->
-    case Monitors0 of
-        #{Ref := ID} ->
-            demonitor(Ref),
-            Pins1 = maps:update_with(ID, fun (V) -> V - 1 end, Pins0),
-            Monitors1 = maps:remove(Ref, Monitors0),
-            {reply, ok, State0#state{pins = Pins1, monitors = Monitors1}};
-        _ ->
-            {reply, {error, badarg}, State0}
-    end;
 handle_call(Request, _From, #state{} = State) ->
     ?LOG_WARNING("wa_raft_transport received unrecognized factory call ~p",
         [Request], #{domain => [whatsapp, wa_raft]}),
     {noreply, State}.
 
--spec handle_cast(Request, State :: state()) -> {noreply, NewState :: state()}
-    when Request ::
-        {complete, ID :: transport_id(), FileID :: file_id(), Status :: term(), Pid :: pid()} |
-        {cleanup, ID :: transport_id()}.
+-spec handle_cast(Request, State :: #state{}) -> {noreply, NewState :: #state{}}
+    when Request :: {complete, ID :: transport_id(), FileID :: file_id(), Status :: term(), Pid :: pid()}.
 handle_cast({complete, ID, FileID, Status, Pid}, #state{} = State) ->
     ?RAFT_COUNT('raft.transport.file.complete'),
     NowMillis = erlang:system_time(millisecond),
@@ -465,38 +512,16 @@ handle_cast({complete, ID, FileID, Status, Pid}, #state{} = State) ->
         ?LOG_WARNING("wa_raft_transport got complete report for unknown transfer ~p",
             [ID], #{domain => [whatsapp, wa_raft]}),
     {noreply, State};
-handle_cast({cleanup, ID}, #state{} = State) ->
-    ?RAFT_COUNT('raft.transport.cleanup'),
-    RootDir = transport_destination(ID),
-    RenameDir = [RootDir, ".delete"],
-    case prim_file:rename(RootDir, RenameDir) of
-        ok ->
-            case file:del_dir_r(RenameDir) of
-                ok ->
-                    {noreply, State};
-                {error, Reason} ->
-                    ?LOG_WARNING("wa_raft_transport failed to cleanup transport ~p due to ~p",
-                        [ID, Reason], #{domain => [whatsapp, wa_raft]}),
-                    {noreply, State}
-            end;
-        {error, enoent} ->
-            {noreply, State};
-        {error, Reason} ->
-            ?LOG_WARNING("wa_raft_transport failed to rename transport ~p for cleanup due to ~p",
-                [ID, Reason], #{domain => [whatsapp, wa_raft]}),
-            {noreply, State}
-    end;
 handle_cast(Request, State) ->
     ?LOG_NOTICE("wa_raft_transport got unrecognized cast ~p", [Request], #{domain => [whatsapp, wa_raft]}),
     {noreply, State}.
 
--spec handle_info(Info :: term(), State :: state()) -> {noreply, NewState :: state()}.
+-spec handle_info(Info :: term(), State :: #state{}) -> {noreply, NewState :: #state{}}.
 handle_info(scan, State) ->
     lists:foreach(
         fun (ID) ->
             update_transport_info(ID, fun (Info) -> scan_transport(ID, Info) end)
         end, transports()),
-    maybe_cleanup(State),
     schedule_scan(),
     {noreply, State};
 handle_info(Info, State) ->
@@ -516,8 +541,8 @@ make_id() ->
         not_found   -> ID
     end.
 
--spec start_transport(From :: term() | undefined, Peer :: node(), Meta :: term(), Root :: string()) -> {ok, ID :: transport_id()} | wa_raft:error().
-start_transport(From, Peer, Meta, Root) ->
+-spec handle_transport_start(From :: gen_server:from() | undefined, Peer :: node(), Meta :: meta(), Root :: string()) -> {ok, ID :: transport_id()} | wa_raft:error().
+handle_transport_start(From, Peer, Meta, Root) ->
     ID = make_id(),
 
     ?RAFT_COUNT('raft.transport.start'),
@@ -527,7 +552,7 @@ start_transport(From, Peer, Meta, Root) ->
     try
         Files = collect_files(Root),
         TransportAtomics = atomics:new(?RAFT_TRANSPORT_TRANSPORT_ATOMICS_COUNT, []),
-        Module = ?RAFT_TRANSPORT_MODULE(),
+        Module = transport_module(Meta),
         TotalFiles = length(Files),
         NowMillis = erlang:system_time(millisecond),
 
@@ -597,9 +622,21 @@ start_transport(From, Peer, Meta, Root) ->
             {error, failed}
     end.
 
--spec transport_destination(non_neg_integer()) -> string().
-transport_destination(ID) ->
-    filename:join(?DB, [?RAFT_TRANSPORT_DIRNAME, $/, integer_to_list(ID)]).
+-spec transport_module(Meta :: meta()) -> module().
+transport_module(#{table := Table, partition := Partition}) ->
+    wa_raft_transport:registered_module(Table, Partition);
+transport_module(_Meta) ->
+    ?RAFT_TRANSPORT_DEFAULT_MODULE.
+
+-spec transport_destination(ID :: transport_id(), Meta :: meta()) -> string().
+transport_destination(ID, #{type := transfer, table := Table, partition := Partition}) ->
+    filename:join(wa_raft_transport:registered_directory(Table, Partition), integer_to_list(ID));
+transport_destination(ID, #{type := snapshot, table := Table, partition := Partition}) ->
+    filename:join(wa_raft_transport:registered_directory(Table, Partition), integer_to_list(ID));
+transport_destination(ID, Meta) ->
+    ?LOG_WARNING("wa_raft_transport cannot determine transport destination for transport ~0p with metadata ~0p",
+        [ID, Meta], #{domain => [whatsapp, wa_raft]}),
+    error(no_known_destination).
 
 -spec collect_files(string()) -> [{non_neg_integer(), string(), string(), integer(), non_neg_integer()}].
 collect_files(Root) ->
@@ -609,7 +646,7 @@ collect_files(Root) ->
         end, {1, []}),
     Files.
 
-collect_files_impl(__Root, [], _Fun, Acc) ->
+collect_files_impl(_Root, [], _Fun, Acc) ->
     Acc;
 collect_files_impl(Root, [Filename | Queue], Fun, Acc0) ->
     Path = [Root, $/, Filename],
@@ -641,55 +678,7 @@ collect_files_impl(Root, [Filename | Queue], Fun, Acc0) ->
 join_names("", Name) -> Name;
 join_names(Dir, Name) -> [Dir, $/, Name].
 
--spec maybe_cleanup(state()) -> ok | {error, term()}.
-maybe_cleanup(#state{pins = Pins}) ->
-    TransportDir = filename:join(?DB, ?RAFT_TRANSPORT_DIRNAME),
-    case prim_file:list_dir(TransportDir) of
-        {ok, Files} ->
-            RetainMillis = ?RAFT_TRANSPORT_RETAIN_MIN_SECS() * 1000,
-            NowMillis = erlang:system_time(millisecond),
-            lists:foreach(
-                fun (Filename) ->
-                    Path = filename:join(TransportDir, Filename),
-                    ID = list_to_integer(Filename),
-                    case maps:get(ID, Pins, 0) of
-                        0 ->
-                            case transport_info(ID) of
-                                {ok, #{end_ts := EndTs}} when NowMillis - EndTs > RetainMillis ->
-                                    ?LOG_NOTICE("wa_raft_transport deleting ~p due to expiring after transport ended",
-                                        [Filename], #{domain => [whatsapp, wa_raft]}),
-                                    cleanup(ID, Path);
-                                {ok, _Info} ->
-                                    ok;
-                                not_found ->
-                                    ?LOG_NOTICE("wa_raft_transport deleting ~p due to having no associated transport",
-                                        [Filename], #{domain => [whatsapp, wa_raft]}),
-                                    cleanup(ID, Path)
-                            end;
-                        _ ->
-                            ok
-                    end
-                end, Files);
-        {error, enoent} ->
-            ok;
-        {error, Reason} ->
-            ?LOG_WARNING("wa_raft_transport failed to list transports for cleanup due to ~p",
-                [Reason], #{domain => [whatsapp, wa_raft]}),
-            {error, Reason}
-    end.
-
--spec cleanup(non_neg_integer(), string()) -> ok | {error, term()}.
-cleanup(ID, Path) ->
-    case file:del_dir_r(Path) of
-        ok ->
-            ok;
-        {error, Reason} ->
-            ?LOG_WARNING("wa_raft_transport failed to cleanup transport ~p due to ~p",
-                [ID, Reason], #{domain => [whatsapp, wa_raft]}),
-            {error, Reason}
-    end.
-
--spec maybe_submit_one(non_neg_integer(), map(), pid()) -> map().
+-spec maybe_submit_one(transport_id(), transport_info(), pid()) -> transport_info().
 maybe_submit_one(ID, #{status := running, next_file := NextFileID, total_files := LastFileID} = Info, Pid) when is_pid(Pid) ->
     gen_server:cast(Pid, {send, ID, NextFileID}),
     case NextFileID of
@@ -699,7 +688,7 @@ maybe_submit_one(ID, #{status := running, next_file := NextFileID, total_files :
 maybe_submit_one(_ID, Info, _Pid) ->
     Info.
 
--spec maybe_notify_complete(non_neg_integer(), map(), #state{}) -> ok | {error, term()}.
+-spec maybe_notify_complete(transport_id(), transport_info(), #state{}) -> ok | {error, term()}.
 maybe_notify_complete(_ID, #{type := sender}, _State) ->
     ok;
 maybe_notify_complete(_ID, #{status := Status}, _State) when Status =/= completed ->
@@ -722,7 +711,7 @@ maybe_notify_complete(ID, _Info, #state{}) ->
     ?LOG_NOTICE("wa_raft_transport finished transport ~p but does not know what to do with it",
         [ID], #{domain => [whatsapp, wa_raft]}).
 
--spec maybe_notify(non_neg_integer(), map()) -> map().
+-spec maybe_notify(transport_id(), transport_info()) -> transport_info().
 maybe_notify(ID, #{status := Status, notify := Notify} = Info) when Status =/= requested andalso Status =/= running ->
     ?RAFT_COUNT('raft.transport.complete'),
     gen_server:reply(Notify, {ok, ID}),
@@ -730,7 +719,7 @@ maybe_notify(ID, #{status := Status, notify := Notify} = Info) when Status =/= r
 maybe_notify(_ID, Info) ->
     Info.
 
--spec scan_transport(non_neg_integer(), transport_info()) -> transport_info().
+-spec scan_transport(transport_id(), transport_info()) -> transport_info().
 scan_transport(ID, #{status := running, atomics := TransportAtomics} = Info) ->
     LastUpdateTs = atomics:get(TransportAtomics, ?RAFT_TRANSPORT_ATOMICS_UPDATED_TS),
     NowMillis = erlang:system_time(millisecond),
