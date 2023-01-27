@@ -38,7 +38,7 @@
 
 -type storage_handle() :: {wa_raft:table(), wa_raft:partition()}.
 
--define(SNAP_FILE(RootDir, Name), lists:concat([RootDir, Name, "/data"])).
+-define(SNAPSHOT_FILE(Table, Partition, Name), filename:join(?RAFT_SNAPSHOT_PATH(Table, Partition, Name), "data")).
 
 %% Tag in key for metadata
 -define(METADATA_TAG, '$metadata').
@@ -55,22 +55,22 @@ storage_close({Table, Partition}, _State) ->
     ok.
 
 -spec storage_create_snapshot(string(), #raft_storage{}) -> ok.
-storage_create_snapshot(SnapName, #raft_storage{root_dir = RootDir, name = Tab}) ->
-    SnapFile = ?SNAP_FILE(RootDir, SnapName),
+storage_create_snapshot(SnapName, #raft_storage{table = Table, partition = Partition, name = Tab}) ->
+    SnapFile = ?SNAPSHOT_FILE(Table, Partition, SnapName),
     ok = filelib:ensure_dir(SnapFile),
     ok = ets:tab2file(Tab, SnapFile),
     ok.
 
 -spec storage_create_empty_snapshot(string(), #raft_storage{}) -> ok.
-storage_create_empty_snapshot(SnapName, #raft_storage{root_dir = RootDir}) ->
-    SnapFile = ?SNAP_FILE(RootDir, SnapName),
+storage_create_empty_snapshot(SnapName, #raft_storage{table = Table, partition = Partition}) ->
+    SnapFile = ?SNAPSHOT_FILE(Table, Partition, SnapName),
     file:delete(SnapFile),
     ok = filelib:ensure_dir(SnapFile),
     ok.
 
 -spec storage_delete_snapshot(string(), #raft_storage{}) -> ok.
-storage_delete_snapshot(SnapName, #raft_storage{root_dir = RootDir}) ->
-    SnapFile = ?SNAP_FILE(RootDir, SnapName),
+storage_delete_snapshot(SnapName, #raft_storage{table = Table, partition = Partition}) ->
+    SnapFile = ?SNAPSHOT_FILE(Table, Partition, SnapName),
     case filelib:is_file(SnapFile) of
         true ->
             ok = file:delete(SnapFile),
@@ -81,8 +81,8 @@ storage_delete_snapshot(SnapName, #raft_storage{root_dir = RootDir}) ->
     end.
 
 -spec storage_open_snapshot(#raft_snapshot{}, #raft_storage{}) -> {wa_raft_log:log_pos(), storage_handle()} | wa_raft_storage:error().
-storage_open_snapshot(#raft_snapshot{last_applied = LogPos, name = Name}, #raft_storage{table = Table, partition = Partition, root_dir = RootDir, name = Tab}) ->
-    SnapFile = ?SNAP_FILE(RootDir, Name),
+storage_open_snapshot(#raft_snapshot{last_applied = LogPos, name = Name}, #raft_storage{table = Table, partition = Partition, name = Tab}) ->
+    SnapFile = ?SNAPSHOT_FILE(Table, Partition, Name),
     catch ets:delete(Tab),
     case filelib:is_regular(SnapFile) of
         true ->

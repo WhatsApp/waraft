@@ -21,7 +21,9 @@
 %% Internal API
 -export([
     default_name/2,
-    registered_name/2
+    default_partition_path/3,
+    registered_name/2,
+    registered_partition_path/2
 ]).
 
 %% Internal API
@@ -89,6 +91,12 @@ start_link(Application, Spec) ->
 default_name(Table, Partition) ->
     list_to_atom("raft_sup_" ++ atom_to_list(Table) ++ "_" ++ integer_to_list(Partition)).
 
+%% Get the default location for the database directory associated with the
+%% provided RAFT partition given the database of the RAFT root.
+-spec default_partition_path(Root :: file:filename(), Table :: wa_raft:table(), Partition :: wa_raft:partition()) -> Database :: file:filename().
+default_partition_path(Root, Table, Partition) ->
+    filename:join(Root, atom_to_list(Table) ++ "." ++ integer_to_list(Partition)).
+
 %% Get the registered name for the RAFT partition supervisor associated with the
 %% provided RAFT partition or the default name if no registration exists.
 -spec registered_name(Table :: wa_raft:table(), Partition :: wa_raft:partition()) -> Name :: atom().
@@ -98,6 +106,15 @@ registered_name(Table, Partition) ->
         Options   -> Options#raft_options.supervisor_name
     end.
 
+%% Get the registered database directory for the provided RAFT partition. An
+%% error is raised if no registration exists.
+-spec registered_partition_path(Table :: wa_raft:table(), Partition :: wa_raft:partition()) -> Database :: file:filename() | undefined.
+registered_partition_path(Table, Partition) ->
+    case wa_raft_part_sup:options(Table, Partition) of
+        undefined -> error({not_registered, Table, Partition});
+        Options   -> Options#raft_options.database
+    end.
+
 -spec options(Table :: wa_raft:table(), Partition :: wa_raft:partition()) -> #raft_options{} | undefined.
 options(Table, Partition) ->
     persistent_term:get(?OPTIONS_KEY(Table, Partition), undefined).
@@ -105,7 +122,8 @@ options(Table, Partition) ->
 -spec normalize_spec(Application :: atom(), Spec :: wa_raft:args()) -> #raft_options{}.
 normalize_spec(Application, #{table := Table, partition := Partition} = Spec) ->
     % TODO(hsun324) - T133215915: Application-specific default log/storage module
-    Database = ?ROOT_DIR(Table, Partition),
+    Root = wa_raft_env:database_path(Application),
+    Database = default_partition_path(Root, Table, Partition),
     #raft_options{
         application = Application,
         table = Table,
@@ -114,7 +132,7 @@ normalize_spec(Application, #{table := Table, partition := Partition} = Spec) ->
         database = Database,
         acceptor_name = wa_raft_acceptor:default_name(Table, Partition),
         log_name = wa_raft_log:default_name(Table, Partition),
-        log_module = maps:get(log_module, Spec, application:get_env(?APP, raft_log_module, wa_raft_log_ets)),
+        log_module = maps:get(log_module, Spec, wa_raft_env:get_env(Application, raft_log_module, ?RAFT_DEFAULT_LOG_MODULE)),
         log_catchup_name = wa_raft_log_catchup:default_name(Table, Partition),
         queue_name = wa_raft_queue:default_name(Table, Partition),
         queue_counters = wa_raft_queue:default_counters(),
@@ -122,11 +140,11 @@ normalize_spec(Application, #{table := Table, partition := Partition} = Spec) ->
         queue_reads = wa_raft_queue:default_read_queue_name(Table, Partition),
         server_name = wa_raft_server:default_name(Table, Partition),
         storage_name = wa_raft_storage:default_name(Table, Partition),
-        storage_module = maps:get(storage_module, Spec, application:get_env(?APP, raft_storage_module, wa_raft_storage_ets)),
+        storage_module = maps:get(storage_module, Spec, wa_raft_env:get_env(Application, raft_storage_module, ?RAFT_DEFAULT_STORAGE_MODULE)),
         supervisor_name = default_name(Table, Partition),
         transport_cleanup_name = wa_raft_transport_cleanup:default_name(Table, Partition),
         transport_directory = wa_raft_transport:default_directory(Database),
-        transport_module = maps:get(transport_module, Spec, wa_raft_transport:default_module())
+        transport_module = maps:get(transport_module, Spec, wa_raft_env:get_env(Application, {raft_transport_module, transport_module}, ?RAFT_DEFAULT_TRANSPORT_MODULE))
     }.
 
 %%-------------------------------------------------------------------

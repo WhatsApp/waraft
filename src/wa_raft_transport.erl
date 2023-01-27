@@ -51,7 +51,6 @@
 %% Internal API
 -export([
     default_directory/1,
-    default_module/0,
     registered_directory/2,
     registered_module/2
 ]).
@@ -72,7 +71,6 @@
 ]).
 
 -define(RAFT_TRANSPORT_PARTITION_SUBDIRECTORY, "transport").
--define(RAFT_TRANSPORT_DEFAULT_MODULE, wa_raft_dist_transport).
 
 -define(RAFT_TRANSPORT_SCAN_INTERVAL_SECS, 30).
 -define(RAFT_TRANSPORT_MAX_IDLE_SECS(), application:get_env(?APP, transport_idle_timeout_secs, 30)).
@@ -332,12 +330,6 @@ update_file_info(ID, FileID, Fun) ->
 default_directory(Database) ->
     filename:join(Database, ?RAFT_TRANSPORT_PARTITION_SUBDIRECTORY).
 
-%% Get the default module for outgoing transports associated with the
-%% provided RAFT partition.
--spec default_module() -> Module :: module().
-default_module() ->
-    application:get_env(?APP, transport_module, ?RAFT_TRANSPORT_DEFAULT_MODULE).
-
 %% Get the registered directory for incoming transports associated with the
 %% provided RAFT partition or 'undefined' if no registration exists.
 -spec registered_directory(Table :: wa_raft:table(), Partition :: wa_raft:partition()) -> Directory :: file:filename() | undefined.
@@ -352,7 +344,7 @@ registered_directory(Table, Partition) ->
 -spec registered_module(Table :: wa_raft:table(), Partition :: wa_raft:partition()) -> Module :: module() | undefined.
 registered_module(Table, Partition) ->
     case wa_raft_part_sup:options(Table, Partition) of
-        undefined -> ?RAFT_TRANSPORT_DEFAULT_MODULE;
+        undefined -> ?RAFT_DEFAULT_TRANSPORT_MODULE;
         Options   -> Options#raft_options.transport_module
     end.
 
@@ -626,7 +618,7 @@ handle_transport_start(From, Peer, Meta, Root) ->
 transport_module(#{table := Table, partition := Partition}) ->
     wa_raft_transport:registered_module(Table, Partition);
 transport_module(_Meta) ->
-    ?RAFT_TRANSPORT_DEFAULT_MODULE.
+    ?RAFT_DEFAULT_TRANSPORT_MODULE.
 
 -spec transport_destination(ID :: transport_id(), Meta :: meta()) -> string().
 transport_destination(ID, #{type := transfer, table := Table, partition := Partition}) ->

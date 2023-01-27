@@ -16,7 +16,8 @@
 -export([
     child_spec/1,
     child_spec/2,
-    start_link/2
+    child_spec/3,
+    start_link/3
 ]).
 
 %% API
@@ -31,7 +32,20 @@
 
 %% Internal API
 -export([
-    reg_name/1
+    default_name/1,
+    default_config_apps/1,
+    registered_config_apps/1
+]).
+
+%% Internal API
+-export([
+    options/1
+]).
+
+%% Test API
+-export([
+    prepare_application/1,
+    prepare_application/2
 ]).
 
 %% Supervisor callbacks
@@ -46,6 +60,16 @@
 
 -include("wa_raft.hrl").
 
+%% Key in persistent_term for the application options associated with an
+%% application that has started a RAFT supervisor.
+-define(OPTIONS_KEY(Application), {?MODULE, Application}).
+
+%% Options for RAFT client applications
+-type options() :: #{
+    % RAFT will search for environment variables from applications in this order
+    config_search_apps => [atom()]
+}.
+
 %%-------------------------------------------------------------------
 %% OTP supervision
 %%-------------------------------------------------------------------
@@ -53,22 +77,30 @@
 -spec child_spec(Specs :: [wa_raft:args()]) -> supervisor:child_spec().
 child_spec(Specs) ->
     {ok, Application} = application:get_application(),
-    child_spec(Application, Specs).
+    child_spec(Application, Specs, #{}).
 
 -spec child_spec(Application :: atom(), Specs :: [wa_raft:args()]) -> supervisor:child_spec().
-child_spec(Application, RaftArgs) ->
+child_spec(Application, RaftArgs) when is_list(RaftArgs) ->
+    child_spec(Application, RaftArgs, #{});
+child_spec(RaftArgs, Options) ->
+    {ok, Application} = application:get_application(),
+    child_spec(Application, RaftArgs, Options).
+
+-spec child_spec(Application :: atom(), Specs :: [wa_raft:args()], Options :: options()) -> supervisor:child_spec().
+child_spec(Application, RaftArgs, Options) ->
     #{
         id => ?MODULE,
-        start => {?MODULE, start_link, [Application, RaftArgs]},
+        start => {?MODULE, start_link, [Application, RaftArgs, Options]},
         restart => permanent,
         shutdown => infinity,
         type => supervisor,
         modules => [?MODULE]
     }.
 
--spec start_link(Application :: atom(), Specs :: [wa_raft:args()]) -> supervisor:startlink_ret().
-start_link(Application, RaftArgs) ->
-    case supervisor:start_link({local, reg_name(Application)}, ?MODULE, Application) of
+-spec start_link(Application :: atom(), Specs :: [wa_raft:args()], Options :: options()) -> supervisor:startlink_ret().
+start_link(Application, RaftArgs, Options) ->
+    ok = persistent_term:put(?OPTIONS_KEY(Application), normalize_spec(Application, Options)),
+    case supervisor:start_link({local, default_name(Application)}, ?MODULE, Application) of
         {ok, Pid} = Result ->
             lists:foreach(fun (Spec) -> start_partition(Pid, Spec) end, RaftArgs),
             Result;
@@ -86,7 +118,7 @@ start_partition(Supervisor, Spec) ->
 
 -spec start_partition_under_application(Application :: atom(), Spec :: wa_raft:args()) -> supervisor:startchild_ret().
 start_partition_under_application(Application, Spec) ->
-    start_partition(reg_name(Application), Spec).
+    start_partition(default_name(Application), Spec).
 
 -spec stop_partition(Supervisor :: atom() | pid(), Pid :: pid()) -> ok | {error, atom()}.
 stop_partition(Supervisor, Pid) ->
@@ -101,19 +133,54 @@ stop_partition(Supervisor, Table, Partition) ->
 
 -spec stop_partition_under_application(Application :: atom(), Pid :: pid()) -> ok | {error, atom()}.
 stop_partition_under_application(Application, Pid) ->
-    stop_partition(reg_name(Application), Pid).
+    stop_partition(default_name(Application), Pid).
 
 -spec stop_partition_under_application(Application :: atom(), Table :: wa_raft:table(), Partition :: wa_raft:partition()) -> ok | {error, atom()}.
 stop_partition_under_application(Application, Table, Partition) ->
-    stop_partition(reg_name(Application), Table, Partition).
+    stop_partition(default_name(Application), Table, Partition).
 
 %%-------------------------------------------------------------------
 %% Internal API
 %%-------------------------------------------------------------------
 
--spec reg_name(Application :: atom()) -> atom().
-reg_name(Application) ->
+-spec default_name(Application :: atom()) -> atom().
+default_name(Application) ->
     list_to_atom("raft_sup_" ++ atom_to_list(Application)).
+
+-spec default_config_apps(Application :: atom()) -> [atom()].
+default_config_apps(Application) ->
+    [Application, ?APP].
+
+-spec registered_config_apps(Application :: atom()) -> [atom()].
+registered_config_apps(Application) ->
+    case options(Application) of
+        undefined -> error({raft_not_started, Application});
+        Options   -> Options#raft_application.config_search_apps
+    end.
+
+-spec options(Application :: atom()) -> #raft_application{} | undefined.
+options(Application) ->
+    persistent_term:get(?OPTIONS_KEY(Application), undefined).
+
+-spec normalize_spec(Application :: atom(), Options :: options()) -> #raft_application{}.
+normalize_spec(Application, Options) ->
+    #raft_application{
+        name = Application,
+        config_search_apps = maps:get(config_search_apps, Options, [Application])
+    }.
+
+%%-------------------------------------------------------------------
+%% Test API
+%%-------------------------------------------------------------------
+
+-spec prepare_application(Application :: atom()) -> ok.
+prepare_application(Application) ->
+    prepare_application(Application, #{}).
+
+-spec prepare_application(Application :: atom(), Options :: options()) -> ok.
+prepare_application(Application, Options) ->
+    RaftApplication = normalize_spec(Application, Options),
+    ok = persistent_term:put(?OPTIONS_KEY(Application), RaftApplication).
 
 %%-------------------------------------------------------------------
 %% Supervisor callbacks
@@ -132,6 +199,5 @@ init(Application) ->
 init_globals() ->
     % TODO(hsun324) - T133215915: support multi-app usage by caching in an app-specific manner
     persistent_term:put(?RAFT_COUNTERS, counters:new(?RAFT_NUMBER_OF_GLOBAL_COUNTERS, [atomics])),
-    persistent_term:put(raft_metrics_module, ?RAFT_CONFIG(raft_metrics_module, wa_raft_metrics)),
     persistent_term:put(raft_distribution_module, ?RAFT_CONFIG(raft_distribution_module, wa_raft_distribution)),
     ok.

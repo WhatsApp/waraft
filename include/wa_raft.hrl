@@ -10,10 +10,10 @@
 %% Get global config
 -define(RAFT_CONFIG(Name, Default), application:get_env(?APP, Name, Default)).
 
-%% DB
--define(DB, application:get_env(?APP, db, missing)).
-%% Persistent root directory
--define(ROOT_DIR(Table, Partition), lists:concat([?DB, "/", Table, ".", Partition, "/"])).
+%% Default location containing databases for RAFT partitions part of a RAFT client application
+-define(RAFT_DATABASE_PATH(Application), wa_raft_env:database_path(Application)).
+%% Registered database location for the specified RAFT partition
+-define(RAFT_PARTITION_PATH(Table, Partition), wa_raft_part_sup:registered_partition_path(Table, Partition)).
 
 %% Registered name of the RAFT partition supervisor for a RAFT partition
 -define(RAFT_SUPERVISOR_NAME(Table, Partition), wa_raft_part_sup:registered_name(Table, Partition)).
@@ -28,6 +28,13 @@
 %% Registered name of the RAFT storage server for a RAFT partition
 -define(RAFT_STORAGE_NAME(Table, Partition), wa_raft_storage:registered_name(Table, Partition)).
 
+%% Default log provider module
+-define(RAFT_DEFAULT_LOG_MODULE, wa_raft_log_ets).
+%% Default storage provider module
+-define(RAFT_DEFAULT_STORAGE_MODULE, wa_raft_storage_ets).
+%% Default module for handling outgoing transports
+-define(RAFT_DEFAULT_TRANSPORT_MODULE, wa_raft_dist_transport).
+
 %% RAFT election max weight
 -define(RAFT_ELECTION_MAX_WEIGHT, 10).
 %% Raft election default weight
@@ -38,7 +45,11 @@
 %% Name prefix for snapshots
 -define(SNAPSHOT_PREFIX, "snapshot").
 %% Snapshot name
--define(SNAPSHOT_NAME(Index, Term), lists:concat([?SNAPSHOT_PREFIX, ".", Index,  ".", Term])).
+-define(SNAPSHOT_NAME(Index, Term), (?SNAPSHOT_PREFIX "." ++ integer_to_list(Index) ++ "." ++ integer_to_list(Term))).
+%% Location of a snapshot
+-define(RAFT_SNAPSHOT_PATH(Table, Partition, Name), filename:join(?RAFT_PARTITION_PATH(Table, Partition), Name)).
+-define(RAFT_SNAPSHOT_PATH(Table, Partition, Index, Term), ?RAFT_SNAPSHOT_PATH(Table, Partition, ?SNAPSHOT_NAME(Index, Term))).
+
 %% Default Call timeout for all cross node gen_server:call
 -define(RPC_CALL_TIMEOUT_MS, ?RAFT_CONFIG(raft_rpc_call_timeout, 30000)).
 %% Default call timeout for storage related operation (we need bigger default since storage can be slower)
@@ -51,7 +62,6 @@
 -define(RAFT_GLOBAL_COUNTER_SNAPSHOT_CATCHUP, 1).
 %% Counter - number of log catchup processes
 -define(RAFT_GLOBAL_COUNTER_LOG_CATCHUP, 2).
-
 
 %% [Transport] Atomics - field index for update timestamp
 -define(RAFT_TRANSPORT_ATOMICS_UPDATED_TS, 1).
@@ -79,6 +89,14 @@
 
 %% Distribution
 -define(RAFT_DISTRIBUTION_MODULE, (persistent_term:get(raft_distribution_module))).
+
+%% Information about an application that has started a RAFT supervisor.
+-record(raft_application, {
+    % Application name
+    name :: atom(),
+    % Config search path
+    config_search_apps :: [atom()]
+}).
 
 %% Normalized options produced by `wa_raft_part_sup` for passing into RAFT processes.
 %% Not to be created externally.
