@@ -21,6 +21,11 @@
     init/1
 ]).
 
+%% Test API
+-export([
+    init_globals/0
+]).
+
 -include("wa_raft.hrl").
 
 -spec start_link() -> supervisor:startlink_ret().
@@ -40,6 +45,9 @@ init(_) ->
     wa_raft_transport:setup_tables(),
     wa_raft_log_catchup:init_tables(),
 
+    % Setup shared resources
+    init_globals(),
+
     % Configure startup of shared services.
     ChildSpecs = [
         wa_raft_transport:child_spec(),
@@ -49,3 +57,14 @@ init(_) ->
     ],
 
     {ok, {#{strategy => one_for_one, intensity => 5, period => 1}, lists:flatten(ChildSpecs)}}.
+
+%%-------------------------------------------------------------------
+%% Test API
+%%-------------------------------------------------------------------
+
+-spec init_globals() -> ok.
+init_globals() ->
+    % TODO(hsun324) - T133215915: support multi-app usage by caching in an app-specific manner
+    persistent_term:put(?RAFT_COUNTERS, counters:new(?RAFT_NUMBER_OF_GLOBAL_COUNTERS, [atomics])),
+    persistent_term:put(raft_distribution_module, ?RAFT_CONFIG(raft_distribution_module, wa_raft_distribution)),
+    ok.
