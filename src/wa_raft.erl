@@ -27,6 +27,8 @@
         table := table(),
         % Partition number
         partition := partition(),
+        % Distribution module
+        distribution_module => module(),
         % Log module
         log_module => module(),
         % Storage module

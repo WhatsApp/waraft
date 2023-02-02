@@ -131,6 +131,7 @@ normalize_spec(Application, #{table := Table, partition := Partition} = Spec) ->
         witness = maps:get(witness, Spec, false),
         database = Database,
         acceptor_name = wa_raft_acceptor:default_name(Table, Partition),
+        distribution_module = maps:get(distribution_module, Spec, wa_raft_env:get_env(Application, raft_distribution_module, ?RAFT_DEFAULT_DISTRIBUTION_MODULE)),
         log_name = wa_raft_log:default_name(Table, Partition),
         log_module = maps:get(log_module, Spec, wa_raft_env:get_env(Application, raft_log_module, ?RAFT_DEFAULT_LOG_MODULE)),
         log_catchup_name = wa_raft_log_catchup:default_name(Table, Partition),

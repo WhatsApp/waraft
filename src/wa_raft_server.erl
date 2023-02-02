@@ -340,7 +340,7 @@ registered_name(Table, Partition) ->
 
 %% gen_statem callbacks
 -spec init(Options :: #raft_options{}) -> gen_statem:init_result(state()).
-init(#raft_options{table = Table, partition = Partition, witness = Witness, database = DataDir, log_name = Log, log_catchup_name = Catchup, server_name = Name, storage_name = Storage} = Options) ->
+init(#raft_options{table = Table, partition = Partition, witness = Witness, database = DataDir, distribution_module = DistributionModule, log_name = Log, log_catchup_name = Catchup, server_name = Name, storage_name = Storage} = Options) ->
     process_flag(trap_exit, true),
 
     ?LOG_NOTICE("Server[~0p] starting with options ~0p", [Name, Options], #{domain => [whatsapp, wa_raft]}),
@@ -356,6 +356,7 @@ init(#raft_options{table = Table, partition = Partition, witness = Witness, data
         partition = Partition,
         data_dir = DataDir,
         log_view = View,
+        distribution_module = DistributionModule,
         storage = Storage,
         catchup = Catchup,
         current_term = Last#raft_log_pos.term,
@@ -2189,9 +2190,9 @@ broadcast_rpc(ProcedureCall, #raft_state{self = Self} = State) ->
     [send_rpc(Peer, ProcedureCall, State) || Peer <- config_identities(config(State)), Peer =/= Self].
 
 -spec cast(#raft_identity{}, rpc(), #raft_state{}) -> ok | {error, term()}.
-cast(#raft_identity{name = Name, node = Node} = Destination, Message, #raft_state{}) ->
+cast(#raft_identity{name = Name, node = Node} = Destination, Message, #raft_state{distribution_module = DistributionModule}) ->
     try
-        ok = ?RAFT_DISTRIBUTION_MODULE:cast({Name, Node}, Message)
+        ok = DistributionModule:cast({Name, Node}, Message)
     catch
         _:E ->
             ?RAFT_COUNT({'raft.server.cast.error', E}),

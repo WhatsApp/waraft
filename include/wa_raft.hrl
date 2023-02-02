@@ -28,6 +28,8 @@
 %% Registered name of the RAFT storage server for a RAFT partition
 -define(RAFT_STORAGE_NAME(Table, Partition), wa_raft_storage:registered_name(Table, Partition)).
 
+%% Default distribution provider module
+-define(RAFT_DEFAULT_DISTRIBUTION_MODULE, wa_raft_distribution).
 %% Default log provider module
 -define(RAFT_DEFAULT_LOG_MODULE, wa_raft_log_ets).
 %% Default storage provider module
@@ -87,9 +89,6 @@
 -define(RAFT_COUNTV(Metric, Value), ?RAFT_METRICS_MODULE:countv(Metric, Value)).
 -define(RAFT_GATHER(Metric, Value), ?RAFT_METRICS_MODULE:gather(Metric, Value)).
 
-%% Distribution
--define(RAFT_DISTRIBUTION_MODULE, (persistent_term:get(raft_distribution_module))).
-
 %% Information about an application that has started a RAFT supervisor.
 -record(raft_application, {
     % Application name
@@ -110,6 +109,9 @@
 
     % Acceptor options
     acceptor_name :: atom(),
+
+    % Distribution options
+    distribution_module :: module(),
 
     % Log options
     log_name :: atom(),
@@ -177,6 +179,8 @@
     data_dir :: string(),
     % Log handle and view
     log_view :: wa_raft_log:view(),
+    % Module for distribution
+    distribution_module :: module(),
     % Storage service name
     storage :: atom(),
     % Catchup service name

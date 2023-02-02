@@ -52,8 +52,9 @@
     table :: wa_raft:table(),
     partition :: wa_raft:partition(),
 
-    server_name :: atom(),
+    distribution_module :: module(),
     log_name :: wa_raft_log:log(),
+    server_name :: atom(),
 
     lockouts = #{} :: #{node() => non_neg_integer()}
 }).
@@ -144,7 +145,7 @@ registered_name(Table, Partition) ->
 
 %% RAFT log catchup server implementation
 -spec init(Options :: #raft_options{}) -> {ok, #state{}, timeout()}.
-init(#raft_options{table = Table, partition = Partition, log_name = Log, log_catchup_name = Name, server_name = Server}) ->
+init(#raft_options{table = Table, partition = Partition, distribution_module = DistributionModule, log_name = Log, log_catchup_name = Name, server_name = Server}) ->
     process_flag(trap_exit, true),
 
     ?LOG_NOTICE("Catchup[~0p] starting for partition ~0p/~0p",
@@ -155,8 +156,9 @@ init(#raft_options{table = Table, partition = Partition, log_name = Log, log_cat
         name = Name,
         table = Table,
         partition = Partition,
-        server_name = Server,
-        log_name = Log
+        distribution_module = DistributionModule,
+        log_name = Log,
+        server_name = Server
     },
 
     {ok, State, ?CONTINUE_TIMEOUT}.
@@ -228,7 +230,7 @@ send_logs(FollowerId, NextLogIndex, LeaderTerm, LeaderCommitIndex, Witness, #sta
     NewState.
 
 -spec send_logs_impl(node(), wa_raft_log:log_index(), wa_raft_log:log_term(), wa_raft_log:log_index(), boolean(), #state{}) -> term().
-send_logs_impl(FollowerId, NextLogIndex, LeaderTerm, LeaderCommitIndex, Witness, #state{name = Name, server_name = Server, log_name = Log} = State) ->
+send_logs_impl(FollowerId, NextLogIndex, LeaderTerm, LeaderCommitIndex, Witness, #state{name = Name, distribution_module = DistributionModule, server_name = Server, log_name = Log} = State) ->
     PrevLogIndex = NextLogIndex - 1,
     {ok, PrevLogTerm} = wa_raft_log:term(Log, PrevLogIndex),
 
@@ -253,7 +255,7 @@ send_logs_impl(FollowerId, NextLogIndex, LeaderTerm, LeaderCommitIndex, Witness,
             Command = ?LEGACY_APPEND_ENTRIES_RPC(LeaderTerm, node(), PrevLogIndex, PrevLogTerm, Entries, LeaderCommitIndex, 0),
             Timeout = ?RAFT_CONFIG(raft_catchup_rpc_timeout_ms, 5000),
 
-            try ?RAFT_DISTRIBUTION_MODULE:call(Dest, Command, Timeout) of
+            try DistributionModule:call(Dest, Command, Timeout) of
                 ?LEGACY_APPEND_ENTRIES_RESPONSE_RPC(LeaderTerm, FollowerId, PrevLogIndex, true, FollowerEndIndex) ->
                     send_logs_impl(FollowerId, FollowerEndIndex + 1, LeaderTerm, LeaderCommitIndex, Witness, State);
                 ?LEGACY_APPEND_ENTRIES_RESPONSE_RPC(_Term, _FollowerId, PrevLogIndex, false, _FollowerEndIndex) ->
