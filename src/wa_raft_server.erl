@@ -152,8 +152,8 @@
 
 -type event() :: rpc() | remote(normalized_procedure()) | command() | timeout_type().
 
--type rpc() :: rpc_id() | rpc_named().
--type rpc_id() :: ?RAFT_RPC(atom(), wa_raft_log:log_term(), node(), undefined | tuple()).
+-type rpc() :: rpc_named() | legacy_rpc().
+-type legacy_rpc() :: ?LEGACY_RAFT_RPC(atom(), wa_raft_log:log_term(), node(), undefined | tuple()).
 -type rpc_named() :: ?RAFT_NAMED_RPC(atom(), wa_raft_log:log_term(), atom(), node(), undefined | tuple()).
 
 -type command() :: commit_command() | read_command() | status_command() | promote_command() | resign_command() | adjust_membership_command() | snapshot_available_command() |
@@ -439,10 +439,10 @@ protocol() ->
     }.
 
 -spec handle_rpc(Type :: gen_statem:event_type(), RPC :: rpc(), State :: state(), Data :: #raft_state{}) -> gen_statem:event_handler_result(state(), #raft_state{}).
-handle_rpc(Type, ?RAFT_RPC(Procedure, Term, SenderId, Payload) = Event, State, #raft_state{name = Name} = Data) ->
-    handle_rpc_impl(Type, Event, Procedure, Term, #raft_identity{name = Name, node = SenderId}, Payload, State, Data);
 handle_rpc(Type, ?RAFT_NAMED_RPC(Procedure, Term, SenderName, SenderNode, Payload) = Event, State, Data) ->
     handle_rpc_impl(Type, Event, Procedure, Term, #raft_identity{name = SenderName, node = SenderNode}, Payload, State, Data);
+handle_rpc(Type, ?LEGACY_RAFT_RPC(Procedure, Term, SenderId, Payload) = Event, State, #raft_state{name = Name} = Data) ->
+    handle_rpc_impl(Type, Event, Procedure, Term, #raft_identity{name = Name, node = SenderId}, Payload, State, Data);
 handle_rpc(_Type, RPC, State, #raft_state{name = Name, current_term = CurrentTerm}) ->
     ?RAFT_COUNT({'raft', State, 'rpc.unrecognized'}),
     ?LOG_NOTICE("~0p[~0p, term ~0p] receives unknown RPC format ~P",
@@ -2178,12 +2178,7 @@ send_rpc(Destination, ?PROCEDURE(Procedure, Payload), #raft_state{self = #raft_i
         {} -> undefined;
         _  -> Payload
     end,
-    % TODO(hsun324): T112326686 - remove switch between rpc with and without service name after migration
-    RPC = case ?RAFT_CONFIG(upgrade_rpc_with_name, false) of
-        true  -> ?RAFT_NAMED_RPC(Procedure, Term, Name, Node, PayloadOrUndefined);
-        false -> ?RAFT_RPC(Procedure, Term, Node, PayloadOrUndefined)
-    end,
-    ?MODULE:cast(Destination, RPC, State).
+    ?MODULE:cast(Destination, ?RAFT_NAMED_RPC(Procedure, Term, Name, Node, PayloadOrUndefined), State).
 
 -spec broadcast_rpc(ProcedureCall :: normalized_procedure(), State :: #raft_state{}) -> term().
 broadcast_rpc(ProcedureCall, #raft_state{self = Self} = State) ->

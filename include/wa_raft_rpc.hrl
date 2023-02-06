@@ -15,15 +15,15 @@
 %% This means that RPC formats should not be changed once created.
 %%-------------------------------------------------------------------
 
--define(RAFT_RPC(Type, Term, SenderId, Payload), {rpc, Type, Term, SenderId, Payload}).
 -define(RAFT_NAMED_RPC(Type, Term, SenderName, SenderNode, Payload), {rpc, Type, Term, SenderName, SenderNode, Payload}).
 
 %% These two RPCs are used by RAFT catchup to receive the status of
 %% the RAFT server being sent to and should not change.
+-define(LEGACY_RAFT_RPC(Type, Term, SenderId, Payload), {rpc, Type, Term, SenderId, Payload}).
 -define(LEGACY_APPEND_ENTRIES_RPC(Term, SenderId, PrevLogIndex, PrevLogTerm, Entries, CommitIndex, TrimIndex),
-    ?RAFT_RPC(append_entries, Term, SenderId, {PrevLogIndex, PrevLogTerm, Entries, CommitIndex, TrimIndex})).
+    ?LEGACY_RAFT_RPC(append_entries, Term, SenderId, {PrevLogIndex, PrevLogTerm, Entries, CommitIndex, TrimIndex})).
 -define(LEGACY_APPEND_ENTRIES_RESPONSE_RPC(Term, SenderId, PrevLogIndex, Success, LastIndex),
-    ?RAFT_RPC(append_entries_response, Term, SenderId, {PrevLogIndex, Success, LastIndex})).
+    ?LEGACY_RAFT_RPC(append_entries_response, Term, SenderId, {PrevLogIndex, Success, LastIndex})).
 
 %%-------------------------------------------------------------------
 %% RAFT Server Procedure Names
