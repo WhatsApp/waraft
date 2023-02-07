@@ -37,6 +37,12 @@
     registered_name/2
 ]).
 
+%% Internal API
+-export([
+    make_rpc/3,
+    parse_rpc/2
+]).
+
 %% gen_statem callbacks
 -export([
     init/1,
@@ -50,7 +56,7 @@
     disabled/3
 ]).
 
-%% Internal API
+%% Internal RAFT Server API
 -export([
     snapshot_available/3,
     promote/2,
@@ -324,13 +330,33 @@ registered_name(Table, Partition) ->
         Options   -> Options#raft_options.server_name
     end.
 
+-spec make_rpc(Self :: #raft_identity{}, Term :: wa_raft_log:log_term(), Procedure :: normalized_procedure()) -> rpc().
+make_rpc(#raft_identity{name = Name, node = Node}, Term, ?PROCEDURE(Procedure, Payload)) ->
+    % For compatibility with legacy versions that expect RPCs sent with no arguments to have payload 'undefined' instead of {}.
+    PayloadOrUndefined = case Payload of
+        {} -> undefined;
+        _  -> Payload
+    end,
+    ?RAFT_NAMED_RPC(Procedure, Term, Name, Node, PayloadOrUndefined).
+
+-spec parse_rpc(Self :: #raft_identity{}, RPC :: rpc()) -> {Term :: wa_raft_log:log_term(), Sender :: #raft_identity{}, Procedure :: procedure()}.
+parse_rpc(_Self, ?RAFT_NAMED_RPC(Key, Term, SenderName, SenderNode, PayloadOrUndefined)) ->
+    Payload = case PayloadOrUndefined of
+        undefined -> {};
+        _         -> PayloadOrUndefined
+    end,
+    #{Key := ?PROCEDURE(Procedure, Defaults)} = protocol(),
+    {Term, #raft_identity{name = SenderName, node = SenderNode}, ?PROCEDURE(Procedure, defaultize_payload(Defaults, Payload))};
+parse_rpc(#raft_identity{name = Name} = Self, ?LEGACY_RAFT_RPC(Procedure, Term, SenderId, Payload)) ->
+    parse_rpc(Self, ?RAFT_NAMED_RPC(Procedure, Term, Name, SenderId, Payload)).
+
 %% ==================================================
 %%  gen_statem Callbacks
 %% ==================================================
 
 %% gen_statem callbacks
 -spec init(Options :: #raft_options{}) -> gen_statem:init_result(state()).
-init(#raft_options{application = Application, table = Table, partition = Partition, witness = Witness, database = DataDir,
+init(#raft_options{application = Application, table = Table, partition = Partition, witness = Witness, self = Self, database = DataDir,
                    distribution_module = DistributionModule, log_name = Log, log_catchup_name = Catchup, server_name = Name, storage_name = Storage} = Options) ->
     process_flag(trap_exit, true),
 
@@ -343,7 +369,7 @@ init(#raft_options{application = Application, table = Table, partition = Partiti
     State0 = #raft_state{
         application = Application,
         name = Name,
-        self = #raft_identity{name = Name, node = node()},
+        self = Self,
         table = Table,
         partition = Partition,
         data_dir = DataDir,
@@ -388,22 +414,6 @@ callback_mode() ->
 %% relevant procedure should be refactored to treat identities
 %% opaquely.
 -define(IDENTITY_REQUIRES_MIGRATION(Name, Node), #raft_identity{name = Name, node = Node}).
-
-%% A request to execute a particular procedure. This request could
-%% have been issued locally or as a result of a remote procedure
-%% call. The peer (if exists and could be oneself) that issued the
-%% procedure call will be provided as the sender.
--define(REMOTE(Sender, Call), {remote, Sender, Call}).
--define(PROCEDURE(Type, Payload), {procedure, Type, Payload}).
-
-%% Definitions of each of the standard procedures.
--define(APPEND_ENTRIES(PrevLogIndex, PrevLogTerm, Entries, CommitIndex, TrimIndex), ?PROCEDURE(?APPEND_ENTRIES, {PrevLogIndex, PrevLogTerm, Entries, CommitIndex, TrimIndex})).
--define(APPEND_ENTRIES_RESPONSE(PrevLogIndex, Success, LastIndex),                  ?PROCEDURE(?APPEND_ENTRIES_RESPONSE, {PrevLogIndex, Success, LastIndex})).
--define(REQUEST_VOTE(ElectionType, LastLogIndex, LastLogTerm),                      ?PROCEDURE(?REQUEST_VOTE, {ElectionType, LastLogIndex, LastLogTerm})).
--define(VOTE(Vote),                                                                 ?PROCEDURE(?VOTE, {Vote})).
--define(HANDOVER(Ref, PrevLogIndex, PrevLogTerm, Entries),                          ?PROCEDURE(?HANDOVER, {Ref, PrevLogIndex, PrevLogTerm, Entries})).
--define(HANDOVER_FAILED(Ref),                                                       ?PROCEDURE(?HANDOVER_FAILED, {Ref})).
--define(NOTIFY_TERM(),                                                              ?PROCEDURE(?NOTIFY_TERM, {})).
 
 -type remote(Call) :: ?REMOTE(#raft_identity{}, Call).
 -type procedure()  :: ?PROCEDURE(atom(), tuple()).
@@ -641,8 +651,8 @@ leader(cast, ?REMOTE(?IDENTITY_REQUIRES_MIGRATION(_, FollowerId) = Sender, ?APPE
     State1 = State0#raft_state{heartbeat_response_ts = HeartbeatResponse1},
 
     case select_follower_replication_mode(FollowerEndIndex, State1) of
-        bulk_logs -> request_bulk_logs_for_follower(FollowerId, FollowerEndIndex, State1);
-        _         -> cancel_bulk_logs_for_follower(FollowerId, State1)
+        bulk_logs -> request_bulk_logs_for_follower(Sender, FollowerEndIndex, State1);
+        _         -> cancel_bulk_logs_for_follower(Sender, State1)
     end,
 
     % Here, the RAFT protocol expects that the MatchIndex for the follower be set to
@@ -709,7 +719,7 @@ leader(cast, ?REMOTE(?IDENTITY_REQUIRES_MIGRATION(_, FollowerId) = Sender, ?APPE
 
     select_follower_replication_mode(FollowerEndIndex, State0) =:= snapshot andalso
         request_snapshot_for_follower(FollowerId, State0),
-    cancel_bulk_logs_for_follower(FollowerId, State0),
+    cancel_bulk_logs_for_follower(Sender, State0),
 
     % See comment in successful branch of AppendEntriesResponse RPC handling for
     % reasoning as to why it is safe to set MatchIndex to FollowerEndIndex for this
@@ -1974,7 +1984,7 @@ heartbeat(?IDENTITY_REQUIRES_MIGRATION(_, FollowerId) = Sender,
     FollowerMatchIndex = maps:get(FollowerId, MatchIndex, 0),
     FollowerMatchIndex =/= 0 andalso
         ?RAFT_GATHER('raft.leader.follower.lag', CommitIndex - FollowerMatchIndex),
-    IsCatchingUp = wa_raft_log_catchup:is_catching_up(Catchup, FollowerId),
+    IsCatchingUp = wa_raft_log_catchup:is_catching_up(Catchup, Sender),
     NowTs = erlang:system_time(millisecond),
     LastFollowerHeartbeatTs = maps:get(FollowerId, LastHeartbeatTs, undefined),
     State1 = State0#raft_state{last_heartbeat_ts = LastHeartbeatTs#{FollowerId => NowTs}, leader_heartbeat_ts = NowTs},
@@ -2165,13 +2175,8 @@ reply(Type, Message) ->
     ok.
 
 -spec send_rpc(Destination :: #raft_identity{}, ProcedureCall :: normalized_procedure(), State :: #raft_state{}) -> term().
-send_rpc(Destination, ?PROCEDURE(Procedure, Payload), #raft_state{self = #raft_identity{name = Name, node = Node}, current_term = Term} = State) ->
-    % For compatibility with legacy versions that expect RPCs sent with no arguments to have payload 'undefined' instead of {}.
-    PayloadOrUndefined = case Payload of
-        {} -> undefined;
-        _  -> Payload
-    end,
-    ?MODULE:cast(Destination, ?RAFT_NAMED_RPC(Procedure, Term, Name, Node, PayloadOrUndefined), State).
+send_rpc(Destination, Procedure, #raft_state{self = Self, current_term = Term} = State) ->
+    ?MODULE:cast(Destination, make_rpc(Self, Term, Procedure), State).
 
 -spec broadcast_rpc(ProcedureCall :: normalized_procedure(), State :: #raft_state{}) -> term().
 broadcast_rpc(ProcedureCall, #raft_state{self = Self} = State) ->
@@ -2307,13 +2312,13 @@ request_snapshot_for_follower(FollowerId, #raft_state{name = Name, table = Table
             wa_raft_snapshot_catchup:request_snapshot_transport(FollowerId, Table, Partition)
     end.
 
--spec request_bulk_logs_for_follower(node(), wa_raft_log:log_index(), #raft_state{}) -> ok.
-request_bulk_logs_for_follower(FollowerId, FollowerEndIndex, #raft_state{name = Name, catchup = Catchup, current_term = CurrentTerm, commit_index = CommitIndex} = State) ->
+-spec request_bulk_logs_for_follower(#raft_identity{}, wa_raft_log:log_index(), #raft_state{}) -> ok.
+request_bulk_logs_for_follower(#raft_identity{node = FollowerId} = Peer, FollowerEndIndex, #raft_state{name = Name, catchup = Catchup, current_term = CurrentTerm, commit_index = CommitIndex} = State) ->
     ?LOG_DEBUG("Leader[~p, term ~p] requesting bulk logs catchup for follower ~0p.",
-        [Name, CurrentTerm, FollowerId], #{domain => [whatsapp, wa_raft]}),
+        [Name, CurrentTerm, Peer], #{domain => [whatsapp, wa_raft]}),
     Witness = lists:member({Name, FollowerId}, config_witnesses(config(State))),
-    wa_raft_log_catchup:start_catchup_request(Catchup, FollowerId, FollowerEndIndex, CurrentTerm, CommitIndex, Witness).
+    wa_raft_log_catchup:start_catchup_request(Catchup, Peer, FollowerEndIndex, CurrentTerm, CommitIndex, Witness).
 
--spec cancel_bulk_logs_for_follower(node(), #raft_state{}) -> ok.
-cancel_bulk_logs_for_follower(FollowerId, #raft_state{catchup = Catchup}) ->
-    wa_raft_log_catchup:cancel_catchup_request(Catchup, FollowerId).
+-spec cancel_bulk_logs_for_follower(#raft_identity{}, #raft_state{}) -> ok.
+cancel_bulk_logs_for_follower(Peer, #raft_state{catchup = Catchup}) ->
+    wa_raft_log_catchup:cancel_catchup_request(Catchup, Peer).

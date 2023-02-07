@@ -20,13 +20,11 @@
 %% These two RPCs are used by RAFT catchup to receive the status of
 %% the RAFT server being sent to and should not change.
 -define(LEGACY_RAFT_RPC(Type, Term, SenderId, Payload), {rpc, Type, Term, SenderId, Payload}).
--define(LEGACY_APPEND_ENTRIES_RPC(Term, SenderId, PrevLogIndex, PrevLogTerm, Entries, CommitIndex, TrimIndex),
-    ?LEGACY_RAFT_RPC(append_entries, Term, SenderId, {PrevLogIndex, PrevLogTerm, Entries, CommitIndex, TrimIndex})).
 -define(LEGACY_APPEND_ENTRIES_RESPONSE_RPC(Term, SenderId, PrevLogIndex, Success, LastIndex),
     ?LEGACY_RAFT_RPC(append_entries_response, Term, SenderId, {PrevLogIndex, Success, LastIndex})).
 
 %%-------------------------------------------------------------------
-%% RAFT Server Procedure Names
+%% RAFT Server Procedures
 %%-------------------------------------------------------------------
 %% An RPC received from a peer is intended to trigger one of the
 %% procedures listed below.
@@ -39,6 +37,22 @@
 -define(HANDOVER,                handover).
 -define(HANDOVER_FAILED,         handover_failed).
 -define(NOTIFY_TERM,             notify_term).
+
+%% Definitions of each of the standard procedures.
+-define(PROCEDURE(Type, Payload), {procedure, Type, Payload}).
+-define(APPEND_ENTRIES(PrevLogIndex, PrevLogTerm, Entries, CommitIndex, TrimIndex), ?PROCEDURE(?APPEND_ENTRIES, {PrevLogIndex, PrevLogTerm, Entries, CommitIndex, TrimIndex})).
+-define(APPEND_ENTRIES_RESPONSE(PrevLogIndex, Success, LastIndex),                  ?PROCEDURE(?APPEND_ENTRIES_RESPONSE, {PrevLogIndex, Success, LastIndex})).
+-define(REQUEST_VOTE(ElectionType, LastLogIndex, LastLogTerm),                      ?PROCEDURE(?REQUEST_VOTE, {ElectionType, LastLogIndex, LastLogTerm})).
+-define(VOTE(Vote),                                                                 ?PROCEDURE(?VOTE, {Vote})).
+-define(HANDOVER(Ref, PrevLogIndex, PrevLogTerm, Entries),                          ?PROCEDURE(?HANDOVER, {Ref, PrevLogIndex, PrevLogTerm, Entries})).
+-define(HANDOVER_FAILED(Ref),                                                       ?PROCEDURE(?HANDOVER_FAILED, {Ref})).
+-define(NOTIFY_TERM(),                                                              ?PROCEDURE(?NOTIFY_TERM, {})).
+
+%% A request to execute a particular procedure. This request could
+%% have been issued locally or as a result of a remote procedure
+%% call. The peer (if exists and could be oneself) that issued the
+%% procedure call will be provided as the sender.
+-define(REMOTE(Sender, Call), {remote, Sender, Call}).
 
 %%-------------------------------------------------------------------
 %% RAFT Server API

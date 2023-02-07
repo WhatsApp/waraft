@@ -128,6 +128,8 @@ normalize_spec(Application, #{table := Table, partition := Partition} = Spec) ->
         table = Table,
         partition = Partition,
         witness = maps:get(witness, Spec, false),
+        % RAFT identity always uses the default RAFT server name for the partition
+        self = #raft_identity{name = wa_raft_server:default_name(Table, Partition), node = node()},
         database = Database,
         acceptor_name = wa_raft_acceptor:default_name(Table, Partition),
         distribution_module = maps:get(distribution_module, Spec, wa_raft_env:get_env(Application, raft_distribution_module, ?RAFT_DEFAULT_DISTRIBUTION_MODULE)),

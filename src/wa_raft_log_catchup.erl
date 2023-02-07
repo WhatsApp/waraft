@@ -52,12 +52,13 @@
     name :: atom(),
     table :: wa_raft:table(),
     partition :: wa_raft:partition(),
+    self :: #raft_identity{},
 
     distribution_module :: module(),
     log_name :: wa_raft_log:log(),
     server_name :: atom(),
 
-    lockouts = #{} :: #{node() => non_neg_integer()}
+    lockouts = #{} :: #{#raft_identity{} => non_neg_integer()}
 }).
 
 %% Returning a timeout of `0` to a `gen_server` results in the `gen_server`
@@ -79,7 +80,7 @@
 
 %% An entry in the catchup request ETS table representing a request to
 %% trigger log catchup for a particular peer.
--define(CATCHUP_REQUEST(FollowerId, FollowerLastIndex, LeaderTerm, LeaderCommitIndex, Witness), {FollowerId, FollowerLastIndex, LeaderTerm, LeaderCommitIndex, Witness}).
+-define(CATCHUP_REQUEST(Peer, FollowerLastIndex, LeaderTerm, LeaderCommitIndex, Witness), {Peer, FollowerLastIndex, LeaderTerm, LeaderCommitIndex, Witness}).
 
 %% An entry in the catchup ETS table that indicates an in-progress log
 %% catchup to the specified node.
@@ -104,25 +105,25 @@ start_link(#raft_options{log_catchup_name = Name} = Options) ->
     gen_server:start_link({local, Name}, ?MODULE, Options, []).
 
 %% Submit a request to trigger log catchup for a particular follower starting at the index provided.
--spec start_catchup_request(Catchup :: atom(), FollowerId :: node(), FollowerLastIndex :: wa_raft_log:log_index(),
+-spec start_catchup_request(Catchup :: atom(), Peer :: #raft_identity{}, FollowerLastIndex :: wa_raft_log:log_index(),
                             LeaderTerm :: wa_raft_log:log_term(), LeaderCommitIndex :: wa_raft_log:log_index(), Witness :: boolean()) -> ok.
-start_catchup_request(Catchup, FollowerId, FollowerLastIndex, LeaderTerm, LeaderCommitIndex, Witness) ->
-    ets:insert(Catchup, ?CATCHUP_REQUEST(FollowerId, FollowerLastIndex, LeaderTerm, LeaderCommitIndex, Witness)),
+start_catchup_request(Catchup, Peer, FollowerLastIndex, LeaderTerm, LeaderCommitIndex, Witness) ->
+    ets:insert(Catchup, ?CATCHUP_REQUEST(Peer, FollowerLastIndex, LeaderTerm, LeaderCommitIndex, Witness)),
     ok.
 
 %% Cancel a request to trigger log catchup for a particular follower.
--spec cancel_catchup_request(Catchup :: atom(), FollowerId :: node()) -> ok.
-cancel_catchup_request(Catchup, FollowerId) ->
-    ets:delete(Catchup, FollowerId),
+-spec cancel_catchup_request(Catchup :: atom(), Peer :: #raft_identity{}) -> ok.
+cancel_catchup_request(Catchup, Peer) ->
+    ets:delete(Catchup, Peer),
     ok.
 
 %% Returns whether or not there exists an in-progress log catchup to the
 %% specified follower on the specified catchup server.
--spec is_catching_up(Catchup :: atom(), FollowerId :: node()) -> boolean().
-is_catching_up(Catchup, FollowerId) ->
+-spec is_catching_up(Catchup :: atom(), Peer :: #raft_identity{}) -> boolean().
+is_catching_up(Catchup, Peer) ->
     case ets:lookup(?MODULE, Catchup) of
-        [?CATCHUP_RECORD(_, FollowerId)] -> true;
-        _                                -> false
+        [?CATCHUP_RECORD(_, Peer)] -> true;
+        _                          -> false
     end.
 
 %%-------------------------------------------------------------------
@@ -146,7 +147,7 @@ registered_name(Table, Partition) ->
 
 %% RAFT log catchup server implementation
 -spec init(Options :: #raft_options{}) -> {ok, #state{}, timeout()}.
-init(#raft_options{application = Application, table = Table, partition = Partition, distribution_module = DistributionModule, log_name = Log, log_catchup_name = Name, server_name = Server}) ->
+init(#raft_options{application = Application, table = Table, partition = Partition, self = Self, distribution_module = DistributionModule, log_name = Log, log_catchup_name = Name, server_name = Server}) ->
     process_flag(trap_exit, true),
 
     ?LOG_NOTICE("Catchup[~0p] starting for partition ~0p/~0p",
@@ -158,6 +159,7 @@ init(#raft_options{application = Application, table = Table, partition = Partiti
         name = Name,
         table = Table,
         partition = Partition,
+        self = Self,
         distribution_module = DistributionModule,
         log_name = Log,
         server_name = Server
@@ -182,8 +184,8 @@ handle_info(timeout, #state{name = Name} = State) ->
             {noreply, State, ?IDLE_TIMEOUT};
         Requests ->
             % Select a random log catchup request to process.
-            ?CATCHUP_REQUEST(FollowerId, FollowerLastIndex, LeaderTerm, LeaderCommitIndex, Witness) = lists:nth(rand:uniform(length(Requests)), Requests),
-            {noreply, send_logs(FollowerId, FollowerLastIndex, LeaderTerm, LeaderCommitIndex, Witness, State), ?CONTINUE_TIMEOUT}
+            ?CATCHUP_REQUEST(Peer, FollowerLastIndex, LeaderTerm, LeaderCommitIndex, Witness) = lists:nth(rand:uniform(length(Requests)), Requests),
+            {noreply, send_logs(Peer, FollowerLastIndex, LeaderTerm, LeaderCommitIndex, Witness, State), ?CONTINUE_TIMEOUT}
     end;
 handle_info(Info, #state{name = Name} = State) ->
     ?LOG_WARNING("Unexpected info ~0P on ~0p", [Info, 30, Name], #{domain => [whatsapp, wa_raft]}),
@@ -197,42 +199,42 @@ terminate(_Reason, #state{name = Name}) ->
 %% Private functions - Send logs to follower
 %%
 
--spec send_logs(node(), wa_raft_log:log_index(), wa_raft_log:log_term(), wa_raft_log:log_index(), boolean(), #state{}) -> #state{}.
-send_logs(FollowerId, NextLogIndex, LeaderTerm, LeaderCommitIndex, Witness, #state{name = Name, lockouts = Lockouts} = State) ->
+-spec send_logs(#raft_identity{}, wa_raft_log:log_index(), wa_raft_log:log_term(), wa_raft_log:log_index(), boolean(), #state{}) -> #state{}.
+send_logs(Peer, NextLogIndex, LeaderTerm, LeaderCommitIndex, Witness, #state{name = Name, lockouts = Lockouts} = State) ->
     StartMillis = erlang:system_time(millisecond),
-    LockoutMillis = maps:get(FollowerId, Lockouts, 0),
+    LockoutMillis = maps:get(Peer, Lockouts, 0),
     NewState = case LockoutMillis =< StartMillis of
         true ->
             Counters = persistent_term:get(?RAFT_COUNTERS),
             case counters:get(Counters, ?RAFT_GLOBAL_COUNTER_LOG_CATCHUP) < ?RAFT_MAX_CONCURRENT_LOG_CATCHUP() of
                 true ->
                     counters:add(Counters, ?RAFT_GLOBAL_COUNTER_LOG_CATCHUP, 1),
-                    ets:insert(?MODULE, ?CATCHUP_RECORD(Name, FollowerId)),
-                    try send_logs_impl(FollowerId, NextLogIndex, LeaderTerm, LeaderCommitIndex, Witness, State) catch
+                    ets:insert(?MODULE, ?CATCHUP_RECORD(Name, Peer)),
+                    try send_logs_impl(Peer, NextLogIndex, LeaderTerm, LeaderCommitIndex, Witness, State) catch
                         T:E:S ->
                             ?RAFT_COUNT('raft.catchup.error'),
                             ?LOG_ERROR("Catchup[~p, term ~p] bulk logs transfer to ~0p failed with ~0p ~0P at ~p",
-                                [Name, LeaderTerm, FollowerId, T, E, S], #{domain => [whatsapp, wa_raft]})
+                                [Name, LeaderTerm, Peer, T, E, S], #{domain => [whatsapp, wa_raft]})
                     after
                         counters:sub(persistent_term:get(?RAFT_COUNTERS), ?RAFT_GLOBAL_COUNTER_LOG_CATCHUP, 1)
                     end,
                     EndMillis = erlang:system_time(millisecond),
                     ?RAFT_GATHER('raft.leader.catchup.duration', (EndMillis - StartMillis) * 1000),
-                    State#state{lockouts = Lockouts#{FollowerId => EndMillis + ?LOCKOUT_PERIOD}};
+                    State#state{lockouts = Lockouts#{Peer => EndMillis + ?LOCKOUT_PERIOD}};
                 false ->
                     State
             end;
         false ->
             ?LOG_NOTICE("Catchup[~p, term ~p] skipping bulk logs transfer to ~0p because follower is still under lockout.",
-                [Name, LeaderTerm, FollowerId], #{domain => [whatsapp, wa_raft]}),
+                [Name, LeaderTerm, Peer], #{domain => [whatsapp, wa_raft]}),
             State
     end,
-    ets:delete(Name, FollowerId),
+    ets:delete(Name, Peer),
     ets:delete(?MODULE, Name),
     NewState.
 
--spec send_logs_impl(node(), wa_raft_log:log_index(), wa_raft_log:log_term(), wa_raft_log:log_index(), boolean(), #state{}) -> term().
-send_logs_impl(FollowerId, NextLogIndex, LeaderTerm, LeaderCommitIndex, Witness, #state{application = App, name = Name, distribution_module = DistributionModule, server_name = Server, log_name = Log} = State) ->
+-spec send_logs_impl(#raft_identity{}, wa_raft_log:log_index(), wa_raft_log:log_term(), wa_raft_log:log_index(), boolean(), #state{}) -> term().
+send_logs_impl(#raft_identity{node = PeerNode} = Peer, NextLogIndex, LeaderTerm, LeaderCommitIndex, Witness, #state{application = App, name = Name, self = Self, distribution_module = DistributionModule, server_name = Server, log_name = Log} = State) ->
     PrevLogIndex = NextLogIndex - 1,
     {ok, PrevLogTerm} = wa_raft_log:term(Log, PrevLogIndex),
 
@@ -250,23 +252,25 @@ send_logs_impl(FollowerId, NextLogIndex, LeaderTerm, LeaderCommitIndex, Witness,
     case Entries of
         [] ->
             ?LOG_NOTICE("Catchup[~0p, term ~p] finishes bulk logs transfer to follower ~0p at ~0p.",
-                [Name, LeaderTerm, FollowerId, NextLogIndex], #{domain => [whatsapp, wa_raft]});
+                [Name, LeaderTerm, Peer, NextLogIndex], #{domain => [whatsapp, wa_raft]});
         _ ->
             % Replicate the log entries to our peer.
-            Dest = {Server, FollowerId},
-            Command = ?LEGACY_APPEND_ENTRIES_RPC(LeaderTerm, node(), PrevLogIndex, PrevLogTerm, Entries, LeaderCommitIndex, 0),
+            Dest = {Server, PeerNode},
+            Command = wa_raft_server:make_rpc(Self, LeaderTerm, ?APPEND_ENTRIES(PrevLogIndex, PrevLogTerm, Entries, LeaderCommitIndex, 0)),
             Timeout = ?RAFT_CATCHUP_HEARTBEAT_TIMEOUT(),
 
-            try DistributionModule:call(Dest, Command, Timeout) of
-                ?LEGACY_APPEND_ENTRIES_RESPONSE_RPC(LeaderTerm, FollowerId, PrevLogIndex, true, FollowerEndIndex) ->
-                    send_logs_impl(FollowerId, FollowerEndIndex + 1, LeaderTerm, LeaderCommitIndex, Witness, State);
-                ?LEGACY_APPEND_ENTRIES_RESPONSE_RPC(_Term, _FollowerId, PrevLogIndex, false, _FollowerEndIndex) ->
+            try wa_raft_server:parse_rpc(Self, DistributionModule:call(Dest, Command, Timeout)) of
+                {LeaderTerm, _, ?APPEND_ENTRIES_RESPONSE(PrevLogIndex, true, FollowerEndIndex)} ->
+                    send_logs_impl(Peer, FollowerEndIndex + 1, LeaderTerm, LeaderCommitIndex, Witness, State);
+                {LeaderTerm, _, ?APPEND_ENTRIES_RESPONSE(PrevLogIndex, false, _FollowerEndIndex)} ->
                     exit(append_failed);
-                ?LEGACY_APPEND_ENTRIES_RESPONSE_RPC(NewTerm, _FollowerId, PrevLogIndex, _Success, _FollowerEndIndex) ->
-                    exit({new_term, NewTerm});
-                Other ->
-                    exit({bad_response, Other})
+                {LeaderTerm, _, Other} ->
+                    exit({bad_response, Other});
+                {NewTerm, _, _} ->
+                    exit({new_term, NewTerm})
             catch
+                % Suppress any `gen_server:call` regurgitation of the potentially large append payload into
+                % an error report to avoid excessively large error reports.
                 exit:{Reason, _} -> exit(Reason)
             end
     end.
