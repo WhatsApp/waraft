@@ -116,7 +116,7 @@
 ]).
 
 -type metadata() :: config | atom().
--type storage_handle() :: term().
+-type storage_handle() :: eqwalizer:dynamic().
 -type error() :: {error, term()}.
 
 -type status() :: [status_element()].
