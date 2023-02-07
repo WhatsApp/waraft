@@ -89,7 +89,7 @@ start_link(#raft_options{acceptor_name = Name} = Options) ->
 %% is acknowledged on quorum nodes.
 -spec commit(Pid :: pid() | Local :: atom() | {Service :: atom(), Node :: node()}, Op :: op()) -> {ok, term()} | wa_raft:error().
 commit(Pid, Op) ->
-    gen_server:call(Pid, {commit, Op}, ?RPC_CALL_TIMEOUT_MS).
+    gen_server:call(Pid, {commit, Op}, ?RAFT_RPC_CALL_TIMEOUT()).
 
 -spec commit(Pid :: pid() | Local :: atom() | {Service :: atom(), Node :: node()}, Op :: op(), Timeout :: timeout()) -> {ok, term()} | wa_raft:error().
 commit(Pid, Op, Timeout) ->
@@ -102,7 +102,7 @@ commit_async(Dest, From, Op) ->
 % Strong-read
 -spec read(ServerRef :: gen_server:server_ref(), Command :: command()) -> {ok, Result :: term()} | wa_raft:error().
 read(Dest, Command) ->
-    gen_server:call(Dest, {read, Command}, ?RPC_CALL_TIMEOUT_MS).
+    gen_server:call(Dest, {read, Command}, ?RAFT_RPC_CALL_TIMEOUT()).
 
 -spec read(ServerRef :: gen_server:server_ref(), Command :: command(), Timeout :: timeout()) -> {ok, Result :: term()} | wa_raft:error().
 read(Dest, Command, Timeout) ->

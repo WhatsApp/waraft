@@ -121,7 +121,6 @@ options(Table, Partition) ->
 
 -spec normalize_spec(Application :: atom(), Spec :: wa_raft:args()) -> #raft_options{}.
 normalize_spec(Application, #{table := Table, partition := Partition} = Spec) ->
-    % TODO(hsun324) - T133215915: Application-specific default log/storage module
     Root = wa_raft_env:database_path(Application),
     Database = default_partition_path(Root, Table, Partition),
     #raft_options{

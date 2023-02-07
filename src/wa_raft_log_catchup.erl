@@ -48,6 +48,7 @@
 
 %% RAFT log catchup server state
 -record(state, {
+    application :: atom(),
     name :: atom(),
     table :: wa_raft:table(),
     partition :: wa_raft:partition(),
@@ -145,7 +146,7 @@ registered_name(Table, Partition) ->
 
 %% RAFT log catchup server implementation
 -spec init(Options :: #raft_options{}) -> {ok, #state{}, timeout()}.
-init(#raft_options{table = Table, partition = Partition, distribution_module = DistributionModule, log_name = Log, log_catchup_name = Name, server_name = Server}) ->
+init(#raft_options{application = Application, table = Table, partition = Partition, distribution_module = DistributionModule, log_name = Log, log_catchup_name = Name, server_name = Server}) ->
     process_flag(trap_exit, true),
 
     ?LOG_NOTICE("Catchup[~0p] starting for partition ~0p/~0p",
@@ -153,6 +154,7 @@ init(#raft_options{table = Table, partition = Partition, distribution_module = D
 
     Name = ets:new(Name, [set, public, named_table, {write_concurrency, true}]),
     State = #state{
+        application = Application,
         name = Name,
         table = Table,
         partition = Partition,
@@ -202,7 +204,7 @@ send_logs(FollowerId, NextLogIndex, LeaderTerm, LeaderCommitIndex, Witness, #sta
     NewState = case LockoutMillis =< StartMillis of
         true ->
             Counters = persistent_term:get(?RAFT_COUNTERS),
-            case counters:get(Counters, ?RAFT_GLOBAL_COUNTER_LOG_CATCHUP) < ?RAFT_CONFIG(raft_max_log_catchup, 5) of
+            case counters:get(Counters, ?RAFT_GLOBAL_COUNTER_LOG_CATCHUP) < ?RAFT_MAX_CONCURRENT_LOG_CATCHUP() of
                 true ->
                     counters:add(Counters, ?RAFT_GLOBAL_COUNTER_LOG_CATCHUP, 1),
                     ets:insert(?MODULE, ?CATCHUP_RECORD(Name, FollowerId)),
@@ -230,12 +232,12 @@ send_logs(FollowerId, NextLogIndex, LeaderTerm, LeaderCommitIndex, Witness, #sta
     NewState.
 
 -spec send_logs_impl(node(), wa_raft_log:log_index(), wa_raft_log:log_term(), wa_raft_log:log_index(), boolean(), #state{}) -> term().
-send_logs_impl(FollowerId, NextLogIndex, LeaderTerm, LeaderCommitIndex, Witness, #state{name = Name, distribution_module = DistributionModule, server_name = Server, log_name = Log} = State) ->
+send_logs_impl(FollowerId, NextLogIndex, LeaderTerm, LeaderCommitIndex, Witness, #state{application = App, name = Name, distribution_module = DistributionModule, server_name = Server, log_name = Log} = State) ->
     PrevLogIndex = NextLogIndex - 1,
     {ok, PrevLogTerm} = wa_raft_log:term(Log, PrevLogIndex),
 
-    LogBatchEntries = ?RAFT_CONFIG(raft_catchup_log_batch_entries, 800),
-    LogBatchBytes = ?RAFT_CONFIG(raft_catchup_log_batch_bytes, 4 * 1024 * 1024),
+    LogBatchEntries = ?RAFT_CATCHUP_MAX_ENTRIES_PER_BATCH(App),
+    LogBatchBytes = ?RAFT_CATCHUP_MAX_BYTES_PER_BATCH(App),
     Entries = case Witness of
         false ->
             {ok, E} = wa_raft_log:get(Log, NextLogIndex, LogBatchEntries, LogBatchBytes),
@@ -253,7 +255,7 @@ send_logs_impl(FollowerId, NextLogIndex, LeaderTerm, LeaderCommitIndex, Witness,
             % Replicate the log entries to our peer.
             Dest = {Server, FollowerId},
             Command = ?LEGACY_APPEND_ENTRIES_RPC(LeaderTerm, node(), PrevLogIndex, PrevLogTerm, Entries, LeaderCommitIndex, 0),
-            Timeout = ?RAFT_CONFIG(raft_catchup_rpc_timeout_ms, 5000),
+            Timeout = ?RAFT_CATCHUP_HEARTBEAT_TIMEOUT(),
 
             try DistributionModule:call(Dest, Command, Timeout) of
                 ?LEGACY_APPEND_ENTRIES_RESPONSE_RPC(LeaderTerm, FollowerId, PrevLogIndex, true, FollowerEndIndex) ->

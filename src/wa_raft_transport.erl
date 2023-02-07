@@ -73,7 +73,6 @@
 -define(RAFT_TRANSPORT_PARTITION_SUBDIRECTORY, "transport").
 
 -define(RAFT_TRANSPORT_SCAN_INTERVAL_SECS, 30).
--define(RAFT_TRANSPORT_MAX_IDLE_SECS(), application:get_env(?APP, transport_idle_timeout_secs, 30)).
 
 -define(INFO_KEY(ID), {ID, info}).
 -define(FILE_KEY(ID, FileID), {ID, {file, FileID}}).
@@ -715,7 +714,7 @@ maybe_notify(_ID, Info) ->
 scan_transport(ID, #{status := running, atomics := TransportAtomics} = Info) ->
     LastUpdateTs = atomics:get(TransportAtomics, ?RAFT_TRANSPORT_ATOMICS_UPDATED_TS),
     NowMillis = erlang:system_time(millisecond),
-    case NowMillis - LastUpdateTs >= ?RAFT_TRANSPORT_MAX_IDLE_SECS() * 1000 of
+    case NowMillis - LastUpdateTs >= ?RAFT_TRANSPORT_IDLE_TIMEOUT() * 1000 of
         true  -> maybe_notify(ID, Info#{status := timed_out, end_ts => NowMillis});
         false -> Info
     end;

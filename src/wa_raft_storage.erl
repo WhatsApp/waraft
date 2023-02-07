@@ -145,7 +145,7 @@ start_link(#raft_options{storage_name = Name} = Options) ->
 
 -spec status(ServiceRef :: pid() | atom()) -> status().
 status(ServiceRef) ->
-    gen_server:call(ServiceRef, status, ?STORAGE_CALL_TIMEOUT_MS).
+    gen_server:call(ServiceRef, status, ?RAFT_STORAGE_CALL_TIMEOUT()).
 
 -spec apply_op(ServiceRef :: pid() | atom(), LogRecord :: wa_raft_log:log_record(), ServerTerm :: wa_raft_log:log_term()) -> ok.
 apply_op(ServiceRef, LogRecord, ServerTerm) ->
@@ -161,23 +161,23 @@ cancel(ServiceRef) ->
 
 -spec open(ServiceRef :: pid() | atom()) -> {ok, LastApplied :: wa_raft_log:log_pos()}.
 open(ServiceRef) ->
-    gen_server:call(ServiceRef, open, ?RPC_CALL_TIMEOUT_MS).
+    gen_server:call(ServiceRef, open, ?RAFT_RPC_CALL_TIMEOUT()).
 
 -spec open_snapshot(ServiceRef :: pid() | atom(), LastAppliedPos :: wa_raft_log:log_pos()) -> ok | error().
 open_snapshot(ServiceRef, LastAppliedPos) ->
-    gen_server:call(ServiceRef, {snapshot_open, LastAppliedPos}, ?STORAGE_CALL_TIMEOUT_MS).
+    gen_server:call(ServiceRef, {snapshot_open, LastAppliedPos}, ?RAFT_STORAGE_CALL_TIMEOUT()).
 
 -spec create_snapshot(ServiceRef :: pid() | atom()) -> {ok, Pos :: wa_raft_log:log_pos()} | error().
 create_snapshot(ServiceRef) ->
-    gen_server:call(ServiceRef, snapshot_create, ?STORAGE_CALL_TIMEOUT_MS).
+    gen_server:call(ServiceRef, snapshot_create, ?RAFT_STORAGE_CALL_TIMEOUT()).
 
 -spec create_snapshot(ServiceRef :: pid() | atom(), Name :: string()) -> ok | error().
 create_snapshot(ServiceRef, Name) ->
-    gen_server:call(ServiceRef, {snapshot_create, Name}, ?STORAGE_CALL_TIMEOUT_MS).
+    gen_server:call(ServiceRef, {snapshot_create, Name}, ?RAFT_STORAGE_CALL_TIMEOUT()).
 
 -spec create_empty_snapshot(ServiceRef :: pid() | atom(), Name :: string()) -> ok | error().
 create_empty_snapshot(ServiceRef, Name) ->
-    gen_server:call(ServiceRef, {snapshot_create_empty, Name}, ?STORAGE_CALL_TIMEOUT_MS).
+    gen_server:call(ServiceRef, {snapshot_create_empty, Name}, ?RAFT_STORAGE_CALL_TIMEOUT()).
 
 -spec delete_snapshot(ServiceRef :: pid() | atom(), Name :: string()) -> ok.
 delete_snapshot(ServiceRef, Name) ->
@@ -185,7 +185,7 @@ delete_snapshot(ServiceRef, Name) ->
 
 -spec read_metadata(ServiceRef :: pid() | atom(), Key :: metadata()) -> {ok, Version :: wa_raft_log:log_pos(), Value :: eqwalizer:dynamic()} | undefined | error().
 read_metadata(ServiceRef, Key) ->
-    gen_server:call(ServiceRef, {read_metadata, Key}, ?STORAGE_CALL_TIMEOUT_MS).
+    gen_server:call(ServiceRef, {read_metadata, Key}, ?RAFT_STORAGE_CALL_TIMEOUT()).
 
 %%-------------------------------------------------------------------
 %% Internal API
@@ -427,7 +427,7 @@ list_snapshots(RootDir) ->
 
 -spec create_snapshot_impl(SnapName :: string(), Storage :: #raft_storage{}) -> ok | error().
 create_snapshot_impl(SnapName, #raft_storage{name = Name, root_dir = RootDir, module = Module} = State) ->
-    case filelib:is_dir(RootDir ++ SnapName) of
+    case filelib:is_dir(filename:join(RootDir, SnapName)) of
         true ->
             ?LOG_NOTICE("Snapshot ~s for ~p already exists. Skipping snapshot creation.", [SnapName, Name], #{domain => [whatsapp, wa_raft]}),
             ok;

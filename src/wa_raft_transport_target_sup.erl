@@ -28,8 +28,6 @@
 
 -include("wa_raft.hrl").
 
--define(RAFT_TRANSPORT_THREADS(), application:get_env(?APP, raft_transport_threads, 1)).
-
 %%% ------------------------------------------------------------------------
 %%%  Internal API
 %%%

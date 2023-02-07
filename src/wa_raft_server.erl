@@ -91,23 +91,13 @@
 -include("wa_raft_rpc.hrl").
 
 %% Section 5.2. Randomized election timeout for fast election and to avoid split votes
--define(ELECTION_TIMEOUT, {state_timeout, random_election_timeout(), election}).
--define(WITNESS_TIMEOUT, ?ELECTION_TIMEOUT).
-%% Heartbeat interval in ms. Leader sends periodic heartbeats to maintain authority
--define(HEARTBEAT_TIMEOUT, {state_timeout, ?RAFT_CONFIG(raft_heartbeat_interval_ms, 120), heartbeat}).
--define(COMMIT_BATCH_TIMEOUT, {state_timeout, ?RAFT_CONFIG(raft_commit_batch_interval_ms, 2), batch_commit}).
+-define(ELECTION_TIMEOUT(State), {state_timeout, random_election_timeout(State), election}).
+-define(WITNESS_TIMEOUT(State), ?ELECTION_TIMEOUT(State)).
 
-%% Time before considering handover failed in ms.
--define(RAFT_HANDOVER_TIMEOUT_MS(), ?RAFT_CONFIG(raft_handover_timeout_ms, 600)).
-
--define(MAX_LOG_APPLY_BATCH_SIZE, ?RAFT_CONFIG(raft_apply_log_batch_size, 200)).
-
-%% Maximum number of log entries to include in a Handover RPC to pass
-%% leadership to another peer. A limit is enforced to prevent a handover
-%% trying to send huge numbers of logs to catchup a peer during handover.
--define(RAFT_MAX_HANDOVER_LOG_ENTRIES(), ?RAFT_CONFIG(raft_max_handover_log_entries, 200)).
-%% Maximum total byte size of log entries to include in a Handover RPC.
--define(RAFT_MAX_HANDOVER_LOG_SIZE(), ?RAFT_CONFIG(raft_max_handover_log_size, 50 * 1024 * 1024)).
+%% Timeout in milliseconds before the next heartbeat is to be sent by a RAFT leader with no pending log entries
+-define(HEARTBEAT_TIMEOUT(State),    {state_timeout, ?RAFT_HEARTBEAT_INTERVAL(State#raft_state.application), heartbeat}).
+%% Timeout in milliseconds before the next heartbeat is to be sent by a RAFT leader with pending log entries
+-define(COMMIT_BATCH_TIMEOUT(State), {state_timeout, ?RAFT_COMMIT_BATCH_INTERVAL(State#raft_state.application), batch_commit}).
 
 -type state() ::
     stalled |
@@ -223,7 +213,7 @@ read(Pid, Op) ->
 
 -spec status(ServerRef :: gen_server:server_ref()) -> status().
 status(ServerRef) ->
-    gen_server:call(ServerRef, ?STATUS_COMMAND, ?RPC_CALL_TIMEOUT_MS).
+    gen_server:call(ServerRef, ?STATUS_COMMAND, ?RAFT_RPC_CALL_TIMEOUT()).
 
 -spec status
     (ServerRef :: gen_server:server_ref(), Key :: atom()) -> Value :: eqwalizer:dynamic();
@@ -259,7 +249,7 @@ stop(Pid) ->
 % An API that uses storage timeout since it interacts with storage layer directly
 -spec snapshot_available(Pid :: atom() | pid() | {atom(), atom()}, Root :: string(), Pos :: wa_raft_log:log_pos()) -> ok | wa_raft:error().
 snapshot_available(Pid, Root, Pos) ->
-    gen_server:call(Pid, ?SNAPSHOT_AVAILABLE_COMMAND(Root, Pos), ?STORAGE_CALL_TIMEOUT_MS).
+    gen_server:call(Pid, ?SNAPSHOT_AVAILABLE_COMMAND(Root, Pos), ?RAFT_STORAGE_CALL_TIMEOUT()).
 
 %% TODO(hsun324): Update promote to enable setting a RAFT cluster membership
 %%                in order to be able to bootstrap new RAFT clusters.
@@ -273,23 +263,23 @@ promote(Pid, Term, Force) ->
 
 -spec promote(Pid :: atom() | pid(), Term :: pos_integer(), Force :: boolean(), Config :: undefined | config()) -> ok | wa_raft:error().
 promote(Pid, Term, Force, Config) ->
-    gen_server:call(Pid, ?PROMOTE_COMMAND(Term, Force, Config), ?RPC_CALL_TIMEOUT_MS).
+    gen_server:call(Pid, ?PROMOTE_COMMAND(Term, Force, Config), ?RAFT_RPC_CALL_TIMEOUT()).
 
 -spec resign(Pid :: atom() | pid()) -> ok | wa_raft:error().
 resign(Pid) ->
-    gen_server:call(Pid, ?RESIGN_COMMAND, ?RPC_CALL_TIMEOUT_MS).
+    gen_server:call(Pid, ?RESIGN_COMMAND, ?RAFT_RPC_CALL_TIMEOUT()).
 
 -spec refresh_config(Name :: atom() | pid()) -> {ok, Pos :: wa_raft_log:log_pos()} | wa_raft:error().
 refresh_config(Name) ->
-    gen_server:call(Name, ?ADJUST_MEMBERSHIP_COMMAND(refresh, undefined), ?RPC_CALL_TIMEOUT_MS).
+    gen_server:call(Name, ?ADJUST_MEMBERSHIP_COMMAND(refresh, undefined), ?RAFT_RPC_CALL_TIMEOUT()).
 
 -spec adjust_membership(Name :: atom() | pid(), Action :: add | remove | add_witness | remove_witness, Peer :: peer()) -> {ok, Pos :: wa_raft_log:log_pos()} | wa_raft:error().
 adjust_membership(Name, Action, Peer) ->
-    gen_server:call(Name, ?ADJUST_MEMBERSHIP_COMMAND(Action, Peer), ?RPC_CALL_TIMEOUT_MS).
+    gen_server:call(Name, ?ADJUST_MEMBERSHIP_COMMAND(Action, Peer), ?RAFT_RPC_CALL_TIMEOUT()).
 
 -spec handover_candidates(Name :: atom() | pid()) -> {ok, Candidates :: [node()]} | wa_raft:error().
 handover_candidates(Name) ->
-    gen_server:call(Name, ?HANDOVER_CANDIDATES_COMMAND, ?RPC_CALL_TIMEOUT_MS).
+    gen_server:call(Name, ?HANDOVER_CANDIDATES_COMMAND, ?RAFT_RPC_CALL_TIMEOUT()).
 
 %% Instruct a RAFT leader to attempt a handover to a random handover candidate.
 -spec handover(Name :: atom() | pid()) -> ok.
@@ -301,7 +291,7 @@ handover(Name) ->
 %% Returns which peer node the handover was sent to or otherwise an error.
 -spec handover(Name :: atom() | pid(), Peer :: node() | undefined) -> {ok, Peer :: node()} | wa_raft:error().
 handover(Name, Peer) ->
-    gen_server:call(Name, ?HANDOVER_COMMAND(Peer), ?RPC_CALL_TIMEOUT_MS).
+    gen_server:call(Name, ?HANDOVER_COMMAND(Peer), ?RAFT_RPC_CALL_TIMEOUT()).
 
 -spec disable(Name :: atom() | pid(), Reason :: term()) -> ok | {error, ErrorReason :: atom()}.
 disable(Name, Reason) ->
@@ -313,7 +303,7 @@ enter_witness(Name) ->
 
 -spec enable(Name :: atom() | pid()) -> ok | {error, ErrorReason :: atom()}.
 enable(Name) ->
-    gen_server:call(Name, ?ENABLE_COMMAND, ?RPC_CALL_TIMEOUT_MS).
+    gen_server:call(Name, ?ENABLE_COMMAND, ?RAFT_RPC_CALL_TIMEOUT()).
 
 %%-------------------------------------------------------------------
 %% Internal API
@@ -340,7 +330,8 @@ registered_name(Table, Partition) ->
 
 %% gen_statem callbacks
 -spec init(Options :: #raft_options{}) -> gen_statem:init_result(state()).
-init(#raft_options{table = Table, partition = Partition, witness = Witness, database = DataDir, distribution_module = DistributionModule, log_name = Log, log_catchup_name = Catchup, server_name = Name, storage_name = Storage} = Options) ->
+init(#raft_options{application = Application, table = Table, partition = Partition, witness = Witness, database = DataDir,
+                   distribution_module = DistributionModule, log_name = Log, log_catchup_name = Catchup, server_name = Name, storage_name = Storage} = Options) ->
     process_flag(trap_exit, true),
 
     ?LOG_NOTICE("Server[~0p] starting with options ~0p", [Name, Options], #{domain => [whatsapp, wa_raft]}),
@@ -350,6 +341,7 @@ init(#raft_options{table = Table, partition = Partition, witness = Witness, data
     {ok, View} = wa_raft_log:open(Log, Last),
 
     State0 = #raft_state{
+        application = Application,
         name = Name,
         self = #raft_identity{name = Name, node = node()},
         table = Table,
@@ -465,8 +457,9 @@ handle_rpc_impl(_Type, _Event, Key, Term, Sender, _Payload, State, #raft_state{n
 %% from any peer if it knows about a currently active leader. An active leader is
 %% one that is replicating to a quorum so we can check if we have gotten a
 %% heartbeat recently.
-handle_rpc_impl(Type, Event, ?REQUEST_VOTE, Term, Sender, Payload, State, #raft_state{name = Name, current_term = CurrentTerm, leader_heartbeat_ts = LeaderHeartbeatTs} = Data) when is_tuple(Payload), element(1, Payload) =:= normal ->
-    AllowedDelay = ?RAFT_ELECTION_TIMEOUT_MS() div 2,
+handle_rpc_impl(Type, Event, ?REQUEST_VOTE, Term, Sender, Payload, State,
+                #raft_state{application = App, name = Name, current_term = CurrentTerm, leader_heartbeat_ts = LeaderHeartbeatTs} = Data) when is_tuple(Payload), element(1, Payload) =:= normal ->
+    AllowedDelay = ?RAFT_ELECTION_TIMEOUT_MIN(App) div 2,
     Delay = case LeaderHeartbeatTs of
         undefined -> infinity;
         _         -> erlang:system_time(millisecond) - LeaderHeartbeatTs
@@ -614,7 +607,7 @@ leader(enter, OldStateName,
     State2 = reset_leader_state(State1),
     State3 = append_entries_to_followers(State2),
     State4 = apply_single_node_cluster(State3), % apply immediately for single node cluster
-    {keep_state, State4, ?HEARTBEAT_TIMEOUT};
+    {keep_state, State4, ?HEARTBEAT_TIMEOUT(State4)};
 
 %% [Protocol] Handle any RPCs
 leader(Type, Event, State) when is_tuple(Event), element(1, Event) =:= rpc ->
@@ -705,7 +698,7 @@ leader(cast, ?REMOTE(?IDENTITY_REQUIRES_MIGRATION(_, FollowerId) = Sender, ?APPE
     State2 = State1#raft_state{match_index = MatchIndex1, next_index = NextIndex1},
     State3 = maybe_apply(FollowerEndIndex, State2),
     ?RAFT_GATHER('raft.leader.apply.func', timer:now_diff(os:timestamp(), StartT)),
-    {keep_state, maybe_heartbeat(State3), ?HEARTBEAT_TIMEOUT};
+    {keep_state, maybe_heartbeat(State3), ?HEARTBEAT_TIMEOUT(State3)};
 
 %% and failures.
 leader(cast, ?REMOTE(?IDENTITY_REQUIRES_MIGRATION(_, FollowerId) = Sender, ?APPEND_ENTRIES_RESPONSE(PrevLogIndex, false, FollowerEndIndex)),
@@ -729,7 +722,7 @@ leader(cast, ?REMOTE(?IDENTITY_REQUIRES_MIGRATION(_, FollowerId) = Sender, ?APPE
     NextIndex1 = maps:put(FollowerId, FollowerEndIndex + 1, NextIndex0),
     State1 = State0#raft_state{next_index = NextIndex1, match_index = MatchIndex1},
     State2 = maybe_apply(min(PrevLogIndex, FollowerEndIndex), State1),
-    {keep_state, maybe_heartbeat(State2), ?HEARTBEAT_TIMEOUT};
+    {keep_state, maybe_heartbeat(State2), ?HEARTBEAT_TIMEOUT(State2)};
 
 %% [RequestVote RPC] We are already leader for the current term, so always decline votes (5.1, 5.2)
 leader(_Type, ?REMOTE(Sender, ?REQUEST_VOTE(_ElectionType, _LastLogIndex, _LastLogTerm)),
@@ -774,18 +767,18 @@ leader(state_timeout = Type, Event, #raft_state{name = Name, current_term = Curr
                 [Name, CurrentTerm, Peer], #{domain => [whatsapp, wa_raft]}),
             {keep_state, State#raft_state{handover = undefined}, {next_event, Type, Event}};
         false ->
-            {keep_state_and_data, ?HEARTBEAT_TIMEOUT}
+            {keep_state_and_data, ?HEARTBEAT_TIMEOUT(State)}
     end;
-leader(state_timeout, _, #raft_state{name = Name, current_term = CurrentTerm} = State0) ->
+leader(state_timeout, _, #raft_state{application = App, name = Name, current_term = CurrentTerm} = State0) ->
     State1 = append_entries_to_followers(State0),
-    case ?RAFT_CONFIG(raft_election_weight, ?RAFT_ELECTION_DEFAULT_WEIGHT) of
-        0 ->
-            ?LOG_NOTICE("Leader[~p, term ~p] weight is zero and gives up leader role",
-                [Name, CurrentTerm], #{domain => [whatsapp, wa_raft]}),
-            {next_state, follower, State1};
-        _ ->
+    case ?RAFT_LEADER_ELIGIBLE(App) andalso ?RAFT_ELECTION_WEIGHT(App) =/= 0 of
+        true ->
             check_leader_lagging(State1),
-            {keep_state, State1, ?HEARTBEAT_TIMEOUT}
+            {keep_state, State1, ?HEARTBEAT_TIMEOUT(State1)};
+        false ->
+            ?LOG_NOTICE("Leader[~p, term ~p] resigns from leadership because this node is ineligible or election weight is zero.",
+                [Name, CurrentTerm], #{domain => [whatsapp, wa_raft]}),
+            {next_state, follower, State1}
     end;
 
 %% [Commit] If a handover is in progress, then try to redirect to handover target
@@ -794,20 +787,20 @@ leader(cast, ?COMMIT_COMMAND({Ref, _Op}), #raft_state{storage = Storage, handove
     wa_raft_storage:fulfill_op(Storage, Ref, {error, {notify_redirect, Peer}}), % Optimistically redirect to handover peer
     {keep_state, State};
 %% [Commit] Otherwise, add a new commit to the RAFT log
-leader(cast, ?COMMIT_COMMAND(Op), #raft_state{current_term = CurrentTerm, log_view = View0, next_index = NextIndex} = State0) ->
+leader(cast, ?COMMIT_COMMAND(Op), #raft_state{application = App, current_term = CurrentTerm, log_view = View0, next_index = NextIndex} = State0) ->
     ?RAFT_COUNT('raft.commit'),
     {ok, View1} = wa_raft_log:submit(View0, {CurrentTerm, Op}),
     ExpectedLastIndex = wa_raft_log:last_index(View1) + wa_raft_log:pending(View1),
     State1 = apply_single_node_cluster(State0#raft_state{log_view = View1}), % apply immediately for single node cluster
 
     MaxNexIndex = maps:fold(fun(_NodeId, V, Acc) -> erlang:max(Acc, V) end, 0, NextIndex),
-    case ?RAFT_CONFIG(raft_commit_batch_interval_ms, 2) > 0 andalso ExpectedLastIndex - MaxNexIndex < ?RAFT_CONFIG(raft_commit_batch_max, 15) of
+    case ?RAFT_COMMIT_BATCH_INTERVAL(App) > 0 andalso ExpectedLastIndex - MaxNexIndex < ?RAFT_COMMIT_BATCH_MAX_ENTRIES(App) of
         true ->
             ?RAFT_COUNT('raft.commit.batch.delay'),
-            {keep_state, State1, ?COMMIT_BATCH_TIMEOUT};
+            {keep_state, State1, ?COMMIT_BATCH_TIMEOUT(State1)};
         false ->
             State2 = append_entries_to_followers(State1),
-            {keep_state, State2, ?HEARTBEAT_TIMEOUT}
+            {keep_state, State2, ?HEARTBEAT_TIMEOUT(State2)}
     end;
 
 %% [Strong Read] Leader is eligible to serve strong reads.
@@ -875,7 +868,7 @@ leader(Type, ?ADJUST_MEMBERSHIP_COMMAND(Action, Peer),
                             State2 = apply_single_node_cluster(State1),
                             State3 = append_entries_to_followers(State2),
                             reply(Type, {ok, #raft_log_pos{index = LogIndex, term = CurrentTerm}}),
-                            {keep_state, State3, ?HEARTBEAT_TIMEOUT}
+                            {keep_state, State3, ?HEARTBEAT_TIMEOUT(State3)}
                     end;
                 {ok, _OtherTerm} ->
                     ?LOG_NOTICE("Leader[~p, term ~p] rejecting request to ~p peer ~p because it has not established current term commit quorum.",
@@ -920,7 +913,7 @@ leader(Type, ?HANDOVER_COMMAND(Peer), #raft_state{name = Name, current_term = Cu
 
 %% [Handover] Attempt to start a handover to the specified peer
 leader(Type, ?HANDOVER_COMMAND(Peer),
-       #raft_state{name = Name, log_view = View,
+       #raft_state{application = App, name = Name, log_view = View,
                    current_term = CurrentTerm, handover = undefined} = State0) ->
     % TODO(hsun324): For the time being, assume that all members of the cluster use the same server name.
     case member({Name, Peer}, config(State0)) of
@@ -934,8 +927,8 @@ leader(Type, ?HANDOVER_COMMAND(Peer),
             FirstIndex = wa_raft_log:first_index(View),
             PeerSendIndex = max(PeerMatchIndex + 1, FirstIndex + 1),
             LastIndex = wa_raft_log:last_index(View),
-            MaxHandoverBatchSize = ?RAFT_MAX_HANDOVER_LOG_ENTRIES(),
-            MaxHandoverBytes = ?RAFT_MAX_HANDOVER_LOG_SIZE(),
+            MaxHandoverBatchSize = ?RAFT_HANDOVER_MAX_ENTRIES(App),
+            MaxHandoverBytes = ?RAFT_HANDOVER_MAX_BYTES(App),
 
             case LastIndex - PeerSendIndex =< MaxHandoverBatchSize of
                 true ->
@@ -943,7 +936,7 @@ leader(Type, ?HANDOVER_COMMAND(Peer),
                     ?LOG_NOTICE("Leader[~p, term ~p] starting handover to ~p.",
                         [Name, CurrentTerm, Peer], #{domain => [whatsapp, wa_raft]}),
                     Ref = make_ref(),
-                    Timeout = erlang:system_time(millisecond) + ?RAFT_HANDOVER_TIMEOUT_MS(),
+                    Timeout = erlang:system_time(millisecond) + ?RAFT_HANDOVER_TIMEOUT(App),
                     State1 = State0#raft_state{handover = {Peer, Ref, Timeout}},
 
                     PrevLogIndex = PeerSendIndex - 1,
@@ -1003,7 +996,7 @@ follower(enter, leader,
     State1 = reset_state(State),
     State2 = State1#raft_state{voted_for = undefined, next_index = maps:new(), match_index = maps:new()},
     wa_raft_storage:cancel(Storage),
-    {keep_state, State2, ?ELECTION_TIMEOUT};
+    {keep_state, State2, ?ELECTION_TIMEOUT(State2)};
 %% [Follower] State entry setup
 follower(enter, OldStateName,
          #raft_state{name = Name, current_term = CurrentTerm, match_index = MatchIndex, next_index = NextIndex} = State) ->
@@ -1013,7 +1006,7 @@ follower(enter, OldStateName,
     check_follower_stale(follower, State),
     State1 = reset_state(State),
     State2 = State1#raft_state{voted_for = undefined, next_index = maps:new(), match_index = maps:new()}, %% always reset leader on state change
-    {keep_state, State2, ?ELECTION_TIMEOUT};
+    {keep_state, State2, ?ELECTION_TIMEOUT(State2)};
 
 %% [Protocol] Handle any RPCs
 follower(Type, Event, State) when is_tuple(Event), element(1, Event) =:= rpc ->
@@ -1022,14 +1015,14 @@ follower(Type, Event, State) when is_tuple(Event), element(1, Event) =:= rpc ->
 %% [Follower] Handle AppendEntries RPC (5.2, 5.3)
 %% Follower receives AppendEntries from leader
 follower(Type, ?REMOTE(?IDENTITY_REQUIRES_MIGRATION(_, LeaderId) = Sender, ?APPEND_ENTRIES(PrevLogIndex, PrevLogTerm, Entries, LeaderCommitIndex, LeaderTrimIndex)),
-         #raft_state{current_term = CurrentTerm} = State0) ->
+         #raft_state{application = App, current_term = CurrentTerm} = State0) ->
     case append_entries(CurrentTerm, LeaderId, PrevLogIndex, PrevLogTerm, Entries, State0) of
         {{disable, Reason}, State1} ->
             State2 = State1#raft_state{disable_reason = Reason},
             {next_state, disabled, State2};
         {Result, #raft_state{log_view = View} = State1} ->
             State2 = State1#raft_state{leader_heartbeat_ts = erlang:system_time(millisecond)},
-            TrimIndex = case ?RAFT_CONFIG(use_trim_index, false) of
+            TrimIndex = case ?RAFT_LOG_ROTATION_BY_TRIM_INDEX(App) of
                 true  -> LeaderTrimIndex;
                 false -> infinity
             end,
@@ -1042,7 +1035,7 @@ follower(Type, ?REMOTE(?IDENTITY_REQUIRES_MIGRATION(_, LeaderId) = Sender, ?APPE
                 _  -> State2
             end,
             check_follower_lagging(LeaderCommitIndex, State3),
-            {keep_state, State3, ?ELECTION_TIMEOUT}
+            {keep_state, State3, ?ELECTION_TIMEOUT(State3)}
     end;
 
 %% [Follower] Handle AppendEntries RPC response (5.2)
@@ -1069,17 +1062,12 @@ follower(_Type, ?REMOTE(Sender, ?VOTE(Voted)),
 
 %% [Handover Extension] Another leader is asking for this follower to take over
 follower(_Type, ?REMOTE(?IDENTITY_REQUIRES_MIGRATION(_, NodeId) = Sender, ?HANDOVER(Ref, PrevLogIndex, PrevLogTerm, LogEntries)),
-         #raft_state{name = Name, current_term = CurrentTerm} = State0) ->
+         #raft_state{application = App, name = Name, current_term = CurrentTerm} = State0) ->
     ?RAFT_COUNT('wa_raft.follower.handover'),
     ?LOG_NOTICE("Follower[~p, term ~p] evaluating handover RPC from ~p.",
         [Name, CurrentTerm, Sender], #{domain => [whatsapp, wa_raft]}),
-    case ?RAFT_CONFIG(raft_election_weight, ?RAFT_ELECTION_DEFAULT_WEIGHT) of
-        0 ->
-            ?LOG_NOTICE("Follower[~p, term ~p] not considering handover RPC due to election weight 0.",
-                [Name, CurrentTerm], #{domain => [whatsapp, wa_raft]}),
-            send_rpc(Sender, ?HANDOVER_FAILED(Ref), State0),
-            {keep_state, State0};
-        _ ->
+    case ?RAFT_LEADER_ELIGIBLE(App) andalso ?RAFT_ELECTION_WEIGHT(App) =/= 0 of
+        true ->
             case append_entries(CurrentTerm, NodeId, PrevLogIndex, PrevLogTerm, LogEntries, State0) of
                 {ok, State1} ->
                     ?LOG_NOTICE("Follower[~p, term ~p] immediately starting new election due to append success during handover RPC.",
@@ -1091,7 +1079,12 @@ follower(_Type, ?REMOTE(?IDENTITY_REQUIRES_MIGRATION(_, NodeId) = Sender, ?HANDO
                         [Name, CurrentTerm, Error], #{domain => [whatsapp, wa_raft]}),
                     send_rpc(Sender, ?HANDOVER_FAILED(Ref), State1),
                     {keep_state, State1}
-            end
+            end;
+        false ->
+            ?LOG_NOTICE("Follower[~p, term ~p] not considering handover RPC due to being inelgibile or having zero election weight.",
+                [Name, CurrentTerm], #{domain => [whatsapp, wa_raft]}),
+            send_rpc(Sender, ?HANDOVER_FAILED(Ref), State0),
+            {keep_state, State0}
     end;
 
 %% [HandoverFailed Extension] Followers cannot initiate handovers
@@ -1104,7 +1097,7 @@ follower(_Type, ?REMOTE(Sender, ?HANDOVER_FAILED(_Ref)),
 %% [Follower] handle timeout
 %% follower doesn't receive any heartbeat. starting a new election
 follower(state_timeout, _,
-         #raft_state{name = Name, current_term = CurrentTerm, leader_id = LeaderId,
+         #raft_state{application = App, name = Name, current_term = CurrentTerm, leader_id = LeaderId,
                      log_view = View, leader_heartbeat_ts = HeartbeatTs} = State) ->
     WaitingMs = case HeartbeatTs of
         undefined -> undefined;
@@ -1113,13 +1106,13 @@ follower(state_timeout, _,
     ?LOG_NOTICE("Follower[~p, term ~p] times out after ~p ms. Last leader ~p. Max log index ~p. Promote to candidate and restart election.",
         [Name, CurrentTerm, WaitingMs, LeaderId, wa_raft_log:last_index(View)], #{domain => [whatsapp, wa_raft]}),
     ?RAFT_COUNT('raft.follower.timeout'),
-    case ?RAFT_CONFIG(raft_election_weight, ?RAFT_ELECTION_DEFAULT_WEIGHT) of
-        0 ->
-            ?LOG_NOTICE("Follower[~p, term ~p] election weight is zero so not advancing.",
+    case ?RAFT_LEADER_ELIGIBLE(App) andalso ?RAFT_ELECTION_WEIGHT(App) =/= 0 of
+        true ->
+            {next_state, candidate, State};
+        false ->
+            ?LOG_NOTICE("Follower[~p, term ~p] not advancing to next term after heartbeat timeout due to being ineligible or having zero election weight.",
                 [Name, CurrentTerm], #{domain => [whatsapp, wa_raft]}),
-            {keep_state, State, ?ELECTION_TIMEOUT};
-        _ ->
-            {next_state, candidate, State}
+            {keep_state, State, ?ELECTION_TIMEOUT(State)}
     end;
 
 follower(Type, ?RAFT_COMMAND(_COMMAND, _Payload) = Event, State) ->
@@ -1160,7 +1153,7 @@ candidate(enter, _PreviousState,
     broadcast_rpc(?REQUEST_VOTE(ElectionType, LastLogIndex, LastLogTerm), State3),
     send_rpc(Self, ?VOTE(true), State3),
 
-    {keep_state, State3, ?ELECTION_TIMEOUT};
+    {keep_state, State3, ?ELECTION_TIMEOUT(State3)};
 
 %% [Protocol] Handle any RPCs
 candidate(Type, Event, State) when is_tuple(Event), element(1, Event) =:= rpc ->
@@ -1314,7 +1307,7 @@ witness(enter, FromState, #raft_state{name = Name, current_term = CurrentTerm} =
     State1 = reset_state(State0),
     State2 = State1#raft_state{voted_for = undefined, next_index = #{}, match_index = #{}},
     wa_raft_durable_state:store(State2),
-    {keep_state, State2, ?WITNESS_TIMEOUT};
+    {keep_state, State2, ?WITNESS_TIMEOUT(State2)};
 
 %% [Protocol] Handle any RPCs
 witness(Type, Event, State) when is_tuple(Event), element(1, Event) =:= rpc ->
@@ -1333,19 +1326,19 @@ witness(state_timeout, _,
         [Name, CurrentTerm, WaitingMs, LeaderId, wa_raft_log:last_index(View)], #{domain => [whatsapp, wa_raft]}),
     ?RAFT_COUNT('raft.witness.timeout'),
     wa_raft_info:set_stale(true, State),
-    {keep_state, State, ?WITNESS_TIMEOUT};
+    {keep_state, State, ?WITNESS_TIMEOUT(State)};
 
 %% [Witness] Handle AppendEntries RPC (5.2, 5.3)
 %% Witness receives AppendEntries from leader
 witness(Type, ?REMOTE(?IDENTITY_REQUIRES_MIGRATION(_, LeaderId) = Sender, ?APPEND_ENTRIES(PrevLogIndex, PrevLogTerm, Entries, LeaderCommitIndex, LeaderTrimIndex)),
-        #raft_state{current_term = CurrentTerm} = State0) ->
+        #raft_state{application = App, current_term = CurrentTerm} = State0) ->
     case append_entries(CurrentTerm, LeaderId, PrevLogIndex, PrevLogTerm, Entries, State0) of
         {{disable, Reason}, State1} ->
             State2 = State1#raft_state{disable_reason = Reason},
             {next_state, disabled, State2};
         {Result, #raft_state{log_view = View} = State1} ->
             State2 = State1#raft_state{leader_heartbeat_ts = erlang:system_time(millisecond)},
-            TrimIndex = case ?RAFT_CONFIG(use_trim_index, false) of
+            TrimIndex = case ?RAFT_LOG_ROTATION_BY_TRIM_INDEX(App) of
                 true  -> LeaderTrimIndex;
                 false -> infinity
             end,
@@ -1358,7 +1351,7 @@ witness(Type, ?REMOTE(?IDENTITY_REQUIRES_MIGRATION(_, LeaderId) = Sender, ?APPEN
                 _  -> State2
             end,
             check_follower_lagging(LeaderCommitIndex, State3),
-            {keep_state, State3, ?WITNESS_TIMEOUT}
+            {keep_state, State3, ?WITNESS_TIMEOUT(State3)}
     end;
 
 %% [Witness] Handle AppendEntries RPC response (5.2)
@@ -1473,8 +1466,8 @@ command(StateName, {call, From}, ?STATUS_COMMAND, State) ->
 
 %% [Promote] Non-disabled nodes check if eligible to promote and then promote to leader.
 command(StateName, {call, From}, ?PROMOTE_COMMAND(Term, Force, Config),
-        #raft_state{name = Name, log_view = View0, current_term = CurrentTerm, leader_heartbeat_ts = HeartbeatTs} = State0) when StateName =/= disabled ->
-    ElectionWeight = ?RAFT_CONFIG(raft_election_weight, ?RAFT_ELECTION_DEFAULT_WEIGHT),
+        #raft_state{application = App, name = Name, log_view = View0, current_term = CurrentTerm, leader_heartbeat_ts = HeartbeatTs} = State0) when StateName =/= disabled ->
+    ElectionWeight = ?RAFT_ELECTION_WEIGHT(App),
     SavedConfig = config(State0),
     Allowed = if
         Term =< CurrentTerm ->
@@ -1507,7 +1500,7 @@ command(StateName, {call, From}, ?PROMOTE_COMMAND(Term, Force, Config),
         HeartbeatTs =:= undefined ->
             true;
         true ->
-            erlang:system_time(millisecond) - HeartbeatTs >= ?RAFT_CONFIG(raft_promotion_grace_period_secs, 60) * 1000
+            erlang:system_time(millisecond) - HeartbeatTs >= ?RAFT_PROMOTION_GRACE_PERIOD(App) * 1000
     end,
     case Allowed of
         true ->
@@ -1703,16 +1696,16 @@ maybe_update_config(_Index, _Term, _Op, State) ->
 %%
 %% Private functions
 %%
--spec random_election_timeout() -> non_neg_integer().
-random_election_timeout() ->
-    Max = ?RAFT_ELECTION_TIMEOUT_MS_MAX(),
-    Min = ?RAFT_ELECTION_TIMEOUT_MS(),
+-spec random_election_timeout(#raft_state{}) -> non_neg_integer().
+random_election_timeout(#raft_state{application = App}) ->
+    Max = ?RAFT_ELECTION_TIMEOUT_MAX(App),
+    Min = ?RAFT_ELECTION_TIMEOUT_MIN(App),
     Timeout =
         case Max > Min of
             true -> Min + rand:uniform(Max - Min);
             false -> Min
         end,
-    case ?RAFT_CONFIG(raft_election_weight, ?RAFT_ELECTION_DEFAULT_WEIGHT) of
+    case ?RAFT_ELECTION_WEIGHT(App) of
         Weight when Weight > 0 andalso Weight =< ?RAFT_ELECTION_MAX_WEIGHT ->
             % higher weight, shorter timeout so it has more chances to initiate an leader election
             round(Timeout * ?RAFT_ELECTION_MAX_WEIGHT div Weight);
@@ -1804,14 +1797,14 @@ compute_quorum([_|_] = Values) ->
 apply_log(#raft_state{witness = true} = State0, CommitIndex, _) ->
     % Update CommitIndex and LastAppliedIndex, but don't apply new log entries
     State0#raft_state{last_applied = CommitIndex, commit_index = CommitIndex};
-apply_log(#raft_state{name = Name, table = Table, partition = Partition, log_view = View,
+apply_log(#raft_state{application = App, name = Name, table = Table, partition = Partition, log_view = View,
                       last_applied = LastApplied} = State0, CommitIndex, TrimIndex) when CommitIndex > LastApplied ->
     StartT = os:timestamp(),
     case wa_raft_queue:apply_queue_full(Table, Partition) of
         false ->
             % Apply a limited number of log entries (both count and total byte size limited)
-            LimitedIndex = erlang:min(CommitIndex, LastApplied + ?MAX_LOG_APPLY_BATCH_SIZE),
-            LimitBytes = ?RAFT_CONFIG(raft_apply_batch_max_bytes, 200 * 4 * 1024),
+            LimitedIndex = erlang:min(CommitIndex, LastApplied + ?RAFT_MAX_CONSECUTIVE_APPLY_ENTRIES(App)),
+            LimitBytes = ?RAFT_MAX_CONSECUTIVE_APPLY_BYTES(App),
             {ok, {_, #raft_state{log_view = View1} = State1}} = wa_raft_log:fold(View, LastApplied + 1, LimitedIndex, LimitBytes,
                 fun (Index, Entry, {Index, State}) ->
                     wa_raft_queue:reserve_apply(Table, Partition),
@@ -1820,7 +1813,7 @@ apply_log(#raft_state{name = Name, table = Table, partition = Partition, log_vie
 
             % Perform log trimming since we've now applied some log entries, only keeping
             % at maximum MaxRotateDelay log entries.
-            MaxRotateDelay = ?RAFT_CONFIG(max_log_rotate_delay, 1500000),
+            MaxRotateDelay = ?RAFT_MAX_RETAINED_ENTRIES(App),
             RotateIndex = max(LimitedIndex - MaxRotateDelay, min(State1#raft_state.last_applied, TrimIndex)),
             RotateIndex =/= infinity orelse error(bad_state),
             {ok, View2} = wa_raft_log:rotate(View1, RotateIndex),
@@ -1972,9 +1965,9 @@ reset_leader_state(#raft_state{current_term = CurrentTerm, log_view = View0} = S
 
 -spec heartbeat(#raft_identity{}, #raft_state{}) -> #raft_state{}.
 heartbeat(?IDENTITY_REQUIRES_MIGRATION(_, FollowerId) = Sender,
-          #raft_state{name = Name, log_view = View, catchup = Catchup, current_term = CurrentTerm,
-                     commit_index = CommitIndex, next_index = NextIndex0, match_index = MatchIndex,
-                     last_heartbeat_ts = LastHeartbeatTs, first_current_term_log_index = TermStartIndex} = State0) ->
+          #raft_state{application = App, name = Name, log_view = View, catchup = Catchup, current_term = CurrentTerm,
+                      commit_index = CommitIndex, next_index = NextIndex0, match_index = MatchIndex,
+                      last_heartbeat_ts = LastHeartbeatTs, first_current_term_log_index = TermStartIndex} = State0) ->
     FollowerNextIndex = maps:get(FollowerId, NextIndex0, TermStartIndex),
     PrevLogIndex = FollowerNextIndex - 1,
     PrevLogTermRes = wa_raft_log:term(View, PrevLogIndex),
@@ -1997,15 +1990,15 @@ heartbeat(?IDENTITY_REQUIRES_MIGRATION(_, FollowerId) = Sender,
             LastFollowerHeartbeatTs =/= undefined andalso ?RAFT_GATHER('raft.leader.heartbeat.interval_ms', erlang:system_time(millisecond) - LastFollowerHeartbeatTs),
             State1;
         false ->
-            MaxHeartbeatSize = ?RAFT_CONFIG(raft_max_heartbeat_size, 1 * 1024 * 1024),
+            MaxHeartbeatSize = ?RAFT_HEARTBEAT_MAX_BYTES(App),
             Entries =
                 case lists:member({Name, FollowerId}, Witnesses) of
                     true ->
-                        MaxWitnessLogEntries = ?RAFT_CONFIG(raft_max_witness_log_entries_per_heartbeat, 250),
+                        MaxWitnessLogEntries = ?RAFT_HEARTBEAT_MAX_ENTRIES_TO_WITNESS(App),
                         {ok, Terms} = wa_raft_log:get_terms(View, FollowerNextIndex, MaxWitnessLogEntries, MaxHeartbeatSize),
                         [{Term, []} || Term <- Terms];
                     _ ->
-                        MaxLogEntries = ?RAFT_CONFIG(raft_max_log_entries_per_heartbeat, 15),
+                        MaxLogEntries = ?RAFT_HEARTBEAT_MAX_ENTRIES(App),
                         {ok, Ret} = wa_raft_log:get(View, FollowerNextIndex, MaxLogEntries, MaxHeartbeatSize),
                         Ret
                     end,
@@ -2031,9 +2024,9 @@ heartbeat(?IDENTITY_REQUIRES_MIGRATION(_, FollowerId) = Sender,
     end.
 
 -spec compute_handover_candidates(State :: #raft_state{}) -> [node()].
-compute_handover_candidates(#raft_state{log_view = View, match_index = MatchIndex}) ->
+compute_handover_candidates(#raft_state{application = App, log_view = View, match_index = MatchIndex}) ->
     LastLogIndex = wa_raft_log:last_index(View),
-    MaxHandoverLogEntries = ?RAFT_MAX_HANDOVER_LOG_ENTRIES(),
+    MaxHandoverLogEntries = ?RAFT_HANDOVER_MAX_ENTRIES(App),
     [Peer || {Peer, Match} <- maps:to_list(MatchIndex), LastLogIndex - Match =< MaxHandoverLogEntries].
 
 -spec adjust_config(Action :: {add, peer()} | {remove, peer()} | {add_witness, peer()} | {remove_witness, peer()} | {refresh, undefined},
@@ -2208,20 +2201,20 @@ maybe_heartbeat(State) ->
 -spec should_heartbeat(#raft_state{}) -> boolean().
 should_heartbeat(#raft_state{handover = Handover}) when Handover =/= undefined ->
     false;
-should_heartbeat(#raft_state{last_heartbeat_ts = LastHeartbeatTs}) ->
+should_heartbeat(#raft_state{application = App, last_heartbeat_ts = LastHeartbeatTs}) ->
     Latest = lists:max(maps:values(LastHeartbeatTs)),
     Current = erlang:system_time(millisecond),
-    Current - Latest > ?RAFT_CONFIG(raft_heartbeat_interval_ms, 120).
+    Current - Latest > ?RAFT_HEARTBEAT_INTERVAL(App).
 
 %% Check follower/candidate staleness due to heartbeat delay
 -spec check_follower_stale(state(), #raft_state{}) -> term().
-check_follower_stale(FSMState, #raft_state{name = Name, table = Table, partition = Partition,
+check_follower_stale(FSMState, #raft_state{application = App, name = Name, table = Table, partition = Partition,
                                            current_term = CurrentTerm, leader_heartbeat_ts = LeaderHeartbeatTs} = State) ->
     HeartbeatMs = case LeaderHeartbeatTs of
         undefined -> infinity;
         _         -> erlang:system_time(millisecond) - LeaderHeartbeatTs
     end,
-    Stale = HeartbeatMs > ?RAFT_CONFIG(raft_follower_heartbeat_stale_ms, 10000),
+    Stale = HeartbeatMs > ?RAFT_FOLLOWER_STALE_INTERVAL(App),
     case wa_raft_info:get_stale(Table, Partition) of
         Stale ->
             ok;
@@ -2233,10 +2226,10 @@ check_follower_stale(FSMState, #raft_state{name = Name, table = Table, partition
 
 %% Check follower/witness state due to log entry lag and change stale flag if needed
 -spec check_follower_lagging(pos_integer(), #raft_state{}) -> ok.
-check_follower_lagging(LeaderCommit, #raft_state{table = Table, partition = Partition, last_applied = LastApplied} = State) ->
+check_follower_lagging(LeaderCommit, #raft_state{application = App, table = Table, partition = Partition, last_applied = LastApplied} = State) ->
     Lagging = LeaderCommit - LastApplied,
     ?RAFT_GATHER('raft.follower.lagging', Lagging),
-    case Lagging < ?RAFT_CONFIG(raft_follower_max_lagging, 5000) of
+    case Lagging < ?RAFT_FOLLOWER_STALE_ENTRIES(App) of
         true ->
             wa_raft_info:get_stale(Table, Partition) =/= false andalso begin
                 ?LOG_NOTICE("[~p:~p] Follower catches up.", [Table, Partition], #{domain => [whatsapp, wa_raft]}),
@@ -2253,14 +2246,14 @@ check_follower_lagging(LeaderCommit, #raft_state{table = Table, partition = Part
 
 %% Check leader state and set stale if needed
 -spec check_leader_lagging(#raft_state{}) -> term().
-check_leader_lagging(#raft_state{name = Name, table = Table, partition = Partition, current_term = CurrentTerm,
-                                 heartbeat_response_ts = HeartbeatResponse} = State) ->
+check_leader_lagging(#raft_state{application = App, name = Name, table = Table, partition = Partition,
+                                 current_term = CurrentTerm, heartbeat_response_ts = HeartbeatResponse} = State) ->
     NowTs = erlang:system_time(millisecond),
     QuorumTs = compute_quorum(HeartbeatResponse#{node() => NowTs}, 0, config(State)),
 
     Stale = wa_raft_info:get_stale(Table, Partition),
     QuorumAge = NowTs - QuorumTs,
-    MaxAge = ?RAFT_CONFIG(raft_max_heartbeat_age_msecs, 180 * 1000),
+    MaxAge = ?RAFT_LEADER_STALE_INTERVAL(App),
 
     case QuorumAge >= MaxAge of
         Stale ->
@@ -2278,9 +2271,9 @@ check_leader_lagging(#raft_state{name = Name, table = Table, partition = Partiti
 %% Based on information that the leader has available as a result of heartbeat replies, attempt
 %% to discern what the best subsequent replication mode would be for this follower.
 -spec select_follower_replication_mode(wa_raft_log:log_index(), #raft_state{}) -> snapshot | bulk_logs | logs.
-select_follower_replication_mode(FollowerLastIndex, #raft_state{log_view = View, last_applied = LastAppliedIndex}) ->
-    CatchupEnabled = ?RAFT_CONFIG(catchup_enabled, true) =:= true,
-    BulkLogThreshold = ?RAFT_CONFIG(catchup_max_follower_lag, 50000),
+select_follower_replication_mode(FollowerLastIndex, #raft_state{application = App, log_view = View, last_applied = LastAppliedIndex}) ->
+    CatchupEnabled = ?RAFT_CATCHUP_ENABLED(App),
+    BulkLogThreshold = ?RAFT_CATCHUP_THRESHOLD(App),
     LeaderFirstIndex = wa_raft_log:first_index(View),
     if
         % If catchup modes are not enabled, then always replicate using logs.

@@ -105,6 +105,7 @@
 %% access a consistent view of the RAFT log given simple
 %% RAFT log provider implementations.
 -record(log_view, {
+    application :: atom(),
     log :: log(),
     provider :: module(),
     first = 0 :: log_index(),
@@ -119,6 +120,7 @@
 %% on the RAFT log with operations that are performed
 %% asynchronously to the RAFT server.
 -record(log_state, {
+    application :: atom(),
     log :: log(),
     table :: wa_raft:table(),
     partition :: wa_raft:partition(),
@@ -579,14 +581,14 @@ trim(#log_view{log = Log, first = First} = View, Index) ->
 %% Perform a batched trimming (rotate) of the underlying log according
 %% to application environment configuration values.
 -spec rotate(View :: view(), Index :: log_index()) -> {ok, NewView :: view()}.
-rotate(View, Index) ->
+rotate(#log_view{application = App} = View, Index) ->
     % Current rotation configuration is based on two configuration values,
     % 'raft_max_log_records_per_file' which indicates after how many outstanding extra
     % log entries are in the log should we trim and 'raft_max_log_records' which
     % indicates how many additional log entries after the fully replicated index should
     % be considered not extraneous and be kept by rotation.
-    Interval = ?RAFT_CONFIG(raft_max_log_records_per_file, 200000),
-    Keep = ?RAFT_CONFIG(raft_max_log_records, Interval * 10),
+    Interval = ?RAFT_LOG_ROTATION_INTERVAL(App),
+    Keep = ?RAFT_LOG_ROTATION_KEEP(App, Interval),
     rotate(View, Index, Interval, Keep).
 
 %% Perform a batched trimming (rotate) of the underlying log where
@@ -661,12 +663,13 @@ metadata_table(Log) ->
 %%-------------------------------------------------------------------
 
 -spec init(Options :: #raft_options{}) -> {ok, State :: #log_state{}}.
-init(#raft_options{table = Table, partition = Partition, log_name = Log, log_module = Provider}) ->
+init(#raft_options{application = Application, table = Table, partition = Partition, log_name = Log, log_module = Provider}) ->
     process_flag(trap_exit, true),
 
     Metadata = metadata_table(Log),
     Metadata = ets:new(Metadata, [set, public, named_table]),
     State = #log_state{
+        application = Application,
         log = Log,
         table = Table,
         partition = Partition,
@@ -744,7 +747,7 @@ terminate(Reason, #log_state{log = Log, provider = Provider, state = State}) ->
 -spec handle_open(Position :: log_pos(), State :: #log_state{}) ->
     {{ok, NewView :: view()} | wa_raft:error(), NewState :: #log_state{}}.
 handle_open(#raft_log_pos{index = Index, term = Term} = Position,
-            #log_state{log = Log, table = Table, partition = Partition, provider = Provider} = State0) ->
+            #log_state{application = Application, log = Log, table = Table, partition = Partition, provider = Provider} = State0) ->
     ?RAFT_COUNT('raft.log.open'),
     ?LOG_NOTICE("[~p] opening log at position ~p:~p", [Log, Index, Term], #{domain => [whatsapp, wa_raft]}),
     case Provider:open(Table, Partition) of
@@ -763,7 +766,7 @@ handle_open(#raft_log_pos{index = Index, term = Term} = Position,
             end,
 
             State1 = State0#log_state{state = ProviderState},
-            View0 = #log_view{log = Log, provider = Provider},
+            View0 = #log_view{application = Application, log = Log, provider = Provider},
             case Action of
                 none ->
                     ?RAFT_COUNT('raft.log.open.normal'),

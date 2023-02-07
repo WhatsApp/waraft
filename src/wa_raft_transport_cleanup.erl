@@ -30,10 +30,10 @@
     handle_info/2
 ]).
 
--define(RAFT_TRANSPORT_RETAIN_MIN_SECS(), application:get_env(?APP, transport_retain_min_secs, 300)).
 -define(RAFT_TRANSPORT_CLEANUP_SCAN_INTERVAL_SECS, 30).
 
 -record(state, {
+    application :: atom(),
     name :: atom(),
     directory :: file:filename()
 }).
@@ -80,10 +80,10 @@ registered_name(Table, Partition) ->
 %%-------------------------------------------------------------------
 
 -spec init(Options :: #raft_options{}) -> {ok, State :: #state{}}.
-init(#raft_options{transport_directory = Directory, transport_cleanup_name = Name}) ->
+init(#raft_options{application = Application, transport_directory = Directory, transport_cleanup_name = Name}) ->
     process_flag(trap_exit, true),
     schedule_scan(),
-    {ok, #state{name = Name, directory = Directory}}.
+    {ok, #state{application = Application, name = Name, directory = Directory}}.
 
 -spec handle_call(Request :: term(), From :: gen_server:from(), State :: #state{}) -> {noreply, NewState :: #state{}}.
 handle_call(Request, From, #state{name = Name} = State) ->
@@ -108,10 +108,10 @@ handle_info(Info, #state{name = Name} = State) ->
     {noreply, State}.
 
 -spec maybe_cleanup(State :: #state{}) -> ok | {error, term()}.
-maybe_cleanup(#state{name = Name, directory = Directory} = State) ->
+maybe_cleanup(#state{application = App, name = Name, directory = Directory} = State) ->
     case prim_file:list_dir(Directory) of
         {ok, Files} ->
-            RetainMillis = ?RAFT_TRANSPORT_RETAIN_MIN_SECS() * 1000,
+            RetainMillis = ?RAFT_TRANSPORT_RETAIN_INTERVAL(App) * 1000,
             NowMillis = erlang:system_time(millisecond),
             lists:foreach(
                 fun (Filename) ->

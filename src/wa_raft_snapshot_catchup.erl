@@ -86,7 +86,7 @@ handle_cast({request_snapshot_transport, Peer, Table, Partition}, #state{transpo
         #{{Peer, Table, Partition} := _} ->
             {noreply, State};
         _ ->
-            case maps:size(Transports) < ?RAFT_CONFIG(raft_max_snapshot_catchup, 5) of
+            case maps:size(Transports) < ?RAFT_MAX_CONCURRENT_SNAPSHOT_CATCHUP() of
                 true ->
                     try
                         StorageRef = wa_raft_storage:registered_name(Table, Partition),

@@ -30,11 +30,6 @@
 -include_lib("kernel/include/logger.hrl").
 -include("wa_raft.hrl").
 
-% Size in bytes of individual chunks (messages containing file data) to be sent during transfer.
--define(RAFT_DIST_TRANSPORT_CHUNK_SIZE(), ?RAFT_CONFIG(dist_transport_chunk_size, 1 * 1024 * 1024)).
-% Maximum number of chunks that can be sent without being acknowledged yet.
--define(RAFT_DIST_TRANSPORT_MAX_INFLIGHT(), ?RAFT_CONFIG(dist_transport_max_inflight, 4)).
-
 -record(sender_state, {
 }).
 -record(receiver_state, {
