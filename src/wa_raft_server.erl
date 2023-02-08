@@ -523,7 +523,7 @@ handle_procedure(Type, Procedure, _State, _Data) ->
 
 -spec defaultize_payload(tuple(), tuple()) -> tuple().
 defaultize_payload(Defaults, Payload) ->
-    defaultize_payload(Defaults, Payload, size(Defaults), size(Payload)).
+    defaultize_payload(Defaults, Payload, tuple_size(Defaults), tuple_size(Payload)).
 
 -spec defaultize_payload(tuple(), tuple(), non_neg_integer(), non_neg_integer()) -> tuple().
 defaultize_payload(_Defaults, Payload, N, N) ->
