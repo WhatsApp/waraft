@@ -371,8 +371,7 @@ storage_apply(LogPos, {_Ref, Command}, State) ->
     execute(Command, LogPos, State).
 
 -spec execute(Command :: wa_raft_acceptor:command(), LogPos :: wa_raft_log:log_pos(), State :: #raft_storage{}) -> {term() | error(), #raft_storage{}}.
-execute(noop, LogPos, #raft_storage{name = Name, module = Module, handle = Handle} = State) ->
-    ?LOG_NOTICE("Noop for ~100p at pos ~w", [Name, LogPos], #{domain => [whatsapp, wa_raft]}),
+execute(noop, LogPos, #raft_storage{module = Module, handle = Handle} = State) ->
     {Reply, NewHandle} = Module:storage_apply(noop, LogPos, Handle),
     {Reply, State#raft_storage{handle = NewHandle}};
 execute({config, Config}, #raft_log_pos{index = Index, term = Term} = Version, #raft_storage{name = Name, module = Module, handle = Handle} = State) ->
