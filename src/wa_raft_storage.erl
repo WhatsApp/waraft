@@ -34,7 +34,6 @@
     open_snapshot/2,
     create_snapshot/1,
     create_snapshot/2,
-    create_empty_snapshot/2,
     delete_snapshot/2
 ]).
 
@@ -85,9 +84,6 @@
 -callback storage_apply(wa_raft_acceptor:command(), wa_raft_log:log_pos(), Handle :: storage_handle()) -> {term() | error(), storage_handle()}.
 %% Callback to create a snapshot for current storage state
 -callback storage_create_snapshot(string(), #raft_storage{}) -> ok | error().
-%% Callback to create an empty snapshot. Used by snapshot transfer destination node to create an empty snapshot
-%% previous to the transfer.
--callback storage_create_empty_snapshot(string(), #raft_storage{}) -> ok | error().
 %% Callback to delete snapshot
 -callback storage_delete_snapshot(string(), #raft_storage{}) -> ok | error().
 %% Callback to open storage handle from a snapshot
@@ -161,10 +157,6 @@ create_snapshot(ServiceRef) ->
 create_snapshot(ServiceRef, Name) ->
     gen_server:call(ServiceRef, {snapshot_create, Name}, ?RAFT_STORAGE_CALL_TIMEOUT()).
 
--spec create_empty_snapshot(ServiceRef :: pid() | atom(), Name :: string()) -> ok | error().
-create_empty_snapshot(ServiceRef, Name) ->
-    gen_server:call(ServiceRef, {snapshot_create_empty, Name}, ?RAFT_STORAGE_CALL_TIMEOUT()).
-
 -spec delete_snapshot(ServiceRef :: pid() | atom(), Name :: string()) -> ok.
 delete_snapshot(ServiceRef, Name) ->
     gen_server:cast(ServiceRef, {snapshot_delete, Name}).
@@ -230,7 +222,6 @@ init(#raft_options{table = Table, partition = Partition, database = RootDir, sto
         open |
         snapshot_create |
         {snapshot_create, Name :: string()} |
-        {snapshot_create_empty, Name :: string()} |
         {snapshot_open, LastAppliedPos :: wa_raft_log:log_pos()} |
         {read_metadata, Key :: metadata()}.
 handle_call(open, _From, #raft_storage{last_applied = LastApplied} = State) ->
@@ -247,12 +238,6 @@ handle_call(snapshot_create, _From, #raft_storage{last_applied = #raft_log_pos{i
 
 handle_call({snapshot_create, Name}, _From, State) ->
     Result = create_snapshot_impl(Name, State),
-    {reply, Result, State};
-
-handle_call({snapshot_create_empty, Name}, _From, #raft_storage{module = Module} = State) ->
-    cleanup_snapshots(State),
-    ?LOG_NOTICE("Create empty snapshot ~s for ~p.", [Name, Name], #{domain => [whatsapp, wa_raft]}),
-    Result = Module:storage_create_empty_snapshot(Name, State),
     {reply, Result, State};
 
 handle_call({snapshot_open, #raft_log_pos{index = LastIndex, term = LastTerm} = LogPos}, _From, #raft_storage{name = Name, module = Module, handle = Handle, last_applied = LastApplied} = State) ->

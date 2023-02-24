@@ -18,7 +18,6 @@
     storage_close/1,
     storage_apply/3,
     storage_create_snapshot/2,
-    storage_create_empty_snapshot/2,
     storage_delete_snapshot/2,
     storage_open_snapshot/2,
     storage_status/1
@@ -68,13 +67,6 @@ storage_create_snapshot(SnapName, #raft_storage{table = Table, partition = Parti
     SnapFile = ?SNAPSHOT_FILE(Table, Partition, SnapName),
     ok = filelib:ensure_dir(SnapFile),
     ok = ets:tab2file(Tab, SnapFile),
-    ok.
-
--spec storage_create_empty_snapshot(string(), #raft_storage{}) -> ok.
-storage_create_empty_snapshot(SnapName, #raft_storage{table = Table, partition = Partition}) ->
-    SnapFile = ?SNAPSHOT_FILE(Table, Partition, SnapName),
-    file:delete(SnapFile),
-    ok = filelib:ensure_dir(SnapFile),
     ok.
 
 -spec storage_delete_snapshot(string(), #raft_storage{}) -> ok.
