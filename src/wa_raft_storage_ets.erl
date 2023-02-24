@@ -13,8 +13,9 @@
 
 %% Callbacks
 -export([
-    storage_open/1,
-    storage_close/2,
+    storage_open/4,
+    storage_position/1,
+    storage_close/1,
     storage_apply/3,
     storage_create_snapshot/2,
     storage_create_empty_snapshot/2,
@@ -24,34 +25,42 @@
 ]).
 
 -export([
-    storage_read/2,
-    storage_read_version/2,
-    storage_write/5,
-    storage_delete/3,
-    storage_match_delete/4,
     storage_write_metadata/4,
     storage_read_metadata/2
+]).
+
+%% Test API
+-export([
+    storage_read/2
 ]).
 
 -include_lib("kernel/include/logger.hrl").
 -include("wa_raft.hrl").
 
--type storage_handle() :: {wa_raft:table(), wa_raft:partition()}.
-
 -define(SNAPSHOT_FILE(Table, Partition, Name), filename:join(?RAFT_SNAPSHOT_PATH(Table, Partition, Name), "data")).
+
+-record(state, {
+    table :: wa_raft:table(),
+    partition :: wa_raft:partition(),
+    position :: wa_raft_log:log_pos()
+}).
 
 %% Tag in key for metadata
 -define(METADATA_TAG, '$metadata').
 
--spec storage_open(#raft_storage{}) -> {wa_raft_log:log_pos(), storage_handle()}.
-storage_open(#raft_storage{table = Table, partition = Partition}) ->
+-spec storage_open(atom(), wa_raft:table(), wa_raft:partition(), file:filename()) -> #state{}.
+storage_open(_Name, Table, Partition, _RootDir) ->
     new_table(Table, Partition),
-    {#raft_log_pos{index = 0, term = 0}, {Table, Partition}}.
+    #state{table = Table, partition = Partition, position = #raft_log_pos{index = 0, term = 0}}.
 
--spec storage_close(storage_handle(), #raft_storage{}) -> ok.
-storage_close({Table, Partition}, _State) ->
+-spec storage_position(#state{}) -> wa_raft_log:log_pos().
+storage_position(#state{position = Position}) ->
+    Position.
+
+-spec storage_close(#state{}) -> ok.
+storage_close(#state{table = Table, partition = Partition}) ->
     Tab = wa_raft_storage:registered_name(Table, Partition),
-    catch ets:delete(Tab),
+    true = ets:delete(Tab),
     ok.
 
 -spec storage_create_snapshot(string(), #raft_storage{}) -> ok.
@@ -80,47 +89,53 @@ storage_delete_snapshot(SnapName, #raft_storage{table = Table, partition = Parti
             ok
     end.
 
--spec storage_open_snapshot(#raft_snapshot{}, #raft_storage{}) -> {wa_raft_log:log_pos(), storage_handle()} | wa_raft_storage:error().
-storage_open_snapshot(#raft_snapshot{last_applied = LogPos, name = Name}, #raft_storage{table = Table, partition = Partition, name = Tab}) ->
+-spec storage_open_snapshot(#raft_snapshot{}, #state{}) -> {ok, #state{}} | wa_raft_storage:error().
+storage_open_snapshot(#raft_snapshot{last_applied = LogPos, name = Name}, #state{table = Table, partition = Partition} = State) ->
+    Tab = wa_raft_storage:registered_name(Table, Partition),
+    Temp = list_to_atom(atom_to_list(Tab) ++ "_temp"),
+    Temp = ets:rename(Tab, Temp),
     SnapFile = ?SNAPSHOT_FILE(Table, Partition, Name),
-    catch ets:delete(Tab),
     case filelib:is_regular(SnapFile) of
         true ->
             case ets:file2tab(SnapFile) of
-                {ok, Tab} -> ok;
-                {ok, OtherTab} -> Tab = ets:rename(OtherTab, Tab)
-            end,
-            {LogPos, {Table, Partition}};
+                {ok, NewTab} ->
+                    NewTab =/= Tab andalso (Tab = ets:rename(NewTab, Tab)),
+                    catch ets:delete(Temp),
+                    {ok, State#state{position = LogPos}};
+                {error, Reason} ->
+                    Tab = ets:rename(Temp, Tab),
+                    {error, Reason}
+            end;
         false ->
-            new_table(Table, Partition),
-            {LogPos, {Table, Partition}}
+            Tab = ets:rename(Temp, Tab),
+            {error, invalid_snapshot}
     end.
 
--spec storage_status(Handle :: storage_handle()) -> wa_raft_storage:status().
+-spec storage_status(Handle :: #state{}) -> wa_raft_storage:status().
 storage_status(_Handle) ->
     [].
 
--spec storage_apply(Command :: wa_raft_acceptor:command(), LogPos :: wa_raft_log:log_pos(), Storage :: storage_handle()) -> {ok, storage_handle()} | {{ok, Return :: term()}, storage_handle()} | {wa_raft_storage:error(), storage_handle()}.
-storage_apply({read, _Table, Key}, _LogPos, Handle) ->
+-spec storage_apply(Command :: wa_raft_acceptor:command(), LogPos :: wa_raft_log:log_pos(), Storage :: #state{}) -> {ok, #state{}} | {{ok, Return :: term()}, #state{}} | {wa_raft_storage:error(), #state{}}.
+storage_apply({read, _Table, Key}, LogPos, Handle) ->
     {ok, {LogIndex, _LogTerm, Header, Value}} = storage_read(Handle, Key),
-    {{ok, {Value, Header, LogIndex}}, Handle};
+    {{ok, {Value, Header, LogIndex}}, Handle#state{position = LogPos}};
 storage_apply({delete, _Table, Key}, LogPos, Handle) ->
-    {storage_delete(Handle, LogPos, Key), Handle};
+    {storage_delete(Handle, LogPos, Key), Handle#state{position = LogPos}};
 storage_apply({write, _Table, Key, Value}, LogPos, Handle) ->
-    {storage_write(Handle, LogPos, Key, Value, #{}), Handle};
-storage_apply(noop, _LogPos, Handle) ->
-    {ok, Handle};
+    {storage_write(Handle, LogPos, Key, Value, #{}), Handle#state{position = LogPos}};
+storage_apply(noop, LogPos, Handle) ->
+    {ok, Handle#state{position = LogPos}};
 storage_apply(Command, LogPos, Handle) ->
     ?LOG_ERROR("Unrecognized command ~0p at ~0p", [Command, LogPos]),
-    {{error, enotsup}, Handle}.
+    {{error, enotsup}, Handle#state{position = LogPos}}.
 
--spec storage_write(storage_handle(), wa_raft_log:log_pos(), term(), binary(), map()) -> {ok, wa_raft_log:log_index()} | wa_raft_storage:error().
-storage_write({Table, Partition}, #raft_log_pos{index = LogIndex, term = LogTerm}, Key, Value, Header) ->
+-spec storage_write(#state{}, wa_raft_log:log_pos(), term(), binary(), map()) -> {ok, wa_raft_log:log_index()} | wa_raft_storage:error().
+storage_write(#state{table = Table, partition = Partition}, #raft_log_pos{index = LogIndex, term = LogTerm}, Key, Value, Header) ->
     Tab = wa_raft_storage:registered_name(Table, Partition),
     true = ets:insert(Tab, {Key, {LogIndex, LogTerm, Header, Value}}),
     {ok, LogIndex}.
 
--spec storage_read(storage_handle(), term()) ->
+-spec storage_read(#state{} | {wa_raft:table(), wa_raft:partition()}, term()) ->
     {ok, {wa_raft_log:log_index(), wa_raft_log:log_term(), map(), binary()} | {undefined, undefined, map(), undefined}} | wa_raft_storage:error().
 storage_read({Table, Partition}, Key) ->
     Tab = wa_raft_storage:registered_name(Table, Partition),
@@ -132,39 +147,22 @@ storage_read({Table, Partition}, Key) ->
             ?LOG_ERROR("Read table ~p key ~p error ~p", [Tab, Key, Error], #{domain => [whatsapp, wa_raft]}),
             ?RAFT_COUNT('raft.ets.read.error'),
             {error, enoent}
-    end.
+    end;
+storage_read(#state{table = Table, partition = Partition}, Key) ->
+    storage_read({Table, Partition}, Key).
 
--spec storage_read_version(storage_handle(), term()) -> wa_raft_log:log_index() | undefined | wa_raft_storage:error().
-storage_read_version({Table, Partition}, Key) ->
-    Tab = wa_raft_storage:registered_name(Table, Partition),
-    try ets:lookup(Tab, Key) of
-        [{_, {LogIndex, _LogTerm, _Header, _Value}}] -> LogIndex;
-        [] -> undefined
-    catch
-        _:Error ->
-            ?LOG_ERROR("Read table ~p key ~p error ~p", [Tab, Key, Error], #{domain => [whatsapp, wa_raft]}),
-            ?RAFT_COUNT('raft.ets.read_version.error'),
-            {error, enoent}
-    end.
-
--spec storage_delete(storage_handle(), wa_raft_log:log_pos(), term()) -> ok.
-storage_delete({Table, Partition}, _LogPos, Key) ->
+-spec storage_delete(#state{}, wa_raft_log:log_pos(), term()) -> ok.
+storage_delete(#state{table = Table, partition = Partition}, _LogPos, Key) ->
     Tab = wa_raft_storage:registered_name(Table, Partition),
     true = ets:delete(Tab, Key),
     ok.
 
--spec storage_match_delete(storage_handle(), term(), wa_raft_log:log_index(), wa_raft_log:log_term()) -> ok.
-storage_match_delete({Table, Partition}, Key, MatchLogIndex, MatchLogTerm) ->
-    Tab = wa_raft_storage:registered_name(Table, Partition),
-    true = ets:match_delete(Tab, {Key, {MatchLogIndex, MatchLogTerm, '_', '_'}}),
-    ok.
-
--spec storage_write_metadata(storage_handle(), wa_raft_storage:metadata(), wa_raft_log:log_pos(), term()) -> ok | wa_raft_storage:error().
+-spec storage_write_metadata(#state{}, wa_raft_storage:metadata(), wa_raft_log:log_pos(), term()) -> ok | wa_raft_storage:error().
 storage_write_metadata(Handle, Key, Version, Value) ->
     {ok, _Index} = storage_write(Handle, Version, {?METADATA_TAG, Key}, term_to_binary(Value), #{}),
     ok.
 
--spec storage_read_metadata(storage_handle(), wa_raft_storage:metadata()) -> {ok, wa_raft_log:log_pos(), term()} | undefined | wa_raft_storage:error().
+-spec storage_read_metadata(#state{}, wa_raft_storage:metadata()) -> {ok, wa_raft_log:log_pos(), term()} | undefined | wa_raft_storage:error().
 storage_read_metadata(Handle, Key) ->
     case storage_read(Handle, {?METADATA_TAG, Key}) of
         {ok, {undefined, _, _, _}} ->

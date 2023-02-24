@@ -76,9 +76,11 @@
 
 %% Storage plugin need implement the following mandatory callbacks to integrate with raft protocol.
 %% Callback to open storage handle for operations
--callback storage_open(#raft_storage{}) -> {wa_raft_log:log_pos(), storage_handle()} | error().
+-callback storage_open(atom(), wa_raft:table(), wa_raft:partition(), file:filename()) -> storage_handle().
+%% Callback to get current "position" of the storage FSM
+-callback storage_position(storage_handle()) -> wa_raft_log:log_pos().
 %% Callback to close storage handle
--callback storage_close(storage_handle(), #raft_storage{}) -> ok | error().
+-callback storage_close(storage_handle()) -> term().
 %% Callback to apply an update to storage
 -callback storage_apply(wa_raft_acceptor:command(), wa_raft_log:log_pos(), Handle :: storage_handle()) -> {term() | error(), storage_handle()}.
 %% Callback to create a snapshot for current storage state
@@ -89,7 +91,7 @@
 %% Callback to delete snapshot
 -callback storage_delete_snapshot(string(), #raft_storage{}) -> ok | error().
 %% Callback to open storage handle from a snapshot
--callback storage_open_snapshot(#raft_snapshot{}, #raft_storage{}) -> {wa_raft_log:log_pos(), storage_handle()} | error().
+-callback storage_open_snapshot(#raft_snapshot{}, storage_handle()) -> {ok, storage_handle()} | wa_raft_storage:error().
 
 %% Callback to get the status of the RAFT storage module
 -callback storage_status(Handle :: storage_handle()) -> proplists:proplist().
@@ -98,22 +100,6 @@
 -callback storage_write_metadata(Handle :: storage_handle(), Key :: metadata(), Version :: wa_raft_log:log_pos(), Value :: term()) -> ok | error().
 %% Callback to read RAFT cluster state values
 -callback storage_read_metadata(Handle :: storage_handle(), Key :: metadata()) -> {ok, Version :: wa_raft_log:log_pos(), Value :: term()} | undefined | error().
-
-%% Optional callback to write key value for given log pos
--callback storage_write(storage_handle(), wa_raft_log:log_pos(), term(), binary(), map()) -> {ok, wa_raft_log:log_index()} | error().
-%% Optional callback to read value for given key
--callback storage_read(storage_handle(), term()) -> {ok, {wa_raft_log:log_index(), wa_raft_log:log_term(), map(), binary()} | {undefined, undefined, map(), undefined}} | error().
-%% Optional callback to read version for given key
--callback storage_read_version(storage_handle(), term()) -> wa_raft_log:log_index() | undefined | error().
-%% Optional callback to delete for given key
--callback storage_delete(storage_handle(), wa_raft_log:log_pos(), term()) -> ok | error().
-
--optional_callbacks([
-    storage_read/2,
-    storage_read_version/2,
-    storage_write/5,
-    storage_delete/3
-]).
 
 -type metadata() :: config | atom().
 -type storage_handle() :: eqwalizer:dynamic().
@@ -214,10 +200,21 @@ init(#raft_options{table = Table, partition = Partition, database = RootDir, sto
     ?LOG_NOTICE("Storage[~0p] starting for partition ~0p/~0p at ~0p using ~0p",
         [Name, Table, Partition, RootDir, Module], #{domain => [whatsapp, wa_raft]}),
 
-    State0 = #raft_storage{name = Name, table = Table, partition = Partition, root_dir = RootDir, module = Module},
-    {LastApplied, Handle} = Module:storage_open(State0),
-    State1 = State0#raft_storage{last_applied = LastApplied, handle = Handle},
-    {ok, State1}.
+    Handle = Module:storage_open(Name, Table, Partition, RootDir),
+    LastApplied = Module:storage_position(Handle),
+
+    ?LOG_NOTICE("Storage[~0p] opened at position ~0p.",
+        [Name, LastApplied], #{domain => [whatsapp, wa_raft]}),
+
+    {ok, #raft_storage{
+        name = Name,
+        table = Table,
+        partition = Partition,
+        root_dir = RootDir,
+        module = Module,
+        handle = Handle,
+        last_applied = LastApplied
+    }}.
 
 %% The interaction between the RAFT server and the RAFT storage server is designed to be
 %% as asynchronous as possible since the RAFT storage server may be caught up in handling
@@ -258,15 +255,12 @@ handle_call({snapshot_create_empty, Name}, _From, #raft_storage{module = Module}
     Result = Module:storage_create_empty_snapshot(Name, State),
     {reply, Result, State};
 
-handle_call({snapshot_open, #raft_log_pos{index = LastIndex, term = LastTerm} = LogPos}, _From, #raft_storage{name = Name, module = Module, handle = OldHandle} = State) ->
-    ?LOG_NOTICE("~100p reads snapshot at ~200p.", [Name, LogPos], #{domain => [whatsapp, wa_raft]}),
-    ok = Module:storage_close(OldHandle, State),
+handle_call({snapshot_open, #raft_log_pos{index = LastIndex, term = LastTerm} = LogPos}, _From, #raft_storage{name = Name, module = Module, handle = Handle, last_applied = LastApplied} = State) ->
+    ?LOG_NOTICE("Storage[~0p] replacing storage at ~0p with snapshot at ~0p.", [Name, LastApplied, LogPos], #{domain => [whatsapp, wa_raft]}),
     Snapshot = #raft_snapshot{name = ?SNAPSHOT_NAME(LastIndex, LastTerm), last_applied = LogPos},
-    case Module:storage_open_snapshot(Snapshot, State) of
-        {error, Reason} ->
-            {reply, {error, Reason}, State};
-        {_LastApplied, NewHandle} ->
-            {reply, ok, State#raft_storage{last_applied = LogPos, handle = NewHandle}}
+    case Module:storage_open_snapshot(Snapshot, Handle) of
+        {ok, NewHandle} -> {reply, ok, State#raft_storage{last_applied = LogPos, handle = NewHandle}};
+        {error, Reason} -> {reply, {error, Reason}, State}
     end;
 
 handle_call({read_metadata, Key}, _From, #raft_storage{module = Module, handle = Handle} = State) ->
@@ -324,16 +318,10 @@ handle_info(Command, State) ->
     ?LOG_WARNING("Unexpected info ~p", [Command], #{domain => [whatsapp, wa_raft]}),
     {noreply, State}.
 
--spec terminate(Reason :: term(), State0 :: #raft_storage{}) -> State1 :: #raft_storage{}.
-terminate(Reason, #raft_storage{name = Name, module = Module, handle = Handle} = State) ->
-    try
-        Module:storage_close(Handle, State),
-        ?LOG_NOTICE("Storage ~p terminated for reason ~p", [Name, Reason], #{domain => [whatsapp, wa_raft]})
-    catch
-        _T:Error:Stack ->
-            ?LOG_ERROR("Storage ~p error ~p stack ~0P", [Name, Error, Stack, 100], #{domain => [whatsapp, wa_raft]})
-    end,
-    State.
+-spec terminate(Reason :: term(), State :: #raft_storage{}) -> term().
+terminate(Reason, #raft_storage{name = Name, module = Module, handle = Handle, last_applied = LastApplied}) ->
+    ?LOG_NOTICE("Storage[~0p] terminating at ~0p with reason ~0p.", [Name, LastApplied, Reason], #{domain => [whatsapp, wa_raft]}),
+    Module:storage_close(Handle).
 
 -spec code_change(_OldVsn :: term(), State :: #raft_storage{}, Extra :: term()) -> {ok, State :: #raft_storage{}}.
 code_change(_OldVsn, State, _Extra) ->

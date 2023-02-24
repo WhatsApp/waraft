@@ -50,7 +50,8 @@
 %% Snapshot name
 -define(SNAPSHOT_NAME(Index, Term), (?SNAPSHOT_PREFIX "." ++ integer_to_list(Index) ++ "." ++ integer_to_list(Term))).
 %% Location of a snapshot
--define(RAFT_SNAPSHOT_PATH(Table, Partition, Name), (filename:join(?RAFT_PARTITION_PATH(Table, Partition), Name))).
+-define(RAFT_SNAPSHOT_PATH(Path, Name), (filename:join(Path, Name))).
+-define(RAFT_SNAPSHOT_PATH(Table, Partition, Name), ?RAFT_SNAPSHOT_PATH(?RAFT_PARTITION_PATH(Table, Partition), Name)).
 -define(RAFT_SNAPSHOT_PATH(Table, Partition, Index, Term), ?RAFT_SNAPSHOT_PATH(Table, Partition, ?SNAPSHOT_NAME(Index, Term))).
 
 %% Counters
