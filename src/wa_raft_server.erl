@@ -783,8 +783,9 @@ leader(state_timeout, _, #raft_state{application = App, name = Name, current_ter
     State1 = append_entries_to_followers(State0),
     case ?RAFT_LEADER_ELIGIBLE(App) andalso ?RAFT_ELECTION_WEIGHT(App) =/= 0 of
         true ->
-            check_leader_lagging(State1),
-            {keep_state, State1, ?HEARTBEAT_TIMEOUT(State1)};
+            State2 = apply_single_node_cluster(State1),
+            check_leader_lagging(State2),
+            {keep_state, State1, ?HEARTBEAT_TIMEOUT(State2)};
         false ->
             ?LOG_NOTICE("Leader[~p, term ~p] resigns from leadership because this node is ineligible or election weight is zero.",
                 [Name, CurrentTerm], #{domain => [whatsapp, wa_raft]}),
@@ -815,20 +816,27 @@ leader(cast, ?COMMIT_COMMAND(Op), #raft_state{application = App, current_term = 
 
 %% [Strong Read] Leader is eligible to serve strong reads.
 leader(cast, ?READ_COMMAND({From, Command}),
-       #raft_state{name = Name, table = Table, partition = Partition,log_view = View0, current_term = CurrentTerm,
-                   commit_index = CommitIndex, first_current_term_log_index = FirstLogIndex} = State0) ->
+       #raft_state{name = Name, table = Table, partition = Partition, log_view = View0, storage = Storage,
+                   current_term = CurrentTerm, commit_index = CommitIndex, last_applied = LastApplied, first_current_term_log_index = FirstLogIndex} = State0) ->
     ?LOG_DEBUG("Leader[~p, term ~p] receives strong read request", [Name, CurrentTerm]),
-    ReadIndex = max(CommitIndex, FirstLogIndex),
-    Pending = wa_raft_log:pending(View0),
     LastLogIndex = wa_raft_log:last_index(View0),
-    ok = wa_raft_queue:submit_read(Table, Partition, ReadIndex + 1, From, Command),
-    {ok, View1} = case ReadIndex < LastLogIndex orelse Pending > 0 of
-        true  -> {ok, View0};
-        % TODO(hsun324): Try to reuse the commit code to deal with placeholder ops so we
-        % handle batching and timeout properly instead of relying on a previously set timeout.
-        false -> wa_raft_log:submit(View0, {CurrentTerm, {?READ_OP, noop}})
-    end,
-    {keep_state, State0#raft_state{log_view = View1}};
+    Pending = wa_raft_log:pending(View0),
+    ReadIndex = max(CommitIndex, FirstLogIndex),
+    case config_membership(config(State0)) of
+        % If we are a single node cluster and we are fully-applied, then immediately dispatch.
+        [{Name, Node}] when Node =:= node(), Pending =:= 0, ReadIndex =:= LastApplied ->
+            wa_raft_storage:read(Storage, From, Command),
+            {keep_state, State0};
+        _ ->
+            ok = wa_raft_queue:submit_read(Table, Partition, ReadIndex + 1, From, Command),
+            {ok, View1} = case ReadIndex < LastLogIndex orelse Pending > 0 of
+                true  -> {ok, View0};
+                % TODO(hsun324): Try to reuse the commit code to deal with placeholder ops so we
+                % handle batching and timeout properly instead of relying on a previously set timeout.
+                false -> wa_raft_log:submit(View0, {CurrentTerm, {?READ_OP, noop}})
+            end,
+            {keep_state, State0#raft_state{log_view = View1}}
+    end;
 
 %% [Resign] Leader resigns by switching to follower state.
 leader(Type, ?RESIGN_COMMAND, #raft_state{name = Name, current_term = CurrentTerm} = State0) ->

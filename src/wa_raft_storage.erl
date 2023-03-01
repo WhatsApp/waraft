@@ -25,6 +25,7 @@
 -export([
     apply_op/3,
     fulfill_op/3,
+    read/3,
     cancel/1
 ]).
 
@@ -136,6 +137,10 @@ apply_op(ServiceRef, LogRecord, ServerTerm) ->
 -spec fulfill_op(ServiceRef :: pid() | atom(), Reference :: term(), Reply :: term()) -> ok.
 fulfill_op(ServiceRef, OpRef, Return) ->
     gen_server:cast(ServiceRef, {fulfill, OpRef, Return}).
+
+-spec read(ServiceRef :: pid() | atom(), From :: gen_server:from(), Op :: wa_raft_acceptor:command()) -> ok.
+read(ServiceRef, From, Op) ->
+    gen_server:cast(ServiceRef, {read, From, Op}).
 
 -spec cancel(ServiceRef :: pid() | atom()) -> ok.
 cancel(ServiceRef) ->
@@ -272,7 +277,8 @@ handle_call(Cmd, From, #raft_storage{name = Name} = State) ->
     when Request ::
         cancel |
         {fulfill, term(), term()} |
-        {appy, LogRecord :: wa_raft_log:log_record(), ServerTerm :: wa_raft_log:log_term()} |
+        {read, gen_server:from(), wa_raft_acceptor:command()} |
+        {apply, LogRecord :: wa_raft_log:log_record(), ServerTerm :: wa_raft_log:log_term()} |
         {snapshot_delete, Name :: string()}.
 handle_cast(cancel, State0) ->
     State1 = cancel_pending_commits(State0),
@@ -282,6 +288,11 @@ handle_cast(cancel, State0) ->
 handle_cast({fulfill, Ref, Return}, State0) ->
     State1 = reply(Ref, Return, State0),
     {noreply, State1};
+
+handle_cast({read, From, Command}, #raft_storage{last_applied = LastApplied} = State) ->
+    {Reply, _} = execute(Command, LastApplied, State),
+    gen_server:reply(From, Reply),
+    {noreply, State};
 
 % Apply an op after consensus is made
 handle_cast({apply, {LogIndex, {LogTerm, _}} = LogRecord, ServerTerm}, #raft_storage{name = Name} = State0) ->
