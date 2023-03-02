@@ -82,13 +82,12 @@
 %% Callback to close storage handle
 -callback storage_close(storage_handle()) -> term().
 %% Callback to apply an update to storage
--callback storage_apply(wa_raft_acceptor:command(), wa_raft_log:log_pos(), Handle :: storage_handle()) -> {term() | error(), storage_handle()}.
+-callback storage_apply(wa_raft_acceptor:command(), wa_raft_log:log_pos(), storage_handle()) -> {eqwalizer:dynamic(), storage_handle()}.
+
 %% Callback to create a snapshot for current storage state
--callback storage_create_snapshot(string(), #raft_storage{}) -> ok | error().
-%% Callback to delete snapshot
--callback storage_delete_snapshot(string(), #raft_storage{}) -> ok | error().
+-callback storage_create_snapshot(file:filename(), storage_handle()) -> ok | error().
 %% Callback to open storage handle from a snapshot
--callback storage_open_snapshot(#raft_snapshot{}, storage_handle()) -> {ok, storage_handle()} | wa_raft_storage:error().
+-callback storage_open_snapshot(file:filename(), wa_raft_log:log_pos(), storage_handle()) -> {ok, storage_handle()} | wa_raft_storage:error().
 
 %% Callback to get the status of the RAFT storage module
 -callback storage_status(Handle :: storage_handle()) -> proplists:proplist().
@@ -245,10 +244,10 @@ handle_call({snapshot_create, Name}, _From, State) ->
     Result = create_snapshot_impl(Name, State),
     {reply, Result, State};
 
-handle_call({snapshot_open, #raft_log_pos{index = LastIndex, term = LastTerm} = LogPos}, _From, #raft_storage{name = Name, module = Module, handle = Handle, last_applied = LastApplied} = State) ->
+handle_call({snapshot_open, #raft_log_pos{index = LastIndex, term = LastTerm} = LogPos}, _From, #raft_storage{name = Name, root_dir = RootDir, module = Module, handle = Handle, last_applied = LastApplied} = State) ->
     ?LOG_NOTICE("Storage[~0p] replacing storage at ~0p with snapshot at ~0p.", [Name, LastApplied, LogPos], #{domain => [whatsapp, wa_raft]}),
-    Snapshot = #raft_snapshot{name = ?SNAPSHOT_NAME(LastIndex, LastTerm), last_applied = LogPos},
-    case Module:storage_open_snapshot(Snapshot, Handle) of
+    SnapshotPath = filename:join(RootDir, ?SNAPSHOT_NAME(LastIndex, LastTerm)),
+    case Module:storage_open_snapshot(SnapshotPath, LogPos, Handle) of
         {ok, NewHandle} -> {reply, ok, State#raft_storage{last_applied = LogPos, handle = NewHandle}};
         {error, Reason} -> {reply, {error, Reason}, State}
     end;
@@ -300,8 +299,8 @@ handle_cast({apply, {LogIndex, {LogTerm, _}} = LogRecord, ServerTerm}, #raft_sto
     State1 = apply_impl(LogRecord, ServerTerm, State0),
     {noreply, State1};
 
-handle_cast({snapshot_delete, SnapName}, #raft_storage{name = Name, module = Module} = State) ->
-    Result = Module:storage_delete_snapshot(SnapName, State),
+handle_cast({snapshot_delete, SnapName}, #raft_storage{name = Name, root_dir = RootDir} = State) ->
+    Result = catch file:del_dir_r(filename:join(RootDir, SnapName)),
     ?LOG_NOTICE("~100p delete snapshot ~p. result ~p", [Name, SnapName, Result], #{domain => [whatsapp, wa_raft]}),
     {noreply, State};
 
@@ -402,52 +401,56 @@ cancel_pending_reads(#raft_storage{table = Table, partition = Partition, name = 
     wa_raft_queue:fulfill_all_reads(Table, Partition, {error, not_leader}),
     State.
 
--spec list_snapshots(RootDir :: string()) -> [#raft_snapshot{}].
-list_snapshots(RootDir) ->
-    Dirs = filelib:wildcard(?SNAPSHOT_PREFIX ++ ".*", RootDir),
-    Snapshots = lists:foldl(fun decode_snapshot_name/2, [], Dirs),
-    lists:keysort(#raft_snapshot.last_applied, Snapshots).
-
 -spec create_snapshot_impl(SnapName :: string(), Storage :: #raft_storage{}) -> ok | error().
-create_snapshot_impl(SnapName, #raft_storage{name = Name, root_dir = RootDir, module = Module} = State) ->
-    case filelib:is_dir(filename:join(RootDir, SnapName)) of
+create_snapshot_impl(SnapName, #raft_storage{name = Name, root_dir = RootDir, module = Module, handle = Handle} = State) ->
+    SnapshotPath = filename:join(RootDir, SnapName),
+    case filelib:is_dir(SnapshotPath) of
         true ->
             ?LOG_NOTICE("Snapshot ~s for ~p already exists. Skipping snapshot creation.", [SnapName, Name], #{domain => [whatsapp, wa_raft]}),
             ok;
         false ->
             cleanup_snapshots(State),
             ?LOG_NOTICE("Create snapshot ~s for ~p.", [SnapName, Name], #{domain => [whatsapp, wa_raft]}),
-            Module:storage_create_snapshot(SnapName, State)
+            Module:storage_create_snapshot(SnapshotPath, Handle)
     end.
 
 -define(MAX_RETAINED_SNAPSHOT, 1).
 
 -spec cleanup_snapshots(#raft_storage{}) -> ok.
-cleanup_snapshots(#raft_storage{root_dir = RootDir, module = Module} = State) ->
-    SnapshotDirs = [Dir || #raft_snapshot{name = Dir} <- list_snapshots(RootDir)],
-    case length(SnapshotDirs) > ?MAX_RETAINED_SNAPSHOT of
+cleanup_snapshots(#raft_storage{root_dir = RootDir}) ->
+    Snapshots = list_snapshots(RootDir),
+    case length(Snapshots) > ?MAX_RETAINED_SNAPSHOT of
         true ->
-            ToBeRemoved = lists:sublist(SnapshotDirs, length(SnapshotDirs) - ?MAX_RETAINED_SNAPSHOT),
-            ?LOG_NOTICE("Remove snapshot ~p", [ToBeRemoved], #{domain => [whatsapp, wa_raft]}),
-            [ Module:storage_delete_snapshot(Name, State) || Name <- ToBeRemoved],
+            lists:foreach(
+                fun ({_, Name}) ->
+                    SnapshotPath = filename:join(RootDir, Name),
+                    ?LOG_NOTICE("Removing snapshot \"~s\".", [SnapshotPath], #{domain => [whatsapp, wa_raft]}),
+                    file:del_dir_r(SnapshotPath)
+                end, lists:sublist(Snapshots, length(Snapshots) - ?MAX_RETAINED_SNAPSHOT)),
             ok;
         _ ->
             ok
     end.
 
 %% Private functions
--spec decode_snapshot_name(Name :: string(), Acc0 :: [#raft_snapshot{}]) -> Acc1 :: [#raft_snapshot{}].
-decode_snapshot_name(Name, Acc0) ->
+-spec list_snapshots(RootDir :: string()) -> [{wa_raft_log:log_pos(), file:filename()}].
+list_snapshots(RootDir) ->
+    Dirs = filelib:wildcard(?SNAPSHOT_PREFIX ++ ".*", RootDir),
+    Snapshots = lists:filtermap(fun decode_snapshot_name/1, Dirs),
+    lists:keysort(1, Snapshots).
+
+-spec decode_snapshot_name(Name :: string()) -> {true, {wa_raft_log:log_pos(), file:filename()}} | false.
+decode_snapshot_name(Name) ->
     case string:lexemes(Name, ".") of
         [?SNAPSHOT_PREFIX, IndexStr, TermStr] ->
             case {list_to_integer(IndexStr), list_to_integer(TermStr)} of
                 {Index, Term} when Index >= 0 andalso Term >= 0 ->
-                    [#raft_snapshot{name = Name, last_applied = #raft_log_pos{index = Index, term = Term}} | Acc0];
+                    {true, {#raft_log_pos{index = Index, term = Term}, Name}};
                 _ ->
                     ?LOG_WARNING("Invalid snapshot with invalid index (~p) and/or term (~p). (full name ~p)", [IndexStr, TermStr, Name], #{domain => [whatsapp, wa_raft]}),
-                    Acc0
+                    false
             end;
         _ ->
             ?LOG_WARNING("Invalid snapshot dir name ~p", [Name], #{domain => [whatsapp, wa_raft]}),
-            Acc0
+            false
     end.

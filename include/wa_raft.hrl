@@ -424,11 +424,3 @@
     % Last applied position
     last_applied = #raft_log_pos{} :: wa_raft_log:log_pos()
 }).
-
-% Snapshot
--record(raft_snapshot, {
-    % Snapshot name
-    name :: string(),
-    % Last applied log pos
-    last_applied :: wa_raft_log:log_pos()
- }).
