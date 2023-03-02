@@ -97,9 +97,9 @@ handle_cast({request_snapshot_transport, Peer, Table, Partition}, #state{transpo
                             [Table, Partition, Index, Term, ID], #{domain => [whatsapp, wa_raft]}),
                         {noreply, State#state{transports = Transports#{{Peer, Table, Partition} => #transport{id = ID, snapshot = LogPos}}}}
                     catch
-                        T:E:S ->
-                            ?LOG_ERROR("failed to start accepted snapshot transport of ~0p:~0p to ~0p due to ~0p ~0p at ~p",
-                                [Table, Partition, Peer, T, E, S], #{domain => [whatsapp, wa_raft]}),
+                        _T:_E:S ->
+                            ?LOG_ERROR("failed to start accepted snapshot transport of ~0p:~0p to ~0p at ~p",
+                                [Table, Partition, Peer, S], #{domain => [whatsapp, wa_raft]}),
                             {noreply, State}
                     end;
                 false ->
