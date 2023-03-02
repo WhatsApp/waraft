@@ -405,22 +405,3 @@
     %% witness
     witness :: boolean()
 }).
-
-%% Storage state
--record(raft_storage, {
-    % Service name
-    name :: atom(),
-    % Table name
-    table :: wa_raft:table(),
-    % Partition
-    partition :: wa_raft:partition(),
-    % Root dir for
-    root_dir :: string(),
-    % Callback module
-    module :: module(),
-    % Storage handle
-    handle :: wa_raft_storage:storage_handle(),
-
-    % Last applied position
-    last_applied = #raft_log_pos{} :: wa_raft_log:log_pos()
-}).
