@@ -108,7 +108,7 @@ registered_name(Table, Partition) ->
 
 %% Get the registered database directory for the provided RAFT partition. An
 %% error is raised if no registration exists.
--spec registered_partition_path(Table :: wa_raft:table(), Partition :: wa_raft:partition()) -> Database :: file:filename() | undefined.
+-spec registered_partition_path(Table :: wa_raft:table(), Partition :: wa_raft:partition()) -> Database :: file:filename().
 registered_partition_path(Table, Partition) ->
     case wa_raft_part_sup:options(Table, Partition) of
         undefined -> error({not_registered, Table, Partition});
