@@ -54,15 +54,6 @@
 -define(RAFT_SNAPSHOT_PATH(Table, Partition, Name), ?RAFT_SNAPSHOT_PATH(?RAFT_PARTITION_PATH(Table, Partition), Name)).
 -define(RAFT_SNAPSHOT_PATH(Table, Partition, Index, Term), ?RAFT_SNAPSHOT_PATH(Table, Partition, ?SNAPSHOT_NAME(Index, Term))).
 
-%% Counters
--define(RAFT_COUNTERS, raft_counters).
-%% Number of counters
--define(RAFT_NUMBER_OF_GLOBAL_COUNTERS, 2).
-%% Counter - number of snapshot catchup processes
--define(RAFT_GLOBAL_COUNTER_SNAPSHOT_CATCHUP, 1).
-%% Counter - number of log catchup processes
--define(RAFT_GLOBAL_COUNTER_LOG_CATCHUP, 2).
-
 %% [Transport] Atomics - field index for update timestamp
 -define(RAFT_TRANSPORT_ATOMICS_UPDATED_TS, 1).
 %% [Transport] Transport atomics - field count

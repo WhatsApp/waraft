@@ -86,8 +86,17 @@
 %% catchup to the specified node.
 -define(CATCHUP_RECORD(Catchup, Node), {Catchup, Node}).
 
+%% Global key in persistent_term holding an atomic counters reference for
+%% limiting the total number of concurrent catchup by bulk logs transfer.
+-define(COUNTER_KEY, {?MODULE, counters}).
+%% Index of the counter tracking the number of concurrent bulk logs transfer.
+-define(COUNTER_CONCURRENT_CATCHUP, 1).
+%% Total number of counters
+-define(COUNTER_COUNT, 1).
+
 -spec init_tables() -> term().
 init_tables() ->
+    persistent_term:put(?COUNTER_KEY, counters:new(?COUNTER_COUNT, [atomics])),
     ?MODULE = ets:new(?MODULE, [set, public, named_table, {read_concurrency, true}]).
 
 -spec child_spec(Options :: #raft_options{}) -> supervisor:child_spec().
@@ -205,10 +214,10 @@ send_logs(Peer, NextLogIndex, LeaderTerm, LeaderCommitIndex, Witness, #state{nam
     LockoutMillis = maps:get(Peer, Lockouts, 0),
     NewState = case LockoutMillis =< StartMillis of
         true ->
-            Counters = persistent_term:get(?RAFT_COUNTERS),
-            case counters:get(Counters, ?RAFT_GLOBAL_COUNTER_LOG_CATCHUP) < ?RAFT_MAX_CONCURRENT_LOG_CATCHUP() of
+            Counters = persistent_term:get(?COUNTER_KEY),
+            case counters:get(Counters, ?COUNTER_CONCURRENT_CATCHUP) < ?RAFT_MAX_CONCURRENT_LOG_CATCHUP() of
                 true ->
-                    counters:add(Counters, ?RAFT_GLOBAL_COUNTER_LOG_CATCHUP, 1),
+                    counters:add(Counters, ?COUNTER_CONCURRENT_CATCHUP, 1),
                     ets:insert(?MODULE, ?CATCHUP_RECORD(Name, Peer)),
                     try send_logs_impl(Peer, NextLogIndex, LeaderTerm, LeaderCommitIndex, Witness, State) catch
                         T:E:S ->
@@ -216,7 +225,7 @@ send_logs(Peer, NextLogIndex, LeaderTerm, LeaderCommitIndex, Witness, #state{nam
                             ?LOG_ERROR("Catchup[~p, term ~p] bulk logs transfer to ~0p failed with ~0p ~0P at ~p",
                                 [Name, LeaderTerm, Peer, T, E, S], #{domain => [whatsapp, wa_raft]})
                     after
-                        counters:sub(persistent_term:get(?RAFT_COUNTERS), ?RAFT_GLOBAL_COUNTER_LOG_CATCHUP, 1)
+                        counters:sub(persistent_term:get(?COUNTER_KEY), ?COUNTER_CONCURRENT_CATCHUP, 1)
                     end,
                     EndMillis = erlang:system_time(millisecond),
                     ?RAFT_GATHER('raft.leader.catchup.duration', (EndMillis - StartMillis) * 1000),
