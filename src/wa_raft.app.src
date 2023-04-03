@@ -13,7 +13,8 @@
     %% NOTE: No more dependency is expected for this app
     {applications, [
         kernel,
-        stdlib
+        stdlib,
+        eqwalizer_support
     ]},
     {env, []},
     {mod, {wa_raft_app, []}}
