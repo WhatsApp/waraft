@@ -2042,10 +2042,11 @@ heartbeat(?IDENTITY_REQUIRES_MIGRATION(_, FollowerId) = Sender,
     end.
 
 -spec compute_handover_candidates(State :: #raft_state{}) -> [node()].
-compute_handover_candidates(#raft_state{application = App, log_view = View, match_index = MatchIndex}) ->
+compute_handover_candidates(#raft_state{application = App, log_view = View, match_index = MatchIndex} = State) ->
+    Membership = config_membership(config(State)),
     LastLogIndex = wa_raft_log:last_index(View),
     MaxHandoverLogEntries = ?RAFT_HANDOVER_MAX_ENTRIES(App),
-    [Peer || {Peer, Match} <- maps:to_list(MatchIndex), LastLogIndex - Match =< MaxHandoverLogEntries].
+    [Peer || {_Name, Peer} <- Membership, Peer =/= node(), LastLogIndex - maps:get(Peer, MatchIndex, 0) =< MaxHandoverLogEntries].
 
 -spec adjust_config(Action :: {add, peer()} | {remove, peer()} | {add_witness, peer()} | {remove_witness, peer()} | {refresh, undefined},
                     Config :: config(), State :: #raft_state{}) -> {ok, NewConfig :: config()} | {error, Reason :: atom()}.
