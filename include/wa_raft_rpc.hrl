@@ -55,6 +55,15 @@
 -define(REMOTE(Sender, Call), {remote, Sender, Call}).
 
 %%-------------------------------------------------------------------
+%% RAFT Server Internal Events
+%%-------------------------------------------------------------------
+%% An event produced internally within the RAFT server.
+%%-------------------------------------------------------------------
+
+-define(ADVANCE_TERM(Term), {advance_term, Term}).
+-define(FORCE_ELECTION(Term), {force_election, Term}).
+
+%%-------------------------------------------------------------------
 %% RAFT Server API
 %%-------------------------------------------------------------------
 %% The RAFT server also accepts commands issued from other processes

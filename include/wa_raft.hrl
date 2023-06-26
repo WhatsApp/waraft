@@ -333,62 +333,59 @@
 
 %% Raft runtime state
 -record(raft_state, {
-    % Application
+    %% Application
     application :: atom(),
-    % Service name
+    %% Service name
     name :: atom(),
-    % Self identity
+    %% Self identity
     self :: #raft_identity{},
-    % Table name
+    %% Table name
     table :: wa_raft:table(),
-    % Partition
+    %% Partition
     partition :: wa_raft:partition(),
-    % Data dir
+    %% Data dir
     data_dir :: string(),
-    % Log handle and view
+    %% Log handle and view
     log_view :: wa_raft_log:view(),
-    % Module for distribution
+    %% Module for distribution
     distribution_module :: module(),
-    % Storage service name
+    %% Storage service name
     storage :: atom(),
-    % Catchup service name
+    %% Catchup service name
     catchup :: atom(),
 
-    % Current term
-    current_term = 0 :: non_neg_integer(),
-    % Candidate who got my vote in current term
-    voted_for :: undefined | node(),
-    % Log index that committed
+    %% Log index that committed
     commit_index = 0 :: non_neg_integer(),
-    % Log index that applied to storage
+    %% Log index that applied to storage
     last_applied = 0 :: non_neg_integer(),
 
-    % currently cached RAFT configuration and its index
-    %  * at least the most recently applied RAFT configuration
+    %% currently cached RAFT configuration and its index
+    %%  * at least the most recently applied RAFT configuration
     cached_config :: undefined | {wa_raft_log:log_index(), wa_raft_server:config()},
-
-    %% leader
-    next_index = maps:new() :: #{node() => non_neg_integer()},
-    match_index = maps:new() :: #{node() => non_neg_integer()},
-    %% last timestamp in ms when we send heartbeat
-    last_heartbeat_ts = maps:new() :: #{node() => non_neg_integer()},
-    %% Timestamps in milliseconds of last time each follower responded successfully to a heartbeat
-    heartbeat_response_ts = maps:new() :: #{node() => non_neg_integer()},
-    first_current_term_log_index = 0 :: wa_raft_log:log_index(),
-    handover :: undefined | {node(), reference(), integer()},
-
-    %% follower
-    leader_id :: undefined | node(),
     % Timestamp of last heartbeat from leader
     leader_heartbeat_ts :: undefined | pos_integer(),
 
-    %% candidate
-    %% Timestamp (ms) of when the election started (server entered candidate state)
-    election_start_ts :: undefined | erlang:timestamp(),
-    %% The type (normal = heartbeat/election timeout, force = handover) of the next election
-    next_election_type = normal :: normal | force,
-    %% The set of votes that this candidate has received from the cluster so far.
-    votes = maps:new() :: #{node() => boolean()},
+    %% The current RAFT term as locally determined
+    current_term = 0 :: non_neg_integer(),
+    %% The peer that got my vote in the current term
+    voted_for :: undefined | node(),
+    %% The set of votes that this candidate has received from the cluster so far in the current term
+    votes = #{} :: #{node() => boolean()},
+    %% The leader of the current RAFT term if known
+    leader_id :: undefined | node(),
+
+    %% Timestamp in milliseconds (monotonic) of the start of the current state
+    state_start_ts :: non_neg_integer(),
+
+    %% leader
+    next_index = #{} :: #{node() => non_neg_integer()},
+    match_index = #{} :: #{node() => non_neg_integer()},
+    %% last timestamp in ms when we send heartbeat
+    last_heartbeat_ts = #{} :: #{node() => non_neg_integer()},
+    %% Timestamps in milliseconds of last time each follower responded successfully to a heartbeat
+    heartbeat_response_ts = #{} :: #{node() => non_neg_integer()},
+    first_current_term_log_index = 0 :: wa_raft_log:log_index(),
+    handover :: undefined | {node(), reference(), integer()},
 
     %% disabled
     disable_reason :: term(),

@@ -15,11 +15,9 @@
     delete_state/2,
     set_leader/3,
     get_leader/2,
-    set_stale/2,
+    set_stale/3,
     get_stale/2
 ]).
-
--include("wa_raft.hrl").
 
 %% Raft leader node
 -define(RAFT_LEADER_NODE(Table, Partition), {leader, Table, Partition}).
@@ -64,8 +62,8 @@ delete_state(Table, Partition) ->
     ets:delete(?MODULE, ?RAFT_SERVER_STATE(Table, Partition)).
 
 %% Set to true if data on current node is stale. Read on this node may return out-of-dated data
--spec set_stale(boolean(), #raft_state{}) -> true.
-set_stale(Stale, #raft_state{table = Table, partition = Partition}) ->
+-spec set_stale(wa_raft:table(), wa_raft:partition(), boolean()) -> true.
+set_stale(Table, Partition, Stale) ->
     ets:update_element(?MODULE, ?RAFT_STALE_FLAG(Table, Partition), {2, Stale})
         orelse ets:insert(?MODULE, {?RAFT_STALE_FLAG(Table, Partition), Stale}).
 
