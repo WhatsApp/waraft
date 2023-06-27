@@ -1221,9 +1221,10 @@ candidate(internal, ?ADVANCE_TERM(Term), #raft_state{name = Name, current_term =
         [Name, CurrentTerm, Term], #{domain => [whatsapp, wa_raft]}),
     keep_state_and_data;
 
-%% [ForceElection] Resend vote requests with the 'force' type to force an election even
-%%                 if an active leader is available.
-candidate(internal, ?FORCE_ELECTION(Term), #raft_state{log_view = View, current_term = CurrentTerm} = State) when Term + 1 =:= CurrentTerm ->
+%% [ForceElection] Resend vote requests with the 'force' type to force an election even if an active leader is available.
+candidate(internal, ?FORCE_ELECTION(Term), #raft_state{name = Name, log_view = View, current_term = CurrentTerm} = State) when Term + 1 =:= CurrentTerm ->
+    ?LOG_NOTICE("Candidate[~p, term ~p] accepts request to force election issued by the immediately prior term ~0p.",
+        [Name, CurrentTerm, Term], #{domain => [whatsapp, wa_raft]}),
     % No changes to the log are expected during an election so we can just reload these values from the log view.
     LastLogIndex = wa_raft_log:last_index(View),
     {ok, LastLogTerm} = wa_raft_log:term(View, LastLogIndex),
