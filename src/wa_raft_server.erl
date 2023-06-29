@@ -1102,16 +1102,48 @@ follower(_Type, ?REMOTE(Sender, ?APPEND_ENTRIES_RESPONSE(_PrevLogIndex, _Success
         [Name, CurrentTerm, Sender], #{domain => [whatsapp, wa_raft]}),
     keep_state_and_data;
 
-%% [Follower] Handle RequestVote RPC (5.2)
-%% [RequestVote] Follower receives a vote request from another node
-follower(_Type, ?REMOTE(Sender, ?REQUEST_VOTE(_ElectionType, LastLogIndex, LastLogTerm)), State) ->
-    State1 = vote(Sender, LastLogIndex, LastLogTerm, State),
-    {keep_state, State1};
+%% [Follower] Handle RequestVote RPCs (5.2)
+%% [RequestVote] A follower with an unallocated vote should decide if the requesting candidate is eligible to receive
+%%               its vote for the current term and affirm or reject accordingly.
+follower(_Type, ?REMOTE(?IDENTITY_REQUIRES_MIGRATION(_, CandidateId) = Candidate, ?REQUEST_VOTE(_ElectionType, CandidateIndex, CandidateTerm)),
+         #raft_state{name = Name, log_view = View, current_term = CurrentTerm, voted_for = undefined} = State) ->
+    Index = wa_raft_log:last_index(View),
+    {ok, Term} = wa_raft_log:term(View, Index),
+    % Followers should only vote for candidates whose logs are at least as up-to-date as the local log.
+    % Logs are ordered in up-to-dateness by the lexicographic order of the {Term, Index} pair of their latest entry. (5.4.1)
+    case {CandidateTerm, CandidateIndex} >= {Term, Index} of
+        true ->
+            ?LOG_NOTICE("Follower[~p, term ~p] decides to vote for candidate ~0p with up-to-date log at ~0p:~0p versus local log at ~0p:~0p.",
+                [Name, CurrentTerm, Candidate, CandidateIndex, CandidateTerm, Index, Term], #{domain => [whatsapp, wa_raft]}),
+            NewState = State#raft_state{voted_for = CandidateId},
+            % Persist the vote to stable storage before responding to the vote request. (Fig. 2)
+            wa_raft_durable_state:store(NewState),
+            send_rpc(Candidate, ?VOTE(true), State),
+            {keep_state, NewState};
+        false ->
+            ?LOG_NOTICE("Follower[~p, term ~p] refuses to vote for candidate ~0p with outdated log at ~0p:~0p versus local log at ~0p:~0p.",
+                [Name, CurrentTerm, Candidate, CandidateIndex, CandidateTerm, Index, Term], #{domain => [whatsapp, wa_raft]}),
+            send_rpc(Candidate, ?VOTE(false), State),
+            keep_state_and_data
+    end;
+%% [RequestVote] A follower should affirm any vote requests for the candidate it already voted for in the current term.
+follower(_Type, ?REMOTE(?IDENTITY_REQUIRES_MIGRATION(_, CandidateId) = Candidate, ?REQUEST_VOTE(_ElectionType, _CandidateIndex, _CandidateTerm)),
+         #raft_state{name = Name, current_term = CurrentTerm, voted_for = CandidateId} = State) ->
+    ?LOG_NOTICE("Follower[~p, term ~p] repeating prior vote for candidate ~0p.",
+        [Name, CurrentTerm, Candidate], #{domain => [whatsapp, wa_raft]}),
+    send_rpc(Candidate, ?VOTE(true), State),
+    keep_state_and_data;
+%% [RequestVote] A follower should reject any vote requests for the candidate it did not vote for in the current term.
+follower(_Type, ?REMOTE(Candidate, ?REQUEST_VOTE(_ElectionType, _CandidateIndex, _CandidateTerm)),
+         #raft_state{name = Name, current_term = CurrentTerm, voted_for = VotedFor} = State) ->
+    ?LOG_NOTICE("Follower[~p, term ~p] refusing to vote for candidate ~0p after previously voting for candidate ~0p in the current term.",
+        [Name, CurrentTerm, Candidate, VotedFor], #{domain => [whatsapp, wa_raft]}),
+    send_rpc(Candidate, ?VOTE(false), State),
+    keep_state_and_data;
 
-%% [Follower] Handle RequestVote RPC response (5.2)
-%% [Vote] A follower has already lost the election for a term, so drop any vote responses
-follower(_Type, ?REMOTE(Sender, ?VOTE(Voted)),
-         #raft_state{name = Name, current_term = CurrentTerm}) ->
+%% [Follower] Handle responses to RequestVote RPCs (5.2)
+%% [Vote] A follower should ignore any votes before it never initiated or has already lost the election for the current term.
+follower(_Type, ?REMOTE(Sender, ?VOTE(Voted)), #raft_state{name = Name, current_term = CurrentTerm}) ->
     ?LOG_WARNING("Follower[~p, term ~p] got extra vote ~p from ~p.",
         [Name, CurrentTerm, Voted, Sender], #{domain => [whatsapp, wa_raft]}),
     keep_state_and_data;
@@ -1259,8 +1291,9 @@ candidate(cast, ?REMOTE(?IDENTITY_REQUIRES_MIGRATION(_, NodeId), ?VOTE(true)),
             Duration = erlang:monotonic_time(millisecond) - StateStartTs,
             LastIndex = wa_raft_log:last_index(View),
             {ok, LastTerm} = wa_raft_log:term(View, LastIndex),
-            ?LOG_NOTICE("Candidate[~0p, term ~0p] is becoming leader with last log ~0p:~0p and votes ~0p. Election took ~0p ms.",
-                [Name, CurrentTerm, LastIndex, LastTerm, Votes1, Duration], #{domain => [whatsapp, wa_raft]}),
+            EstablishedQuorum = [Peer || {Peer, true} <- maps:to_list(Votes1)],
+            ?LOG_NOTICE("Candidate[~0p, term ~0p] is becoming leader after ~0p ms with log at ~0p:~0p and votes from ~0p.",
+                [Name, CurrentTerm, Duration, LastIndex, LastTerm, EstablishedQuorum], #{domain => [whatsapp, wa_raft]}),
             ?RAFT_GATHER('raft.candidate.election.duration', Duration),
             {next_state, leader, State1};
         false ->
@@ -1487,7 +1520,7 @@ command(StateName, cast, ?READ_COMMAND({From, _}),
 command(StateName, {call, From}, ?STATUS_COMMAND, State) ->
     Status = [
         {state, StateName},
-        {id, node()},
+        {id, State#raft_state.self#raft_identity.node},
         {table, State#raft_state.table},
         {partition, State#raft_state.partition},
         {data_dir, State#raft_state.data_dir},
@@ -1922,43 +1955,6 @@ append_entries_to_followers(#raft_state{name = Name, log_view = View0, storage =
         fun (Self, #raft_state{self = Self} = StateN) -> StateN;
             (Peer, StateN)                            -> heartbeat(Peer, StateN)
         end, State1, config_identities(config(State1))).
-
-%% Determines the current node's vote for the provided candidate based on
-%% the election requirements and log restriction (5.2, 5.4.1). Cases:
--spec determine_vote(node(), wa_raft_log:log_index(), wa_raft_log:log_term(), #raft_state{}) -> boolean().
-%%  1. current node already voted for another node -> deny vote
-determine_vote(CandidateId, _LastLogIndex, _LastLogTerm, #raft_state{voted_for = VotedFor}) when VotedFor =/= undefined andalso VotedFor =/= CandidateId ->
-    false;
-%%  2. current node has not yet voted for already voted for candidate -> vote if log is at least up-to-date
-determine_vote(_CandidateId, LastLogIndex, LastLogTerm, #raft_state{log_view = View}) ->
-    MyLastIndex = wa_raft_log:last_index(View),
-    {ok, MyLastTerm} = wa_raft_log:term(View, MyLastIndex),
-    %% Raft spec 5.4.1 election rule
-    % - If the logs have last entries with different terms, then the log with the later term is more up-to-date
-    % - If the logs end with the same term, then whichever log is longer is more up-to-date
-    LastLogTerm > MyLastTerm orelse (LastLogTerm =:= MyLastTerm andalso LastLogIndex >= MyLastIndex).
-
-%% Casts a vote for the provided candidate according to `determine_vote`.
--spec vote(#raft_identity{}, wa_raft_log:log_index(), wa_raft_log:log_term(), #raft_state{}) -> #raft_state{}.
-vote(?IDENTITY_REQUIRES_MIGRATION(_, CandidateId) = Sender, LastLogIndex, LastLogTerm, State) ->
-    Vote = determine_vote(CandidateId, LastLogIndex, LastLogTerm, State),
-    % We persist state before responding to request vote RPC.
-    NewState = case Vote of
-        true  -> State#raft_state{voted_for = CandidateId};
-        false -> State
-    end,
-    wa_raft_durable_state:store(NewState),
-    cast_vote(Sender, Vote, State),
-    NewState.
-
--spec cast_vote(#raft_identity{}, boolean(), #raft_state{}) -> ok.
-cast_vote(Sender, Vote, #raft_state{name = Name, current_term = CurrentTerm, log_view = View} = State) ->
-    MyLastIndex = wa_raft_log:last_index(View),
-    {ok, MyLastTerm} = wa_raft_log:term(View, MyLastIndex),
-    ?LOG_NOTICE("~p vote ~p to candidate ~p in term ~p. Current last log ~p:~p",
-        [Name, Vote, Sender, CurrentTerm, MyLastIndex, MyLastTerm], #{domain => [whatsapp, wa_raft]}),
-    send_rpc(Sender, ?VOTE(Vote), State),
-    ok.
 
 %%-------------------------------------------------------------------
 %% RAFT Server State Management
