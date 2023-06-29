@@ -3,19 +3,15 @@
 %%% This source code is licensed under the Apache 2.0 license found in
 %%% the LICENSE file in the root directory of this source tree.
 %%%
-%%% This module implements storage to apply group consensuses. The theory
-%%% is that storage is an finite state machine. If we apply a sequence
-%%% of changes in exactly same order on finite state machines, we get
-%%% identical copies of finite state machines.
-%%%
-%%% A storage could be filesystem, ets, or any other local storage.
-%%% Storage interface is defined as callbacks.
+%%% The RAFT storage server provides functionality for handling the
+%%% state machine replicated by RAFT in a way suitable for implementing
+%%% storage solutions on top the RAFT consensus algorithm.
 
 -module(wa_raft_storage).
 -compile(warn_missing_spec).
 -behaviour(gen_server).
 
-%% OTP supervisor
+%% OTP Supervision
 -export([
     child_spec/1,
     start_link/1
@@ -25,6 +21,7 @@
 -export([
     apply_op/3,
     fulfill_op/3,
+    read/2,
     read/3,
     cancel/1
 ]).
@@ -81,28 +78,170 @@
 -include_lib("kernel/include/logger.hrl").
 -include("wa_raft.hrl").
 
-%% Storage plugin need implement the following mandatory callbacks to integrate with raft protocol.
-%% Callback to open storage handle for operations
--callback storage_open(atom(), wa_raft:table(), wa_raft:partition(), file:filename()) -> storage_handle().
-%% Callback to get current "position" of the storage FSM
--callback storage_position(storage_handle()) -> wa_raft_log:log_pos().
-%% Callback to close storage handle
--callback storage_close(storage_handle()) -> term().
-%% Callback to apply an update to storage
--callback storage_apply(wa_raft_acceptor:command(), wa_raft_log:log_pos(), storage_handle()) -> {eqwalizer:dynamic(), storage_handle()}.
+%%-----------------------------------------------------------------------------
+%% RAFT Storage
+%%-----------------------------------------------------------------------------
+%% The RAFT consensus algorithm provides sequential consistency guarantees by
+%% ensuring the consistent replication of the "RAFT log", which is a sequence
+%% of "write commands", or "log entries". The RAFT algorithm intends for these
+%% entries to be applied sequentially against an underlying state machine. As
+%% this implementation of RAFT is primarily designed for implementation of
+%% storage solutions, we call the underlying state machine the "storage" and
+%% the state of the state machine after the application of each log entry the
+%% "storage state". As the sequence of commands is the same on each replica,
+%% the observable storage state after each log entry should also be the same.
+%%-----------------------------------------------------------------------------
+%% RAFT Storage Provider
+%%-----------------------------------------------------------------------------
+%% This RAFT implementation provides the opportunity for users to define how
+%% exactly the "storage" should be implemented by defining a "storage provider"
+%% module when setting up a RAFT partition.
+%%
+%% Apart from certain expectations of the "position" of the storage state and
+%% metadata stored on behalf of the RAFT implementation, storage providers are
+%% free to handle commands in any way they see fit. However, to take advantage
+%% of the consistency guarantees provided by the RAFT algorithm, it is best to
+%% ensure a fundamental level of consistency, atomicity, and durability.
+%%
+%% The RAFT storage server is designed to be able to tolerate crashes caused
+%% by storage providers. If any callback could not be handled in a way in
+%% which it would be safe to continue operation, then storage providers are
+%% expected to raise an error to reset the RAFT replica to a known good state.
+%%-----------------------------------------------------------------------------
 
-%% Callback to create a snapshot for current storage state
--callback storage_create_snapshot(file:filename(), storage_handle()) -> ok | error().
-%% Callback to open storage handle from a snapshot
--callback storage_open_snapshot(file:filename(), wa_raft_log:log_pos(), storage_handle()) -> {ok, storage_handle()} | wa_raft_storage:error().
+%% Open the storage state for the specified RAFT partition.
+-callback storage_open(Name :: atom(), Table :: wa_raft:table(), Partition :: wa_raft:partition(), PartitionPath :: file:filename()) -> Handle :: storage_handle().
 
-%% Callback to get the status of the RAFT storage module
--callback storage_status(Handle :: storage_handle()) -> proplists:proplist().
+%% Get any custom status to be reported alongside the status reported by the
+%% RAFT storage server.
+-callback storage_status(Handle :: storage_handle()) -> [{atom(), term()}].
+-optional_callbacks([storage_status/1]).
 
-%% Callback to write RAFT cluster state values
+%% Close a previously opened storage state.
+-callback storage_close(Handle :: storage_handle()) -> term().
+
+%%-----------------------------------------------------------------------------
+%% RAFT Storage Provider - Position
+%%-----------------------------------------------------------------------------
+%% The position of a storage state is the log position of the write command
+%% that was most recently applied against the state. This position should be
+%% available anytime immediately after the storage is opened and after any
+%% write command is applied.
+%%-----------------------------------------------------------------------------
+
+%% Issue a read command to get the position of the current storage state.
+-callback storage_position(Handle :: storage_handle()) -> Position :: wa_raft_log:log_pos().
+
+%%-----------------------------------------------------------------------------
+%% RAFT Storage Provider - Write Commands
+%%-----------------------------------------------------------------------------
+%% A "write command" is one that may cause the results of future read or write
+%% commands to produce different results. All write commands are synchronized
+%% by being added to the RAFT log and replicated. The RAFT protocol guarantees
+%% that all replicas will apply all write commands in the same order without
+%% omission. For best behaviour, the handling of write commands should ensure
+%% a fundamental level of consistency, atomicity, and durability.
+%%-----------------------------------------------------------------------------
+%% RAFT Storage Provider - Consistency
+%%-----------------------------------------------------------------------------
+%% For most practical applications, it is sufficient to ensure that, regardless
+%% of the internal details of the starting and intermediate storage states,
+%% two independent applications of the same sequence of write commands produces
+%% a storage state that will continue to produce the same results when any
+%% valid sequence of future commands is applied to both identically.
+%%-----------------------------------------------------------------------------
+%% RAFT Storage Provider - Atomicity and Durability against Failures
+%%-----------------------------------------------------------------------------
+%% As part of ensuring that a RAFT replica can recover from sudden unexpected
+%% failure, storage providers should be able to gracefully recover from the
+%% unexpected termination of the RAFT storage server or node resulting in
+%% the opening of a storage state that was not previously closed or whose
+%% operation was interrupted in the middle of a previous command.
+%%
+%% Generally, ensuring these qualities requires that implementations make
+%% changes that may be saved to a durable media that will persist between
+%% openings of the storage to be performed atomically (either actually or
+%% effectively) so that it is not possible for opening the storage to
+%% result in observing any intermediate state. On the other hand, that any
+%% applied changes are made durable against restart is only necessary insofar
+%% as the log of commands still retains those log entries necessary tt
+%% reproduce the lost changes.
+%%-----------------------------------------------------------------------------
+
+%% Apply a write command against the storage state, updating the state as
+%% required if a standard command or as desired for custom commands.
+%% If the command could not be applied in a manner so as to preserve the
+%% desired consistency guarantee then implementations can raise an error to
+%% cause the apply to be aborted safely.
+-callback storage_apply(Command :: wa_raft_acceptor:command(), Position :: wa_raft_log:log_pos(), Handle :: storage_handle()) -> {Result :: eqwalizer:dynamic(), NewHandle :: storage_handle()}.
+
+%% Apply a write command to update metadata stored by the storage provider
+%% on behalf of the RAFT implementation. Subsequent calls to read metadata
+%% with the same key should return the updated version and value.
+%% If the command could not be applied in a manner so as to preserve the
+%% desired consistency guarantee then implementations can raise an error to
+%% cause the apply to be aborted safely.
 -callback storage_write_metadata(Handle :: storage_handle(), Key :: metadata(), Version :: wa_raft_log:log_pos(), Value :: term()) -> ok | error().
-%% Callback to read RAFT cluster state values
+
+%%-----------------------------------------------------------------------------
+%% RAFT Storage Provider - Read Commands
+%%-----------------------------------------------------------------------------
+%% In some cases, the RAFT implementation may request a storage provider to
+%% handle commands that could require consulting the storage state but are not
+%% commands that were replicated and committed by the RAFT protocol. Such
+%% commands are called "read commands".
+%%
+%% Storage providers are recommended to ensure that the execution of read
+%% commands produce no externally visible side-effects. Ideally, the insertion
+%% or removal of a read command anywhere into the RAFT log (with any number
+%% of other read commands already inserted) would not affect the result
+%% returned by any other command or the results of any future commands.
+%%
+%% Implicitly, use of the `storage_position/1` and `storage_read_metadata/2`
+%% callbacks are non-synchronized access of the storage state and should be
+%% considered to be read commands.
+%%
+%% Not exhaustively, the RAFT implementation uses read commands to access
+%% metadata stored by in the storage state on behalf of the RAFT implementation
+%% or to serve strong read requests issued by users.
+%%-----------------------------------------------------------------------------
+
+%% Apply a read command against the storage state, returning the result of
+%% the read command.
+-callback storage_read(Command :: wa_raft_acceptor:command(), Position :: wa_raft_log:log_pos(), Handle :: storage_handle()) -> Result :: eqwalizer:dynamic().
+
+%% Apply a read command against the storage state to read the most recently
+%% written value of the metadata with the provided key, if such a value exists.
 -callback storage_read_metadata(Handle :: storage_handle(), Key :: metadata()) -> {ok, Version :: wa_raft_log:log_pos(), Value :: term()} | undefined | error().
+
+%%-----------------------------------------------------------------------------
+%% RAFT Storage Provider - Snapshots
+%%-----------------------------------------------------------------------------
+%% A snapshot is a representation of a storage state that can be saved to disk
+%% and transmitted as a set of regular files to another RAFT replica using the
+%% same storage provider and loaded to reproduce an identical storage state.
+%%
+%% Not exhaustively, the RAFT implementation uses snapshots to quickly rebuild
+%% replicas that have fallen significantly behind in replication.
+%%-----------------------------------------------------------------------------
+
+%% Create a new snapshot of the current storage state at the provided path,
+%% producing a directory tree rooted at the provided path that represents the
+%% current storage state. The produced snapshot should retain the current
+%% position when loaded.
+-callback storage_create_snapshot(Path :: file:filename(), Handle :: storage_handle()) -> ok | error().
+
+%% Load a snapshot previously created by the same storage provider, possibly
+%% copied, rooted at the provided path. If successful, the current storage
+%% state should be replaced by the storage state represented by the snapshot.
+%% If a recoverable error occured, the storage state should remain unchanged.
+%% If the storage state is no longer suitable for use, an error should be
+%% raised.
+-callback storage_open_snapshot(Path :: file:filename(), ExpectedPosition :: wa_raft_log:log_pos(), Handle :: storage_handle()) -> {ok, NewHandle :: storage_handle()} | error().
+
+%%-----------------------------------------------------------------------------
+%% RAFT Storage - Types
+%%-----------------------------------------------------------------------------
 
 -type metadata() :: config | atom().
 -type storage_handle() :: eqwalizer:dynamic().
@@ -117,7 +256,6 @@
     | {last_applied, wa_raft_log:log_index()}
     | ModuleSpecificStatus :: {atom(), term()}.
 
-%% Storage state
 -record(state, {
     name :: atom(),
     table :: wa_raft:table(),
@@ -127,6 +265,10 @@
     handle :: storage_handle(),
     last_applied :: wa_raft_log:log_pos()
 }).
+
+%%-----------------------------------------------------------------------------
+%% RAFT Storage - OTP Supervision
+%%-----------------------------------------------------------------------------
 
 -spec child_spec(Options :: #raft_options{}) -> supervisor:child_spec().
 child_spec(Options) ->
@@ -138,10 +280,13 @@ child_spec(Options) ->
         modules => [?MODULE]
     }.
 
-%% Public API
 -spec start_link(Options :: #raft_options{}) -> {'ok', Pid::pid()} | 'ignore' | {'error', Reason::term()}.
 start_link(#raft_options{storage_name = Name} = Options) ->
     gen_server:start_link({local, Name}, ?MODULE, Options, []).
+
+%%-----------------------------------------------------------------------------
+%% RAFT Storage - Public API
+%%-----------------------------------------------------------------------------
 
 -spec status(ServiceRef :: pid() | atom()) -> status().
 status(ServiceRef) ->
@@ -154,6 +299,10 @@ apply_op(ServiceRef, LogRecord, ServerTerm) ->
 -spec fulfill_op(ServiceRef :: pid() | atom(), Reference :: term(), Reply :: term()) -> ok.
 fulfill_op(ServiceRef, OpRef, Return) ->
     gen_server:cast(ServiceRef, {fulfill, OpRef, Return}).
+
+-spec read(ServiceRef :: pid() | atom(), Op :: wa_raft_acceptor:command()) -> ok.
+read(ServiceRef, Op) ->
+    gen_server:call(ServiceRef, {read, Op}).
 
 -spec read(ServiceRef :: pid() | atom(), From :: gen_server:from(), Op :: wa_raft_acceptor:command()) -> ok.
 read(ServiceRef, From, Op) ->
@@ -199,7 +348,7 @@ reset(ServiceRef, Position, Config) ->
 -endif.
 
 %%-------------------------------------------------------------------
-%% Internal API
+%% RAFT Storage - Internal API
 %%-------------------------------------------------------------------
 
 %% Get the default name for the RAFT storage server associated with the
@@ -217,7 +366,10 @@ registered_name(Table, Partition) ->
         Options   -> Options#raft_options.storage_name
     end.
 
-%% gen_server callbacks
+%%-------------------------------------------------------------------
+%% RAFT Storage - Server Callbacks
+%%-------------------------------------------------------------------
+
 -spec init(Options :: #raft_options{}) -> {ok, #state{}}.
 init(#raft_options{table = Table, partition = Partition, database = RootDir, storage_name = Name, storage_module = Module}) ->
     process_flag(trap_exit, true),
@@ -253,12 +405,16 @@ init(#raft_options{table = Table, partition = Partition, database = RootDir, sto
     {stop, Reason :: term(), Reply :: term(), NewState :: #state{}}
     when Request ::
         open |
+        {read, Op :: wa_raft_acceptor:command()} |
         snapshot_create |
         {snapshot_create, Name :: string()} |
         {snapshot_open, LastAppliedPos :: wa_raft_log:log_pos()} |
         {read_metadata, Key :: metadata()}.
 handle_call(open, _From, #state{last_applied = LastApplied} = State) ->
     {reply, {ok, LastApplied}, State};
+
+handle_call({read, Command}, _From, #state{module = Module, handle = Handle, last_applied = Position} = State) ->
+    {reply, Module:storage_read(Command, Position, Handle), State};
 
 handle_call(snapshot_create, _From, #state{last_applied = #raft_log_pos{index = LastIndex, term = LastTerm}} = State) ->
     Name = ?SNAPSHOT_NAME(LastIndex, LastTerm),
@@ -287,15 +443,18 @@ handle_call({read_metadata, Key}, _From, #state{module = Module, handle = Handle
     {reply, Result, State};
 
 handle_call(status, _From, #state{module = Module, handle = Handle} = State) ->
-    Status = [
+    BaseStatus = [
         {name, State#state.name},
         {table, State#state.table},
         {partition, State#state.partition},
         {module, State#state.module},
         {last_applied, State#state.last_applied#raft_log_pos.index}
     ],
-    ModuleStatus = Module:storage_status(Handle),
-    {reply, Status ++ ModuleStatus, State};
+    ModuleStatus = case erlang:function_exported(Module, storage_status, 1) of
+        true  -> Module:storage_status(Handle);
+        false -> []
+    end,
+    {reply, BaseStatus ++ ModuleStatus, State};
 
 handle_call(Cmd, From, #state{name = Name} = State) ->
     ?LOG_WARNING("[~p] unexpected call ~p from ~p", [Name, Cmd, From], #{domain => [whatsapp, wa_raft]}),
@@ -317,9 +476,8 @@ handle_cast({fulfill, Ref, Return}, State0) ->
     State1 = reply(Ref, Return, State0),
     {noreply, State1};
 
-handle_cast({read, From, Command}, #state{last_applied = LastApplied} = State) ->
-    {Reply, _} = execute(Command, LastApplied, State),
-    gen_server:reply(From, Reply),
+handle_cast({read, From, Command}, #state{module = Module, handle = Handle, last_applied = Position} = State) ->
+    gen_server:reply(From, Module:storage_read(Command, Position, Handle)),
     {noreply, State};
 
 % Apply an op after consensus is made
@@ -351,7 +509,9 @@ terminate(Reason, #state{name = Name, module = Module, handle = Handle, last_app
 code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
 
-%% Private functions
+%%-------------------------------------------------------------------
+%% RAFT Storage - Implementation
+%%-------------------------------------------------------------------
 
 -spec apply_impl(Record :: wa_raft_log:log_record(), ServerTerm :: wa_raft_log:log_term(), State :: #state{}) -> NewState :: #state{}.
 apply_impl({LogIndex, {LogTerm, {Ref, _} = Op}}, ServerTerm,
@@ -410,10 +570,10 @@ reply(Ref, Reply, #state{table = Table, partition = Partition} = State) ->
     State.
 
 -spec apply_delayed_reads(State :: #state{}) -> NewState :: #state{}.
-apply_delayed_reads(#state{table = Table, partition = Partition, last_applied = #raft_log_pos{index = LastAppliedIndex} = LastAppliedLogPos} = State) ->
+apply_delayed_reads(#state{table = Table, partition = Partition, module = Module, handle = Handle, last_applied = #raft_log_pos{index = LastAppliedIndex} = LastAppliedLogPos} = State) ->
     lists:foreach(
         fun ({Reference, Command}) ->
-            {Reply, _} = execute(Command, LastAppliedLogPos, State),
+            Reply = Module:storage_read(Command, LastAppliedLogPos, Handle),
             wa_raft_queue:fulfill_read(Table, Partition, Reference, Reply)
         end, wa_raft_queue:query_reads(Table, Partition, LastAppliedIndex)),
     State.
