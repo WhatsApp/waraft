@@ -758,7 +758,7 @@ leader(cast, ?REMOTE(?IDENTITY_REQUIRES_MIGRATION(_, FollowerId) = Sender, ?APPE
 leader(cast, ?REMOTE(?IDENTITY_REQUIRES_MIGRATION(_, FollowerId) = Sender, ?APPEND_ENTRIES_RESPONSE(PrevLogIndex, false, FollowerEndIndex)),
        #raft_state{name = Name, current_term = CurrentTerm, next_index = NextIndex0, match_index = MatchIndex0} = State0) ->
     ?RAFT_COUNT('raft.leader.append.failure'),
-    ?LOG_WARNING( "Leader[~p, term ~p] append failure for follower ~p. Follower reports local log ends at ~0p.",
+    ?LOG_DEBUG("Leader[~p, term ~p] append failure for follower ~p. Follower reports local log ends at ~0p.",
         [Name, CurrentTerm, Sender, FollowerEndIndex], #{domain => [whatsapp, wa_raft]}),
 
     select_follower_replication_mode(FollowerEndIndex, State0) =:= snapshot andalso
