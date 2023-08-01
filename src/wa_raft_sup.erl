@@ -97,7 +97,12 @@ start_link(Application, RaftArgs, Options) ->
     ok = persistent_term:put(?OPTIONS_KEY(Application), normalize_spec(Application, Options)),
     case supervisor:start_link({local, default_name(Application)}, ?MODULE, Application) of
         {ok, Pid} = Result ->
-            lists:foreach(fun (Spec) -> start_partition(Pid, Spec) end, RaftArgs),
+            [
+                case start_partition(Pid, Spec) of
+                    {error, Reason} -> error(Reason);
+                    _Other          -> ok
+                end || Spec <- RaftArgs
+            ],
             Result;
         Else ->
             Else
