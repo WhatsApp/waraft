@@ -27,7 +27,7 @@ load(#raft_state{name = Name, data_dir = RootDir} = State) ->
     StateFile = filename:join(RootDir, ?STATE_FILE_NAME),
     case file:consult(StateFile) of
         {ok, [{crc, CRC} | StateTerms]} ->
-            case erlang:crc32(term_to_binary(StateTerms)) of
+            case erlang:crc32(term_to_binary(StateTerms, [{minor_version, 1}, deterministic])) of
                 CRC ->
                     try
                         {ok, lists:foldl(
@@ -76,7 +76,7 @@ store(#raft_state{name = Name, data_dir = RootDir, current_term = CurrentTerm, v
         {voted_for, VotedFor},
         {disable_reason, DisableReason}
     ],
-    StateListWithCRC = [{crc, erlang:crc32(term_to_binary(StateList))} | StateList],
+    StateListWithCRC = [{crc, erlang:crc32(term_to_binary(StateList, [{minor_version, 1}, deterministic]))} | StateList],
     StateIO = [io_lib:format("~p.~n", [Term]) || Term <- StateListWithCRC],
     StateFile = filename:join(RootDir, ?STATE_FILE_NAME),
     StateFileTemp = [StateFile, ".temp"],
