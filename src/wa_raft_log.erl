@@ -839,7 +839,7 @@ handle_truncate(Index, #log_view{first = First}, #log_state{log = Log}) when Ind
     {error, invalid_position};
 handle_truncate(Index, #log_view{last = Last} = View0, #log_state{log = Log, provider = Provider, state = ProviderState} = State0) ->
     ?RAFT_COUNT('raft.log.truncate'),
-    ?LOG_NOTICE("[~p] truncating log past ~p", [Log, Index], #{domain => [whatsapp, wa_raft]}),
+    ?LOG_NOTICE("[~p] truncating log from ~p to past ~p", [Log, Last, Index], #{domain => [whatsapp, wa_raft]}),
     case Provider:truncate(Log, Index, ProviderState) of
         {ok, NewProviderState} ->
             View1 = View0#log_view{last = min(Last, Index - 1)},

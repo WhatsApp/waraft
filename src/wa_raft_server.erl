@@ -825,7 +825,7 @@ leader(state_timeout = Type, Event, #raft_state{name = Name, current_term = Curr
     end;
 
 %% [Timeout] Periodic heartbeat to followers
-leader(state_timeout, _, #raft_state{application = App, name = Name, current_term = CurrentTerm} = State0) ->
+leader(state_timeout, _, #raft_state{application = App, name = Name, log_view = View, current_term = CurrentTerm} = State0) ->
     case ?RAFT_LEADER_ELIGIBLE(App) andalso ?RAFT_ELECTION_WEIGHT(App) =/= 0 of
         true ->
             State1 = append_entries_to_followers(State0),
@@ -835,7 +835,9 @@ leader(state_timeout, _, #raft_state{application = App, name = Name, current_ter
         false ->
             ?LOG_NOTICE("Leader[~p, term ~p] resigns from leadership because this node is ineligible or election weight is zero.",
                 [Name, CurrentTerm], #{domain => [whatsapp, wa_raft]}),
-            {next_state, follower, clear_leader(?FUNCTION_NAME, State0)}
+            %% Drop any pending log entries queued in the log view before resigning
+            {ok, _Pending, NewView} = wa_raft_log:cancel(View),
+            {next_state, follower, clear_leader(?FUNCTION_NAME, State0#raft_state{log_view = NewView})}
     end;
 
 %% [Commit] If a handover is in progress, then try to redirect to handover target
@@ -885,9 +887,12 @@ leader(cast, ?READ_COMMAND({From, Command}),
     end;
 
 %% [Resign] Leader resigns by switching to follower state.
-leader({call, From}, ?RESIGN_COMMAND, #raft_state{name = Name, current_term = CurrentTerm} = State) ->
+leader({call, From}, ?RESIGN_COMMAND, #raft_state{name = Name, log_view = View, current_term = CurrentTerm} = State) ->
     ?LOG_NOTICE("Leader[~p, term ~p] resigns.", [Name, CurrentTerm], #{domain => [whatsapp, wa_raft]}),
-    {next_state, follower, clear_leader(?FUNCTION_NAME, State), {reply, From, ok}};
+
+    %% Drop any pending log entries queued in the log view before resigning
+    {ok, _Pending, NewView} = wa_raft_log:cancel(View),
+    {next_state, follower, clear_leader(?FUNCTION_NAME, State#raft_state{log_view = NewView}), {reply, From, ok}};
 
 %% [Adjust Membership] Leader attempts to commit a single-node membership change.
 leader(Type, ?ADJUST_MEMBERSHIP_COMMAND(Action, Peer),
