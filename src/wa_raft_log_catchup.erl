@@ -222,7 +222,7 @@ send_logs(Peer, NextLogIndex, LeaderTerm, LeaderCommitIndex, Witness, #state{nam
                     try send_logs_impl(Peer, NextLogIndex, LeaderTerm, LeaderCommitIndex, Witness, State) catch
                         T:E:S ->
                             ?RAFT_COUNT('raft.catchup.error'),
-                            ?LOG_ERROR("Catchup[~p, term ~p] bulk logs transfer to ~0p failed with ~0p ~0P at ~p",
+                            ?LOG_ERROR("Catchup[~p, term ~p] bulk logs transfer to ~0p failed with ~0p ~0p at ~p",
                                 [Name, LeaderTerm, Peer, T, E, S], #{domain => [whatsapp, wa_raft]})
                     after
                         counters:sub(persistent_term:get(?COUNTER_KEY), ?COUNTER_CONCURRENT_CATCHUP, 1)
