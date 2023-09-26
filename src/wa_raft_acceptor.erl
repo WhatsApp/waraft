@@ -6,7 +6,7 @@
 %%% This module implements the front-end process for accepting commits / reads
 
 -module(wa_raft_acceptor).
--compile(warn_missing_spec).
+-compile(warn_missing_spec_all).
 -behaviour(gen_server).
 
 %% OTP supervisor

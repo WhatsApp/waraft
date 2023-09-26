@@ -8,7 +8,7 @@
 %%% order configured for each RAFT partition.
 
 -module(wa_raft_env).
--compile(warn_missing_spec).
+-compile(warn_missing_spec_all).
 
 %% Config API
 -export([

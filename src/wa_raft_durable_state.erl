@@ -6,7 +6,7 @@
 %%% This module implements functions for storing / loading persistent state.
 
 -module(wa_raft_durable_state).
--compile(warn_missing_spec).
+-compile(warn_missing_spec_all).
 
 -include_lib("kernel/include/logger.hrl").
 -include("wa_raft.hrl").

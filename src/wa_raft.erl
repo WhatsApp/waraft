@@ -6,7 +6,7 @@
 %%% This file defines dialyzer types.
 
 -module(wa_raft).
--compile(warn_missing_spec).
+-compile(warn_missing_spec_all).
 
 %% Public Types
 -export_type([

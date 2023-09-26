@@ -7,7 +7,7 @@
 %%% distribution.
 
 -module(wa_raft_distribution).
--compile(warn_missing_spec).
+-compile(warn_missing_spec_all).
 
 -export([
     cast/2,

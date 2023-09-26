@@ -7,7 +7,7 @@
 %%% The default implementation skips metrics logging and does nothing.
 
 -module(wa_raft_metrics).
--compile(warn_missing_spec).
+-compile(warn_missing_spec_all).
 
 %% Public API
 -export([

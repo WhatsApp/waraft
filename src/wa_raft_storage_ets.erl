@@ -8,7 +8,7 @@
 %%% purposes only and should not be used in actual applications.
 
 -module(wa_raft_storage_ets).
--compile(warn_missing_spec).
+-compile(warn_missing_spec_all).
 -behaviour(wa_raft_storage).
 
 -export([

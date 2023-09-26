@@ -9,7 +9,7 @@
 %%% when any of them exits abnormally.
 
 -module(wa_raft_part_sup).
--compile(warn_missing_spec).
+-compile(warn_missing_spec_all).
 -behaviour(supervisor).
 
 %% OTP Supervision

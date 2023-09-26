@@ -7,7 +7,7 @@
 %%% send and receive for RAFT transport mechanisms.
 
 -module(wa_raft_transport_sup).
--compile(warn_missing_spec).
+-compile(warn_missing_spec_all).
 -behaviour(supervisor).
 
 %% Internal API

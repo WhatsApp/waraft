@@ -6,7 +6,7 @@
 %%% Application implementation for wa_raft.
 
 -module(wa_raft_app).
--compile(warn_missing_spec).
+-compile(warn_missing_spec_all).
 -behaviour(application).
 
 %% Application callbacks

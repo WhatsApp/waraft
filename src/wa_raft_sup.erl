@@ -9,7 +9,7 @@
 %%% shutdown.
 
 -module(wa_raft_sup).
--compile(warn_missing_spec).
+-compile(warn_missing_spec_all).
 -behaviour(supervisor).
 
 %% OTP supervision

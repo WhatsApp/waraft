@@ -7,7 +7,7 @@
 %%% local RAFT partitions.
 
 -module(wa_raft_snapshot_catchup).
--compile(warn_missing_spec).
+-compile(warn_missing_spec_all).
 -behaviour(gen_server).
 
 -include_lib("kernel/include/logger.hrl").

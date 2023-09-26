@@ -7,7 +7,7 @@
 %%% transport to a particular target node.
 
 -module(wa_raft_transport_target_sup).
--compile(warn_missing_spec).
+-compile(warn_missing_spec_all).
 -behaviour(supervisor).
 
 %% Internal API

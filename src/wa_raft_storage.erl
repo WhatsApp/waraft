@@ -8,7 +8,7 @@
 %%% storage solutions on top the RAFT consensus algorithm.
 
 -module(wa_raft_storage).
--compile(warn_missing_spec).
+-compile(warn_missing_spec_all).
 -behaviour(gen_server).
 
 %% OTP Supervision

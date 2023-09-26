@@ -6,7 +6,7 @@
 %%% This module manages data catchup to followers.
 
 -module(wa_raft_log_catchup).
--compile(warn_missing_spec).
+-compile(warn_missing_spec_all).
 -behaviour(gen_server).
 
 -include_lib("kernel/include/logger.hrl").

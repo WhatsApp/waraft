@@ -6,7 +6,7 @@
 %%% This module implements tracking of pending requests and queue limits.
 
 -module(wa_raft_queue).
--compile(warn_missing_spec).
+-compile(warn_missing_spec_all).
 -behaviour(gen_server).
 
 %% INTERNAL API

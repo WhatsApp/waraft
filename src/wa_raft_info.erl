@@ -6,7 +6,7 @@
 %%% Module to interface with raft metadata
 
 -module(wa_raft_info).
--compile(warn_missing_spec).
+-compile(warn_missing_spec_all).
 
 -export([
     init_tables/0,
