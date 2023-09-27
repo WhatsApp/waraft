@@ -6,7 +6,7 @@
 %%% This module implements transport interface by using erlang OTP dist.
 
 -module(wa_raft_dist_transport).
--compile(warn_missing_spec).
+-compile(warn_missing_spec_all).
 -behaviour(gen_server).
 -behaviour(wa_raft_transport).
 
@@ -89,11 +89,29 @@ transport_send(ID, FileID, State) ->
             {stop, {invalid_transport, ID}, State}
     end.
 
+-spec transport_send_loop(
+    wa_raft_transport:transport_id(),
+    wa_raft_transport:file_id(),
+    file:fd(),
+    node(),
+    #sender_state{}
+) -> {ok, #sender_state{}} | {error, term(), #sender_state{}}.
 transport_send_loop(ID, FileID, Fd, Peer, State) ->
     ChunkSize = ?RAFT_DIST_TRANSPORT_CHUNK_SIZE(),
     MaxInflight = ?RAFT_DIST_TRANSPORT_MAX_INFLIGHT(),
     transport_send_loop(ID, FileID, Fd, 0, Peer, [], ChunkSize, MaxInflight, State).
 
+-spec transport_send_loop(
+    wa_raft_transport:transport_id(),
+    wa_raft_transport:file_id(),
+    file:fd(),
+    non_neg_integer() | eof,
+    node(),
+    [gen_server:request_id()],
+    pos_integer(),
+    pos_integer(),
+    #sender_state{}
+) -> {ok, #sender_state{}} | {error, term(), #sender_state{}}.
 transport_send_loop(ID, FileID, _Fd, eof, Peer, [], _ChunkSize, _MaxInflight, State) ->
     gen_server:cast({?MODULE, Peer}, {complete, ID, FileID}),
     {ok, State};
