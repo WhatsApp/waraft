@@ -861,6 +861,11 @@ leader(cast, ?COMMIT_COMMAND(Op), #raft_state{application = App, current_term = 
             {keep_state, State2, ?HEARTBEAT_TIMEOUT(State2)}
     end;
 
+%% [Strong Read] If a handover is in progress, then try to redirect to handover target
+leader(cast, ?READ_COMMAND({From, _Command}), #raft_state{table = Table, partition = Partition, handover = {Peer, _Ref, _Timeout}} = State) ->
+    ?RAFT_COUNT('raft.read.handover'),
+    wa_raft_queue:fulfill_read_early(Table, Partition, From, {error, {notify_redirect, Peer}}), % Optimistically redirect to handover peer
+    {keep_state, State};
 %% [Strong Read] Leader is eligible to serve strong reads.
 leader(cast, ?READ_COMMAND({From, Command}),
        #raft_state{name = Name, table = Table, partition = Partition, log_view = View0, storage = Storage,
