@@ -1799,7 +1799,7 @@ maybe_apply(EndIndex, #raft_state{name = Name, log_view = View, current_term = C
                 {ok, CurrentTerm} ->
                     % log entry is same term of current leader node
                     TrimIndex = lists:min(to_member_list(MatchIndex#{node() => LastAppliedIndex}, 0, Config)),
-                    apply_log(State0, CommitIndex, TrimIndex);
+                    apply_log(State0, CommitIndex, TrimIndex, CurrentTerm);
                 {ok, Term} when Term < CurrentTerm ->
                     % Raft paper section 5.4.3 - as a leader, don't commit entries from previous term if no log entry of current term has applied yet
                     ?RAFT_COUNT('raft.apply.delay.old'),
@@ -1850,12 +1850,12 @@ compute_quorum([_|_] = Values) ->
     Index = (length(Values) + 1) div 2,
     lists:nth(Index, lists:sort(Values)).
 
--spec apply_log(State0 :: #raft_state{}, CommitIndex :: wa_raft_log:log_index(), TrimIndex :: wa_raft_log:log_index() | infinity) -> State1 :: #raft_state{}.
-apply_log(#raft_state{witness = true} = State0, CommitIndex, _) ->
+-spec apply_log(Data :: #raft_state{}, CommitIndex :: wa_raft_log:log_index(), TrimIndex :: wa_raft_log:log_index() | infinity, EffectiveTerm :: wa_raft_log:log_term() | undefined) -> NewData :: #raft_state{}.
+apply_log(#raft_state{witness = true} = State0, CommitIndex, _TrimIndex, _EffectiveTerm) ->
     % Update CommitIndex and LastAppliedIndex, but don't apply new log entries
     State0#raft_state{last_applied = CommitIndex, commit_index = CommitIndex};
 apply_log(#raft_state{application = App, name = Name, table = Table, partition = Partition, log_view = View,
-                      last_applied = LastApplied, current_term = CurrentTerm} = State0, CommitIndex, TrimIndex) when CommitIndex > LastApplied ->
+                      last_applied = LastApplied, current_term = CurrentTerm} = State0, CommitIndex, TrimIndex, EffectiveTerm) when CommitIndex > LastApplied ->
     StartT = os:timestamp(),
     case wa_raft_queue:apply_queue_full(Table, Partition) of
         false ->
@@ -1865,7 +1865,7 @@ apply_log(#raft_state{application = App, name = Name, table = Table, partition =
             {ok, {_, #raft_state{log_view = View1} = State1}} = wa_raft_log:fold(View, LastApplied + 1, LimitedIndex, LimitBytes,
                 fun (Index, Entry, {Index, State}) ->
                     wa_raft_queue:reserve_apply(Table, Partition),
-                    {Index + 1, apply_op(Index, Entry, State)}
+                    {Index + 1, apply_op(Index, Entry, EffectiveTerm, State)}
                 end, {LastApplied + 1, State0}),
 
             % Perform log trimming since we've now applied some log entries, only keeping
@@ -1887,23 +1887,23 @@ apply_log(#raft_state{application = App, name = Name, table = Table, partition =
             ?RAFT_GATHER('raft.apply_log.latency_us', timer:now_diff(os:timestamp(), StartT)),
             State0
     end;
-apply_log(State, _CommitIndex, _TrimIndex) ->
+apply_log(State, _CommitIndex, _TrimIndex, _EffectiveTerm) ->
     State.
 
--spec apply_op(wa_raft_log:log_index(), wa_raft_log:log_entry(), #raft_state{}) -> #raft_state{}.
-apply_op(LogIndex, _Entry, #raft_state{name = Name, last_applied = LastAppliedIndex, current_term = CurrentTerm} = State) when LogIndex =< LastAppliedIndex ->
+-spec apply_op(wa_raft_log:log_index(), wa_raft_log:log_entry(), wa_raft_log:log_term() | undefined, #raft_state{}) -> #raft_state{}.
+apply_op(LogIndex, _Entry, _EffectiveTerm, #raft_state{name = Name, last_applied = LastAppliedIndex, current_term = CurrentTerm} = State) when LogIndex =< LastAppliedIndex ->
     ?LOG_WARNING("Server[~0p, term ~0p] is skipping applying log entry ~0p because log entries up to ~0p are already applied.",
         [Name, CurrentTerm, LogIndex, LastAppliedIndex], #{domain => [whatsapp, wa_raft]}),
     State;
-apply_op(LogIndex, {Term, Op}, #raft_state{current_term = CurrentTerm, storage = Storage} = State0) ->
-    wa_raft_storage:apply_op(Storage, {LogIndex, {Term, Op}}, CurrentTerm),
+apply_op(LogIndex, {Term, Op}, EffectiveTerm, #raft_state{storage = Storage} = State0) ->
+    wa_raft_storage:apply_op(Storage, {LogIndex, {Term, Op}}, EffectiveTerm),
     maybe_update_config(LogIndex, Term, Op, State0#raft_state{last_applied = LogIndex, commit_index = LogIndex});
-apply_op(LogIndex, undefined, #raft_state{name = Name, log_view = View, current_term = CurrentTerm}) ->
+apply_op(LogIndex, undefined, _EffectiveTerm, #raft_state{name = Name, log_view = View, current_term = CurrentTerm}) ->
     ?RAFT_COUNT('raft.server.missing.log.entry'),
     ?LOG_ERROR("Server[~0p, term ~0p] failed to apply ~0p because log entry is missing from log covering ~0p to ~0p.",
         [Name, CurrentTerm, LogIndex, wa_raft_log:first_index(View), wa_raft_log:last_index(View)], #{domain => [whatsapp, wa_raft]}),
     exit({invalid_op, LogIndex});
-apply_op(LogIndex, Entry, #raft_state{name = Name, current_term = CurrentTerm}) ->
+apply_op(LogIndex, Entry, _EffectiveTerm, #raft_state{name = Name, current_term = CurrentTerm}) ->
     ?RAFT_COUNT('raft.server.corrupted.log.entry'),
     ?LOG_ERROR("Server[~0p, term ~0p] failed to apply unrecognized entry ~p at ~p",
         [Name, CurrentTerm, Entry, LogIndex], #{domain => [whatsapp, wa_raft]}),
@@ -2151,7 +2151,7 @@ handle_heartbeat(State, Event, Leader, PrevLogIndex, PrevLogTerm, Entries, Commi
             end,
             Data2 = Data1#raft_state{leader_heartbeat_ts = erlang:system_time(millisecond)},
             Data3 = case Accepted of
-                true -> apply_log(Data2, min(CommitIndex, NewLastIndex), LocalTrimIndex);
+                true -> apply_log(Data2, min(CommitIndex, NewLastIndex), LocalTrimIndex, undefined);
                 _    -> Data2
             end,
             check_follower_lagging(CommitIndex, Data3),

@@ -292,7 +292,7 @@ start_link(#raft_options{storage_name = Name} = Options) ->
 status(ServiceRef) ->
     gen_server:call(ServiceRef, status, ?RAFT_STORAGE_CALL_TIMEOUT()).
 
--spec apply_op(ServiceRef :: pid() | atom(), LogRecord :: wa_raft_log:log_record(), ServerTerm :: wa_raft_log:log_term()) -> ok.
+-spec apply_op(ServiceRef :: pid() | atom(), LogRecord :: wa_raft_log:log_record(), EffectiveTerm :: wa_raft_log:log_term() | undefined) -> ok.
 apply_op(ServiceRef, LogRecord, ServerTerm) ->
     gen_server:cast(ServiceRef, {apply, LogRecord, ServerTerm}).
 
@@ -465,7 +465,7 @@ handle_call(Cmd, From, #state{name = Name} = State) ->
         cancel |
         {fulfill, term(), term()} |
         {read, gen_server:from(), wa_raft_acceptor:command()} |
-        {apply, LogRecord :: wa_raft_log:log_record(), ServerTerm :: wa_raft_log:log_term()} |
+        {apply, LogRecord :: wa_raft_log:log_record(), EffectiveTerm :: wa_raft_log:log_term() | undefined} |
         {snapshot_delete, Name :: string()}.
 handle_cast(cancel, State0) ->
     State1 = cancel_pending_commits(State0),
@@ -481,9 +481,9 @@ handle_cast({read, From, Command}, #state{module = Module, handle = Handle, last
     {noreply, State};
 
 % Apply an op after consensus is made
-handle_cast({apply, {LogIndex, {LogTerm, _}} = LogRecord, ServerTerm}, #state{name = Name} = State0) ->
+handle_cast({apply, {LogIndex, {LogTerm, _}} = LogRecord, EffectiveTerm}, #state{name = Name} = State0) ->
     ?LOG_DEBUG("[~p] apply ~p:~p", [Name, LogIndex, LogTerm], #{domain => [whatsapp, wa_raft]}),
-    State1 = apply_impl(LogRecord, ServerTerm, State0),
+    State1 = apply_impl(LogRecord, EffectiveTerm, State0),
     {noreply, State1};
 
 handle_cast({snapshot_delete, SnapName}, #state{name = Name, root_dir = RootDir} = State) ->
@@ -513,8 +513,8 @@ code_change(_OldVsn, State, _Extra) ->
 %% RAFT Storage - Implementation
 %%-------------------------------------------------------------------
 
--spec apply_impl(Record :: wa_raft_log:log_record(), ServerTerm :: wa_raft_log:log_term(), State :: #state{}) -> NewState :: #state{}.
-apply_impl({LogIndex, {LogTerm, {Ref, _} = Op}}, ServerTerm,
+-spec apply_impl(Record :: wa_raft_log:log_record(), EffectiveTerm :: wa_raft_log:log_term() | undefined, State :: #state{}) -> NewState :: #state{}.
+apply_impl({LogIndex, {LogTerm, {Ref, _} = Op}}, EffectiveTerm,
            #state{name = Name, table = Table, partition = Partition, last_applied = #raft_log_pos{index = LastAppliedIndex}} = State0) ->
     wa_raft_queue:fulfill_apply(Table, Partition),
     StartT = os:timestamp(),
@@ -523,7 +523,7 @@ apply_impl({LogIndex, {LogTerm, {Ref, _} = Op}}, ServerTerm,
             apply_delayed_reads(State0);
         _ when LogIndex =:= LastAppliedIndex + 1 ->
             {Reply, State1} = storage_apply(#raft_log_pos{index = LogIndex, term = LogTerm}, Op, State0),
-            State2 = case LogTerm =:= ServerTerm of
+            State2 = case LogTerm =:= EffectiveTerm of
                 true -> reply(Ref, Reply, State1);
                 false -> State1
             end,
