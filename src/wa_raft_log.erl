@@ -176,7 +176,7 @@
                SizeLimit :: non_neg_integer() | infinity,
                Func :: fun((Index :: log_index(), Entry :: log_entry(), Acc) -> Acc),
                Acc) ->
-    {ok, Acc} | error().
+    {ok, Acc} | wa_raft:error().
 
 %% Get a single log entry at the specified index. This API is specified
 %% separately because some implementations may have more efficient ways to
@@ -220,7 +220,7 @@
 %% would make it impossible to quickly append to the log, it is
 %% acceptable to skip this append and return 'skipped'.
 -callback append(View :: view(), Start :: log_index(), Entries :: [log_entry()], Mode :: strict | relaxed) ->
-    ok | {mismatch, Index :: log_index()} | skipped | error().
+    ok | {mismatch, Index :: log_index()} | skipped | wa_raft:error().
 
 %%-------------------------------------------------------------------
 %% RAFT log provider interface for managing underlying RAFT log
