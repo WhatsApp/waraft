@@ -7,7 +7,7 @@
 %%% required by the specific log implementations.
 
 -module(wa_raft_log).
--compile(warn_missing_spec).
+-compile(warn_missing_spec_all).
 -behaviour(gen_server).
 
 %% OTP supervision
@@ -391,13 +391,24 @@ fold(Log, First, Last, Func, Acc) ->
            Acc) ->
     {ok, Acc} | wa_raft:error().
 fold(#log_view{log = Log, provider = Provider, first = LogFirst, last = LogLast}, First, Last, SizeLimit, Func, Acc) ->
+    % eqwalizer:fixme - min [T166261957]
     fold_impl(Provider, Log, max(First, LogFirst), min(Last, LogLast), SizeLimit, Func, Acc);
 fold(Log, First, Last, SizeLimit, Func, Acc) ->
     Provider = provider(Log),
     LogFirst = Provider:first_index(Log),
     LogLast = Provider:last_index(Log),
+    % eqwalizer:fixme - min [T166261957]
     fold_impl(Provider, Log, max(First, LogFirst), min(Last, LogLast), SizeLimit, Func, Acc).
 
+-spec fold_impl(
+    Provider :: module(),
+    Log :: log(),
+    First :: log_index(),
+    Last :: log_index(),
+    SizeLimit :: non_neg_integer() | infinity,
+    Func :: fun((Index :: log_index(), Entry :: log_entry(), Acc) -> Acc),
+    Acc :: term()
+) -> {ok, Acc} | wa_raft:error().
 fold_impl(Provider, Log, First, Last, SizeLimit, Func, AccIn) ->
     ?RAFT_COUNT('raft.log.fold'),
     ?RAFT_COUNTV('raft.log.fold.total', Last - First + 1),
@@ -643,6 +654,11 @@ provider(Log) ->
     % but it uses log views so does not incur this cost.
     ets:lookup_element(metadata_table(Log), ?PROVIDER_KEY, 2).
 
+-spec update_config_cache(
+    View :: view(),
+    Index :: log_index(),
+    Entries :: [log_entry()]
+) -> View :: view().
 update_config_cache(#log_view{} = View, _Index, []) ->
     View;
 update_config_cache(#log_view{config_index = undefined} = View, Index, [{_Term, {_Ref, {config, Config}}} | Entries]) ->
