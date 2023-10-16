@@ -14,8 +14,6 @@
     call/3
 ]).
 
--include("wa_raft.hrl").
-
 -type dest_addr() :: {Name :: atom(), Node :: node()}.
 
 -export_type([

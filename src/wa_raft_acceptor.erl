@@ -70,6 +70,10 @@
 -type op() :: {Ref :: term(), Command :: command()}.
 -type read_op() :: {From :: gen_server:from(), Command :: command()}.
 
+%%-------------------------------------------------------------------
+%% OTP Supervision
+%%-------------------------------------------------------------------
+
 -spec child_spec(Options :: #raft_options{}) -> supervisor:child_spec().
 child_spec(Options) ->
     #{
@@ -80,33 +84,50 @@ child_spec(Options) ->
         modules => [?MODULE]
     }.
 
-%% Public API
--spec start_link(Options :: #raft_options{}) -> {ok, Pid :: pid()} | ignore | wa_raft:error().
+-spec start_link(Options :: #raft_options{}) -> gen_server:start_ret().
 start_link(#raft_options{acceptor_name = Name} = Options) ->
     gen_server:start_link({local, Name}, ?MODULE, Options, []).
 
-%% Commit a change on leader node specified by pid. It's a blocking call. It returns until it
-%% is acknowledged on quorum nodes.
--spec commit(Pid :: pid() | Local :: atom() | {Service :: atom(), Node :: node()}, Op :: op()) -> {ok, term()} | wa_raft:error().
-commit(Pid, Op) ->
-    gen_server:call(Pid, {commit, Op}, ?RAFT_RPC_CALL_TIMEOUT()).
+%%-------------------------------------------------------------------
+%% Public API
+%%-------------------------------------------------------------------
 
--spec commit(Pid :: pid() | Local :: atom() | {Service :: atom(), Node :: node()}, Op :: op(), Timeout :: timeout()) -> {ok, term()} | wa_raft:error().
-commit(Pid, Op, Timeout) ->
-    gen_server:call(Pid, {commit, Op}, Timeout).
+%% Request that the specified RAFT server commit the provided command. The commit can only be
+%% successful if the requested RAFT server is the active leader of the RAFT partition it is a
+%% part of. Returns either the result returned by the storage module when applying the command
+%% or an error indicating some reason for which the command was not able to be committed or
+%% should be retried.
+-spec commit(ServerRef :: gen_server:server_ref(), Op :: op()) -> Result :: eqwalizer:dynamic() | Error :: wa_raft:error().
+commit(ServerRef, Op) ->
+    commit(ServerRef, Op, ?RAFT_RPC_CALL_TIMEOUT()).
 
--spec commit_async(Dest :: pid() | Local :: atom() | {Service :: atom(), Node :: node()}, From :: {pid(), term()}, Op :: op()) -> ok.
-commit_async(Dest, From, Op) ->
-    gen_server:cast(Dest, {commit, From, Op}).
+-spec commit(ServerRef :: gen_server:server_ref(), Op :: op(), Timeout :: timeout()) -> Result :: eqwalizer:dynamic() | Error :: wa_raft:error().
+commit(ServerRef, Op, Timeout) ->
+    call(ServerRef, {commit, Op}, Timeout).
+
+-spec commit_async(ServerRef :: gen_server:server_ref(), From :: {pid(), term()}, Op :: op()) -> ok.
+commit_async(ServerRef, From, Op) ->
+    gen_server:cast(ServerRef, {commit, From, Op}).
 
 % Strong-read
--spec read(ServerRef :: gen_server:server_ref(), Command :: command()) -> {ok, Result :: term()} | wa_raft:error().
-read(Dest, Command) ->
-    gen_server:call(Dest, {read, Command}, ?RAFT_RPC_CALL_TIMEOUT()).
+-spec read(ServerRef :: gen_server:server_ref(), Command :: command()) -> Result :: eqwalizer:dynamic() | Error :: wa_raft:error().
+read(ServerRef, Command) ->
+    read(ServerRef, Command, ?RAFT_RPC_CALL_TIMEOUT()).
 
--spec read(ServerRef :: gen_server:server_ref(), Command :: command(), Timeout :: timeout()) -> {ok, Result :: term()} | wa_raft:error().
-read(Dest, Command, Timeout) ->
-    gen_server:call(Dest, {read, Command}, Timeout).
+-spec read(ServerRef :: gen_server:server_ref(), Command :: command(), Timeout :: timeout()) -> Result :: eqwalizer:dynamic() | Error :: wa_raft:error().
+read(ServerRef, Command, Timeout) ->
+    call(ServerRef, {read, Command}, Timeout).
+
+-spec call(ServerRef :: gen_server:server_ref(), Request :: term(), Timeout :: timeout()) -> Result :: eqwalizer:dynamic() | Error :: wa_raft:error().
+call(ServerRef, Request, Timeout) ->
+    try
+        gen_server:call(ServerRef, Request, Timeout)
+    catch
+        exit:{timeout, _}       -> {error, timeout};
+        exit:{noproc, _}        -> {error, unreachable};
+        exit:{{nodedown, _}, _} -> {error, unreachable};
+        exit:{Other, _}         -> {error, {call_error, Other}}
+    end.
 
 %%-------------------------------------------------------------------
 %% Internal API
