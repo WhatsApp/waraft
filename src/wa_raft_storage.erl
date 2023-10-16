@@ -20,7 +20,6 @@
 %% Read / Apply / Cancel operations.
 -export([
     apply_op/3,
-    fulfill_op/3,
     read/2,
     read/3,
     cancel/1
@@ -296,10 +295,6 @@ status(ServiceRef) ->
 apply_op(ServiceRef, LogRecord, ServerTerm) ->
     gen_server:cast(ServiceRef, {apply, LogRecord, ServerTerm}).
 
--spec fulfill_op(ServiceRef :: pid() | atom(), Reference :: term(), Reply :: term()) -> ok.
-fulfill_op(ServiceRef, OpRef, Return) ->
-    gen_server:cast(ServiceRef, {fulfill, OpRef, Return}).
-
 -spec read(ServiceRef :: pid() | atom(), Op :: wa_raft_acceptor:command()) -> ok.
 read(ServiceRef, Op) ->
     gen_server:call(ServiceRef, {read, Op}).
@@ -471,10 +466,6 @@ handle_cast(cancel, #state{name = Name, table = Table, partition = Partition} = 
     ?LOG_NOTICE("[~p] cancel pending commits and reads", [Name], #{domain => [whatsapp, wa_raft]}),
     wa_raft_queue:fulfill_all_commits(Table, Partition, {error, not_leader}),
     wa_raft_queue:fulfill_all_reads(Table, Partition, {error, not_leader}),
-    {noreply, State};
-
-handle_cast({fulfill, Ref, Reply}, #state{table = Table, partition = Partition} = State) ->
-    wa_raft_queue:fulfill_commit(Table, Partition, Ref, Reply),
     {noreply, State};
 
 handle_cast({read, From, Command}, #state{module = Module, handle = Handle, last_applied = Position} = State) ->

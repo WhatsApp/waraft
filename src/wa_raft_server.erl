@@ -840,9 +840,9 @@ leader(state_timeout, _, #raft_state{application = App, name = Name, log_view = 
     end;
 
 %% [Commit] If a handover is in progress, then try to redirect to handover target
-leader(cast, ?COMMIT_COMMAND({Ref, _Op}), #raft_state{storage = Storage, handover = {Peer, _Ref, _Timeout}} = State) ->
+leader(cast, ?COMMIT_COMMAND({Reference, _Op}), #raft_state{table = Table, partition = Partition, handover = {Peer, _, _}} = State) ->
     ?RAFT_COUNT('raft.commit.handover'),
-    wa_raft_storage:fulfill_op(Storage, Ref, {error, {notify_redirect, Peer}}), % Optimistically redirect to handover peer
+    wa_raft_queue:fulfill_commit(Table, Partition, Reference, {error, {notify_redirect, Peer}}), % Optimistically redirect to handover peer
     {keep_state, State};
 %% [Commit] Otherwise, add a new commit to the RAFT log
 leader(cast, ?COMMIT_COMMAND(Op), #raft_state{application = App, current_term = CurrentTerm, log_view = View0, next_index = NextIndex} = State0) ->
@@ -1475,11 +1475,11 @@ terminate(Reason, State, #raft_state{name = Name, table = Table, partition = Par
 %% handler for a particular command defined for a particular RAFT server FSM state.
 -spec command(state(), gen_statem:event_type(), command(), #raft_state{}) -> gen_statem:event_handler_result(state(), #raft_state{}).
 %% [Commit] Non-leader nodes should fail commits with {error, not_leader}.
-command(StateName, Type, ?COMMIT_COMMAND({Ref, _}),
-        #raft_state{name = Name, current_term = CurrentTerm, storage = Storage, leader_id = LeaderId}) when StateName =/= leader ->
+command(StateName, Type, ?COMMIT_COMMAND({Reference, _}),
+        #raft_state{name = Name, table = Table, partition = Partition, current_term = CurrentTerm, leader_id = LeaderId}) when StateName =/= leader ->
     ?LOG_WARNING("Server[~0p, term ~0p, ~0p] commit ~p fails. Leader is ~p.",
-        [Name, CurrentTerm, StateName, Ref, LeaderId], #{domain => [whatsapp, wa_raft]}),
-    wa_raft_storage:fulfill_op(Storage, Ref, {error, not_leader}),
+        [Name, CurrentTerm, StateName, Reference, LeaderId], #{domain => [whatsapp, wa_raft]}),
+    wa_raft_queue:fulfill_commit(Table, Partition, Reference, {error, not_leader}),
     reply(Type, {error, not_leader}),
     keep_state_and_data;
 %% [Strong Read] Non-leader nodes are not eligible for strong reads.
@@ -1910,7 +1910,7 @@ apply_op(LogIndex, Entry, _EffectiveTerm, #raft_state{name = Name, current_term 
     exit({invalid_op, LogIndex, Entry}).
 
 -spec append_entries_to_followers(State0 :: #raft_state{}) -> State1 :: #raft_state{}.
-append_entries_to_followers(#raft_state{name = Name, log_view = View0, storage = Storage, current_term = CurrentTerm} = State0) ->
+append_entries_to_followers(#raft_state{name = Name, table = Table, partition = Partition, log_view = View0, current_term = CurrentTerm} = State0) ->
     State1 = case wa_raft_log:sync(View0) of
         {ok, View1} ->
             State0#raft_state{log_view = View1};
@@ -1919,10 +1919,7 @@ append_entries_to_followers(#raft_state{name = Name, log_view = View0, storage =
             ?RAFT_COUNT('raft.server.sync.skipped'),
             ?LOG_WARNING("Server[~0p, term ~0p, leader] skipped pre-heartbeat sync for ~p log entr(ies).",
                 [Name, CurrentTerm, length(Pending)], #{domain => [whatsapp, wa_raft]}),
-            lists:foreach(
-                fun ({_Term, {Ref, _Op}}) -> wa_raft_storage:fulfill_op(Storage, Ref, {error, commit_stalled});
-                    (_)                   -> ok
-                end, Pending),
+            [wa_raft_queue:fulfill_commit(Table, Partition, Reference, {error, commit_stalled}) || {_Term, {Reference, _Command}} <- Pending],
             State0#raft_state{log_view = View1};
         {error, Error} ->
             ?RAFT_COUNT({'raft.server.sync', Error}),
