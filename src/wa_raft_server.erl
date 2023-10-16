@@ -842,7 +842,7 @@ leader(state_timeout, _, #raft_state{application = App, name = Name, log_view = 
 %% [Commit] If a handover is in progress, then try to redirect to handover target
 leader(cast, ?COMMIT_COMMAND({Reference, _Op}), #raft_state{table = Table, partition = Partition, handover = {Peer, _, _}} = State) ->
     ?RAFT_COUNT('raft.commit.handover'),
-    wa_raft_queue:fulfill_commit(Table, Partition, Reference, {error, {notify_redirect, Peer}}), % Optimistically redirect to handover peer
+    wa_raft_queue:fulfill_incomplete_commit(Table, Partition, Reference, {error, {notify_redirect, Peer}}), % Optimistically redirect to handover peer
     {keep_state, State};
 %% [Commit] Otherwise, add a new commit to the RAFT log
 leader(cast, ?COMMIT_COMMAND(Op), #raft_state{application = App, current_term = CurrentTerm, log_view = View0, next_index = NextIndex} = State0) ->
@@ -864,7 +864,7 @@ leader(cast, ?COMMIT_COMMAND(Op), #raft_state{application = App, current_term = 
 %% [Strong Read] If a handover is in progress, then try to redirect to handover target
 leader(cast, ?READ_COMMAND({From, _Command}), #raft_state{table = Table, partition = Partition, handover = {Peer, _Ref, _Timeout}} = State) ->
     ?RAFT_COUNT('raft.read.handover'),
-    wa_raft_queue:fulfill_read_early(Table, Partition, From, {error, {notify_redirect, Peer}}), % Optimistically redirect to handover peer
+    wa_raft_queue:fulfill_incomplete_read(Table, Partition, From, {error, {notify_redirect, Peer}}), % Optimistically redirect to handover peer
     {keep_state, State};
 %% [Strong Read] Leader is eligible to serve strong reads.
 leader(cast, ?READ_COMMAND({From, Command}),
@@ -1479,7 +1479,7 @@ command(StateName, Type, ?COMMIT_COMMAND({Reference, _}),
         #raft_state{name = Name, table = Table, partition = Partition, current_term = CurrentTerm, leader_id = LeaderId}) when StateName =/= leader ->
     ?LOG_WARNING("Server[~0p, term ~0p, ~0p] commit ~p fails. Leader is ~p.",
         [Name, CurrentTerm, StateName, Reference, LeaderId], #{domain => [whatsapp, wa_raft]}),
-    wa_raft_queue:fulfill_commit(Table, Partition, Reference, {error, not_leader}),
+    wa_raft_queue:fulfill_incomplete_commit(Table, Partition, Reference, {error, not_leader}),
     reply(Type, {error, not_leader}),
     keep_state_and_data;
 %% [Strong Read] Non-leader nodes are not eligible for strong reads.
@@ -1487,7 +1487,7 @@ command(StateName, cast, ?READ_COMMAND({From, _}),
         #raft_state{name = Name, table = Table, partition = Partition, current_term = CurrentTerm, leader_id = LeaderId}) when StateName =/= leader ->
     ?LOG_WARNING("Server[~0p, term ~0p, ~0p] strong read fails. Leader is ~p.",
         [Name, CurrentTerm, StateName, LeaderId], #{domain => [whatsapp, wa_raft]}),
-    wa_raft_queue:fulfill_read_early(Table, Partition, From, {error, not_leader}),
+    wa_raft_queue:fulfill_incomplete_read(Table, Partition, From, {error, not_leader}),
     keep_state_and_data;
 %% [Status] Get status of node.
 command(StateName, {call, From}, ?STATUS_COMMAND, State) ->
@@ -1919,7 +1919,7 @@ append_entries_to_followers(#raft_state{name = Name, table = Table, partition = 
             ?RAFT_COUNT('raft.server.sync.skipped'),
             ?LOG_WARNING("Server[~0p, term ~0p, leader] skipped pre-heartbeat sync for ~p log entr(ies).",
                 [Name, CurrentTerm, length(Pending)], #{domain => [whatsapp, wa_raft]}),
-            [wa_raft_queue:fulfill_commit(Table, Partition, Reference, {error, commit_stalled}) || {_Term, {Reference, _Command}} <- Pending],
+            [wa_raft_queue:fulfill_incomplete_commit(Table, Partition, Reference, {error, commit_stalled}) || {_Term, {Reference, _Command}} <- Pending],
             State0#raft_state{log_view = View1};
         {error, Error} ->
             ?RAFT_COUNT({'raft.server.sync', Error}),

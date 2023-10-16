@@ -25,6 +25,7 @@
     commit_queue_size/2,
     commit_queue_full/2,
     fulfill_commit/4,
+    fulfill_incomplete_commit/4,
     fulfill_all_commits/3
 ]).
 
@@ -34,7 +35,7 @@
     submit_read/5,
     query_reads/3,
     fulfill_read/4,
-    fulfill_read_early/4,
+    fulfill_incomplete_read/4,
     fulfill_all_reads/3
 ]).
 
@@ -168,7 +169,9 @@ commit_queue_full(Table, Partition) ->
         {App, Counters, _, _} -> counters:get(Counters, ?RAFT_COMMIT_QUEUE_SIZE_COUNTER) >= ?RAFT_MAX_PENDING_COMMITS(App)
     end.
 
--spec fulfill_commit(wa_raft:table(), wa_raft:partition(), term(), term()) -> ok | not_found.
+% Fulfill a pending commit with the result of the application of the command contained
+% within the commit.
+-spec fulfill_commit(wa_raft:table(), wa_raft:partition(), term(), eqwalizer:dynamic()) -> ok | not_found.
 fulfill_commit(Table, Partition, Reference, Reply) ->
     {_, Counters, CommitQueue, _} = require_info(Table, Partition),
     case ets:take(CommitQueue, Reference) of
@@ -179,7 +182,13 @@ fulfill_commit(Table, Partition, Reference, Reply) ->
             not_found
     end.
 
--spec fulfill_all_commits(wa_raft:table(), wa_raft:partition(), term()) -> ok.
+% Fulfill a pending commit with an error that indicates that the commit was not completed.
+-spec fulfill_incomplete_commit(wa_raft:table(), wa_raft:partition(), term(), eqwalizer:dynamic()) -> ok | not_found.
+fulfill_incomplete_commit(Table, Partition, Reference, Error) ->
+    fulfill_commit(Table, Partition, Reference, Error).
+
+% Fulfill a pending commit with an error that indicates that the commit was not completed.
+-spec fulfill_all_commits(wa_raft:table(), wa_raft:partition(), eqwalizer:dynamic()) -> ok.
 fulfill_all_commits(Table, Partition, Reply) ->
     {_, Counters, CommitQueue, _} = require_info(Table, Partition),
     CommitsTable = CommitQueue,
@@ -239,7 +248,7 @@ query_reads(Table, Partition, MaxLogIndex) ->
     ),
     ets:select(ReadQueue, MatchSpec).
 
--spec fulfill_read(wa_raft:table(), wa_raft:partition(), term(), term()) -> ok | not_found.
+-spec fulfill_read(wa_raft:table(), wa_raft:partition(), term(), eqwalizer:dynamic()) -> ok | not_found.
 fulfill_read(Table, Partition, Reference, Reply) ->
     {_, Counters, _, ReadQueue} = require_info(Table, Partition),
     case ets:take(ReadQueue, Reference) of
@@ -252,13 +261,14 @@ fulfill_read(Table, Partition, Reference, Reply) ->
 
 % Complete a read that was reserved by the RAFT acceptor but was rejected
 % before it could be added to the read queue and so has no reference.
--spec fulfill_read_early(wa_raft:table(), wa_raft:partition(), gen_server:from(), term()) -> ok.
-fulfill_read_early(Table, Partition, From, Reply) ->
+-spec fulfill_incomplete_read(wa_raft:table(), wa_raft:partition(), gen_server:from(), eqwalizer:dynamic()) -> ok.
+fulfill_incomplete_read(Table, Partition, From, Reply) ->
     {_, Counters, _, _} = require_info(Table, Partition),
     counters:sub(Counters, ?RAFT_READ_QUEUE_SIZE_COUNTER, 1),
     gen_server:reply(From, Reply).
 
--spec fulfill_all_reads(wa_raft:table(), wa_raft:partition(), term()) -> ok.
+% Fulfill a pending reads with an error that indicates that the read was not completed.
+-spec fulfill_all_reads(wa_raft:table(), wa_raft:partition(), eqwalizer:dynamic()) -> ok.
 fulfill_all_reads(Table, Partition, Reply) ->
     {_, Counters, _, ReadQueue} = require_info(Table, Partition),
     ReadsTable = ReadQueue,
