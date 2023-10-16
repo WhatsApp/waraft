@@ -467,10 +467,11 @@ handle_call(Cmd, From, #state{name = Name} = State) ->
         {read, gen_server:from(), wa_raft_acceptor:command()} |
         {apply, LogRecord :: wa_raft_log:log_record(), EffectiveTerm :: wa_raft_log:log_term() | undefined} |
         {snapshot_delete, Name :: string()}.
-handle_cast(cancel, State0) ->
-    State1 = cancel_pending_commits(State0),
-    State2 = cancel_pending_reads(State1),
-    {noreply, State2};
+handle_cast(cancel, #state{name = Name, table = Table, partition = Partition} = State) ->
+    ?LOG_NOTICE("[~p] cancel pending commits and reads", [Name], #{domain => [whatsapp, wa_raft]}),
+    wa_raft_queue:fulfill_all_commits(Table, Partition, {error, not_leader}),
+    wa_raft_queue:fulfill_all_reads(Table, Partition, {error, not_leader}),
+    {noreply, State};
 
 handle_cast({fulfill, Ref, Return}, State0) ->
     State1 = reply(Ref, Return, State0),
@@ -576,18 +577,6 @@ apply_delayed_reads(#state{table = Table, partition = Partition, module = Module
             Reply = Module:storage_read(Command, LastAppliedLogPos, Handle),
             wa_raft_queue:fulfill_read(Table, Partition, Reference, Reply)
         end, wa_raft_queue:query_reads(Table, Partition, LastAppliedIndex)),
-    State.
-
--spec cancel_pending_commits(#state{}) -> #state{}.
-cancel_pending_commits(#state{table = Table, partition = Partition, name = Name} = State) ->
-    ?LOG_NOTICE("[~p] cancel pending commits", [Name], #{domain => [whatsapp, wa_raft]}),
-    wa_raft_queue:fulfill_all_commits(Table, Partition, {error, not_leader}),
-    State.
-
--spec cancel_pending_reads(#state{}) -> #state{}.
-cancel_pending_reads(#state{table = Table, partition = Partition, name = Name} = State) ->
-    ?LOG_NOTICE("[~p] cancel pending reads", [Name], #{domain => [whatsapp, wa_raft]}),
-    wa_raft_queue:fulfill_all_reads(Table, Partition, {error, not_leader}),
     State.
 
 -spec create_snapshot_impl(SnapName :: string(), Storage :: #state{}) -> ok | error().
