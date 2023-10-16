@@ -183,12 +183,12 @@ fulfill_commit(Table, Partition, Reference, Reply) ->
     end.
 
 % Fulfill a pending commit with an error that indicates that the commit was not completed.
--spec fulfill_incomplete_commit(wa_raft:table(), wa_raft:partition(), term(), eqwalizer:dynamic()) -> ok | not_found.
+-spec fulfill_incomplete_commit(wa_raft:table(), wa_raft:partition(), term(), wa_raft_acceptor:commit_error()) -> ok | not_found.
 fulfill_incomplete_commit(Table, Partition, Reference, Error) ->
     fulfill_commit(Table, Partition, Reference, Error).
 
 % Fulfill a pending commit with an error that indicates that the commit was not completed.
--spec fulfill_all_commits(wa_raft:table(), wa_raft:partition(), eqwalizer:dynamic()) -> ok.
+-spec fulfill_all_commits(wa_raft:table(), wa_raft:partition(), wa_raft_acceptor:commit_error()) -> ok.
 fulfill_all_commits(Table, Partition, Reply) ->
     {_, Counters, CommitQueue, _} = require_info(Table, Partition),
     CommitsTable = CommitQueue,
@@ -261,14 +261,14 @@ fulfill_read(Table, Partition, Reference, Reply) ->
 
 % Complete a read that was reserved by the RAFT acceptor but was rejected
 % before it could be added to the read queue and so has no reference.
--spec fulfill_incomplete_read(wa_raft:table(), wa_raft:partition(), gen_server:from(), eqwalizer:dynamic()) -> ok.
+-spec fulfill_incomplete_read(wa_raft:table(), wa_raft:partition(), gen_server:from(), wa_raft_acceptor:read_error()) -> ok.
 fulfill_incomplete_read(Table, Partition, From, Reply) ->
     {_, Counters, _, _} = require_info(Table, Partition),
     counters:sub(Counters, ?RAFT_READ_QUEUE_SIZE_COUNTER, 1),
     gen_server:reply(From, Reply).
 
 % Fulfill a pending reads with an error that indicates that the read was not completed.
--spec fulfill_all_reads(wa_raft:table(), wa_raft:partition(), eqwalizer:dynamic()) -> ok.
+-spec fulfill_all_reads(wa_raft:table(), wa_raft:partition(), wa_raft_acceptor:read_error()) -> ok.
 fulfill_all_reads(Table, Partition, Reply) ->
     {_, Counters, _, ReadQueue} = require_info(Table, Partition),
     ReadsTable = ReadQueue,

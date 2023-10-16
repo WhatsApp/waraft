@@ -45,8 +45,40 @@
     read_op/0
 ]).
 
+-export_type([
+    call_error_type/0,
+    call_error/0,
+    call_result/0,
+    read_error/0,
+    read_error_type/0,
+    read_result/0,
+    commit_error_type/0,
+    commit_error/0,
+    commit_result/0
+]).
+
 -include_lib("kernel/include/logger.hrl").
 -include("wa_raft.hrl").
+
+-type command() :: noop_command() | config_command() | eqwalizer:dynamic().
+-type noop_command() :: noop.
+-type config_command() :: {config, Config :: wa_raft_server:config()}.
+
+-type key() :: term().
+-type op() :: {Key :: key(), Command :: command()}.
+-type read_op() :: {From :: gen_server:from(), Command :: command()}.
+
+-type call_error_type() :: timeout | unreachable | {call_error, Reason :: term()}.
+-type call_error() :: {error, call_error_type()}.
+-type call_result() :: Result :: eqwalizer:dynamic() | Error :: call_error().
+
+-type read_error_type() :: not_leader | {notify_redirect, Peer :: node()}.
+-type read_error() :: {error, read_error_type()}.
+-type read_result() :: Result :: eqwalizer:dynamic() | Error :: read_error() | call_error().
+
+-type commit_error_type() :: not_leader | {notify_redirect, Peer :: node()} | commit_stalled.
+-type commit_error() :: {error, commit_error_type()}.
+-type commit_result() :: Result :: eqwalizer:dynamic() | Error :: commit_error() | call_error().
 
 %% Acceptor state
 -record(raft_acceptor, {
@@ -62,13 +94,9 @@
     storage_name :: atom()
 }).
 
--type command() ::
-      noop
-    | {config, Config :: wa_raft_server:config()}
-    | {execute, Table :: atom(), Key :: term(), Module :: module(), Func :: atom(), Args :: list()}
-    | eqwalizer:dynamic().
--type op() :: {Ref :: term(), Command :: command()}.
--type read_op() :: {From :: gen_server:from(), Command :: command()}.
+%%-------------------------------------------------------------------
+%% OTP Supervision
+%%-------------------------------------------------------------------
 
 %%-------------------------------------------------------------------
 %% OTP Supervision
@@ -97,11 +125,11 @@ start_link(#raft_options{acceptor_name = Name} = Options) ->
 %% part of. Returns either the result returned by the storage module when applying the command
 %% or an error indicating some reason for which the command was not able to be committed or
 %% should be retried.
--spec commit(ServerRef :: gen_server:server_ref(), Op :: op()) -> Result :: eqwalizer:dynamic() | Error :: wa_raft:error().
+-spec commit(ServerRef :: gen_server:server_ref(), Op :: op()) -> commit_result().
 commit(ServerRef, Op) ->
     commit(ServerRef, Op, ?RAFT_RPC_CALL_TIMEOUT()).
 
--spec commit(ServerRef :: gen_server:server_ref(), Op :: op(), Timeout :: timeout()) -> Result :: eqwalizer:dynamic() | Error :: wa_raft:error().
+-spec commit(ServerRef :: gen_server:server_ref(), Op :: op(), Timeout :: timeout()) -> commit_result().
 commit(ServerRef, Op, Timeout) ->
     call(ServerRef, {commit, Op}, Timeout).
 
@@ -110,15 +138,15 @@ commit_async(ServerRef, From, Op) ->
     gen_server:cast(ServerRef, {commit, From, Op}).
 
 % Strong-read
--spec read(ServerRef :: gen_server:server_ref(), Command :: command()) -> Result :: eqwalizer:dynamic() | Error :: wa_raft:error().
+-spec read(ServerRef :: gen_server:server_ref(), Command :: command()) -> read_result().
 read(ServerRef, Command) ->
     read(ServerRef, Command, ?RAFT_RPC_CALL_TIMEOUT()).
 
--spec read(ServerRef :: gen_server:server_ref(), Command :: command(), Timeout :: timeout()) -> Result :: eqwalizer:dynamic() | Error :: wa_raft:error().
+-spec read(ServerRef :: gen_server:server_ref(), Command :: command(), Timeout :: timeout()) -> read_result().
 read(ServerRef, Command, Timeout) ->
     call(ServerRef, {read, Command}, Timeout).
 
--spec call(ServerRef :: gen_server:server_ref(), Request :: term(), Timeout :: timeout()) -> Result :: eqwalizer:dynamic() | Error :: wa_raft:error().
+-spec call(ServerRef :: gen_server:server_ref(), Request :: term(), Timeout :: timeout()) -> call_result().
 call(ServerRef, Request, Timeout) ->
     try
         gen_server:call(ServerRef, Request, Timeout)
