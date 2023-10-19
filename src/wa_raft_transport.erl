@@ -4,7 +4,7 @@
 %%% the LICENSE file in the root directory of this source tree.
 
 -module(wa_raft_transport).
--compile(warn_missing_spec).
+-compile(warn_missing_spec_all).
 -behaviour(gen_server).
 
 -include_lib("kernel/include/file.hrl").
@@ -637,6 +637,9 @@ collect_files(Root) ->
         end, {1, []}),
     Files.
 
+-spec collect_files_impl(
+    string(), list(), fun(), {integer(), [{non_neg_integer(), string(), string(), integer(), non_neg_integer()}]}
+) -> {integer(), [{non_neg_integer(), string(), string(), integer(), non_neg_integer()}]}.
 collect_files_impl(_Root, [], _Fun, Acc) ->
     Acc;
 collect_files_impl(Root, [Filename | Queue], Fun, Acc0) ->
