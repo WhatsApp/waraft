@@ -10,7 +10,7 @@
 %%% guarantees are required against node shutdown.
 
 -module(wa_raft_log_ets).
--compile(warn_missing_spec).
+-compile(warn_missing_spec_all).
 -behaviour(wa_raft_log).
 
 %% RAFT log provider interface for accessing log data
@@ -70,6 +70,15 @@ last_index(Log) ->
 fold(Log, Start, End, SizeLimit, Func, Acc) ->
     fold_impl(Log, Start, End, 0, SizeLimit, Func, Acc).
 
+-spec fold_impl(
+    Log :: wa_raft_log:log(),
+    Start :: wa_raft_log:log_index() | '$end_of_table',
+    End :: wa_raft_log:log_index(),
+    Size :: non_neg_integer(),
+    SizeLimit :: non_neg_integer() | infinity,
+    Func :: fun((Index :: wa_raft_log:log_index(), Entry :: wa_raft_log:log_entry(), Acc) -> Acc),
+    Acc
+) -> {ok, Acc}.
 fold_impl(_Log, Start, End, Size, SizeLimit, _Func, Acc) when End < Start orelse Size >= SizeLimit ->
     {ok, Acc};
 fold_impl(Log, Start, End, Size, SizeLimit, Func, Acc) ->
@@ -112,6 +121,13 @@ append(View, Start, Entries, _Mode) ->
     Log = wa_raft_log:log(View),
     append_impl(Log, Start, Entries, first_index(Log), last_index(Log)).
 
+-spec append_impl(
+    Log :: wa_raft_log:log(),
+    Start :: wa_raft_log:log_index(),
+    Entries :: [wa_raft_log:log_entry()],
+    First :: wa_raft_log:log_index() | undefined,
+    Last :: wa_raft_log:log_index() | undefined
+) -> ok | {mismatch, Index :: wa_raft_log:log_index()} | wa_raft_log:error().
 append_impl(_Log, _Start, [], _First, _Last) ->
     ok;
 append_impl(Log, Start, [_ | Entries], First, Last) when Start < First ->
@@ -169,6 +185,7 @@ trim(Log, Index, State) ->
     trim_impl(Log, Index - 1),
     {ok, State}.
 
+-spec trim_impl(Log :: wa_raft_log:log(), Index :: wa_raft_log:log_index()) -> ok.
 trim_impl(_Log, '$end_of_table') ->
     ok;
 trim_impl(Log, Index) ->
