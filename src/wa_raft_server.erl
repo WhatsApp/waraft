@@ -19,10 +19,18 @@
     start_link/1
 ]).
 
-%% API
+%% RAFT Cluster Config API
 -export([
     make_config/1,
     make_config/2,
+    get_config_members/1,
+    get_config_witnesses/1,
+    set_config_members/2,
+    set_config_members/3
+]).
+
+%% API
+-export([
     status/1,
     status/2,
     membership/1,
@@ -85,8 +93,6 @@
 
 -export_type([
     state/0,
-    peer/0,
-    membership/0,
     config/0,
     status/0
 ]).
@@ -192,22 +198,40 @@ start_link(#raft_options{server_name = Name} = Options) ->
     gen_statem:start_link({local, Name}, ?MODULE, Options, []).
 
 %% ==================================================
+%%  RAFT Server - Cluster Config API
+%% ==================================================
+
+-spec get_config_members(Config :: config()) -> undefined | [#raft_identity{}].
+get_config_members(#{version := ?RAFT_CONFIG_CURRENT_VERSION, membership := Members}) ->
+    [#raft_identity{name = Name, node = Node} || {Name, Node} <- Members];
+get_config_members(_Config) ->
+    undefined.
+
+-spec get_config_witnesses(Config :: config()) -> undefined | [#raft_identity{}].
+get_config_witnesses(#{version := ?RAFT_CONFIG_CURRENT_VERSION, witness := Witnesses}) ->
+    [#raft_identity{name = Name, node = Node} || {Name, Node} <- Witnesses];
+get_config_witnesses(_Config) ->
+    undefined.
+
+-spec make_config(Members :: [#raft_identity{}]) -> config().
+make_config(Members) ->
+    set_config_members(Members, #{version => ?RAFT_CONFIG_CURRENT_VERSION}).
+
+-spec make_config(Members :: [#raft_identity{}], Witnesses :: [#raft_identity{}]) -> config().
+make_config(Members, Witnesses) ->
+    set_config_members(Members, Witnesses, #{version => ?RAFT_CONFIG_CURRENT_VERSION}).
+
+-spec set_config_members(Members :: [#raft_identity{}], Config :: config()) -> AdjustedConfig :: config().
+set_config_members(Members, #{version := ?RAFT_CONFIG_CURRENT_VERSION} = Config) ->
+    Config#{membership => [{Name, Node} || #raft_identity{name = Name, node = Node} <- Members]}.
+
+-spec set_config_members(Members :: [#raft_identity{}], Witnesses :: [#raft_identity{}], Config :: config()) -> AdjustedConfig :: config().
+set_config_members(Members, Witnesses, #{version := ?RAFT_CONFIG_CURRENT_VERSION} = Config) ->
+    (set_config_members(Members, Config))#{witness => [{Name, Node} || #raft_identity{name = Name, node = Node} <- Witnesses]}.
+
+%% ==================================================
 %%  RAFT Server Internal API
 %% ==================================================
--spec make_config(Membership :: membership()) -> config().
-make_config(Membership) ->
-    #{
-        version => ?RAFT_CONFIG_CURRENT_VERSION,
-        membership => Membership
-    }.
-
--spec make_config(Membership :: membership(), Witness :: membership()) -> config().
-make_config(Membership, Witness) ->
-    #{
-        version => ?RAFT_CONFIG_CURRENT_VERSION,
-        membership => Membership,
-        witness => Witness
-    }.
 
 %% Commit an op to the consensus group.
 -spec commit(Pid :: atom() | pid(), Op :: wa_raft_acceptor:op()) -> ok | wa_raft:error().
@@ -243,11 +267,15 @@ status(ServerRef, Keys) when is_list(Keys) ->
             lists:duplicate(length(Keys), undefined)
     end.
 
--spec membership(Service :: pid() | atom() | {atom(), node()}) -> undefined | membership().
+-spec membership(Service :: pid() | atom() | {atom(), node()}) -> undefined | [{atom(), node()}].
 membership(Service) ->
-    case status(Service, config) of
-        #{membership := Membership} -> Membership;
-        _                           -> undefined
+    case proplists:get_value(config, status(Service), undefined) of
+        undefined -> undefined;
+        Config ->
+            case get_config_members(Config) of
+                undefined -> undefined;
+                Membership -> [{Name, Node} || #raft_identity{name = Name, node = Node} <- Membership]
+            end
     end.
 
 -spec stop(Pid :: atom() | pid()) -> ok.

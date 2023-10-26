@@ -254,12 +254,13 @@
     term = 0 :: wa_raft_log:log_term()
 }).
 
-%% This record contains the identity of a RAFT server. The intent is
-%% for the RAFT server implementation to avoid destructuring this
-%% record as much as possible to reduce the code change required if
-%% the details about the identity of peers changes. This record
-%% should not be sent between RAFT servers as it is not guaranteed to
-%% be fixed between versions.
+%% This record represents the identity of a RAFT replica, usable to
+%% distinguish different RAFT replicas from one another. This record
+%% is not guaranteed to remain structurally compatible between versions
+%% of RAFT and so should not be persisted between runtimes nor sent
+%% between RAFT servers. It is generally allowed to inspect the fields
+%% of this record, however, similarly, this record is subject to change
+%% at any time.
 -record(raft_identity, {
     % The service name (registered name) of the RAFT server that this
     % identity record refers to.
