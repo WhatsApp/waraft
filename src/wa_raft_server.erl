@@ -267,15 +267,11 @@ status(ServerRef, Keys) when is_list(Keys) ->
             lists:duplicate(length(Keys), undefined)
     end.
 
--spec membership(Service :: pid() | atom() | {atom(), node()}) -> undefined | [{atom(), node()}].
+-spec membership(Service :: pid() | atom() | {atom(), node()}) -> undefined | [#raft_identity{}].
 membership(Service) ->
     case proplists:get_value(config, status(Service), undefined) of
         undefined -> undefined;
-        Config ->
-            case get_config_members(Config) of
-                undefined -> undefined;
-                Membership -> [{Name, Node} || #raft_identity{name = Name, node = Node} <- Membership]
-            end
+        Config    -> get_config_members(Config)
     end.
 
 -spec stop(Pid :: atom() | pid()) -> ok.
