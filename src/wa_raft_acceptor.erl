@@ -41,6 +41,7 @@
 
 -export_type([
     command/0,
+    key/0,
     op/0,
     read_op/0
 ]).
