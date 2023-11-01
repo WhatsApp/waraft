@@ -236,20 +236,20 @@ set_config_members(Members, Witnesses, #{version := ?RAFT_CONFIG_CURRENT_VERSION
 %% Commit an op to the consensus group.
 -spec commit(Pid :: atom() | pid(), Op :: wa_raft_acceptor:op()) -> ok | wa_raft:error().
 commit(Pid, Op) ->
-    gen_server:cast(Pid, ?COMMIT_COMMAND(Op)).
+    gen_statem:cast(Pid, ?COMMIT_COMMAND(Op)).
 
 %% Strongly-consistent read
 -spec read(Pid :: atom() | pid(), Op :: wa_raft_acceptor:op()) -> ok | wa_raft:error().
 read(Pid, Op) ->
-    gen_server:cast(Pid, ?READ_COMMAND(Op)).
+    gen_statem:cast(Pid, ?READ_COMMAND(Op)).
 
--spec status(ServerRef :: gen_server:server_ref()) -> status().
+-spec status(ServerRef :: gen_statem:server_ref()) -> status().
 status(ServerRef) ->
-    gen_server:call(ServerRef, ?STATUS_COMMAND, ?RAFT_RPC_CALL_TIMEOUT()).
+    gen_statem:call(ServerRef, ?STATUS_COMMAND, ?RAFT_RPC_CALL_TIMEOUT()).
 
 -spec status
-    (ServerRef :: gen_server:server_ref(), Key :: atom()) -> Value :: eqwalizer:dynamic();
-    (ServerRef :: gen_server:server_ref(), Keys :: [atom()]) -> Value :: [eqwalizer:dynamic()].
+    (ServerRef :: gen_statem:server_ref(), Key :: atom()) -> Value :: eqwalizer:dynamic();
+    (ServerRef :: gen_statem:server_ref(), Keys :: [atom()]) -> Value :: [eqwalizer:dynamic()].
 status(ServerRef, Key) when is_atom(Key) ->
     hd(status(ServerRef, [Key]));
 status(ServerRef, Keys) when is_list(Keys) ->
@@ -281,7 +281,7 @@ stop(Pid) ->
 % An API that uses storage timeout since it interacts with storage layer directly
 -spec snapshot_available(Pid :: atom() | pid() | {atom(), atom()}, Root :: string(), Pos :: wa_raft_log:log_pos()) -> ok | wa_raft:error().
 snapshot_available(Pid, Root, Pos) ->
-    gen_server:call(Pid, ?SNAPSHOT_AVAILABLE_COMMAND(Root, Pos), ?RAFT_STORAGE_CALL_TIMEOUT()).
+    gen_statem:call(Pid, ?SNAPSHOT_AVAILABLE_COMMAND(Root, Pos), ?RAFT_STORAGE_CALL_TIMEOUT()).
 
 %% TODO(hsun324): Update promote to enable setting a RAFT cluster membership
 %%                in order to be able to bootstrap new RAFT clusters.
@@ -295,47 +295,47 @@ promote(Pid, Term, Force) ->
 
 -spec promote(Pid :: atom() | pid(), Term :: pos_integer(), Force :: boolean(), Config :: undefined | config()) -> ok | wa_raft:error().
 promote(Pid, Term, Force, Config) ->
-    gen_server:call(Pid, ?PROMOTE_COMMAND(Term, Force, Config), ?RAFT_RPC_CALL_TIMEOUT()).
+    gen_statem:call(Pid, ?PROMOTE_COMMAND(Term, Force, Config), ?RAFT_RPC_CALL_TIMEOUT()).
 
 -spec resign(Pid :: atom() | pid()) -> ok | wa_raft:error().
 resign(Pid) ->
-    gen_server:call(Pid, ?RESIGN_COMMAND, ?RAFT_RPC_CALL_TIMEOUT()).
+    gen_statem:call(Pid, ?RESIGN_COMMAND, ?RAFT_RPC_CALL_TIMEOUT()).
 
 -spec refresh_config(Name :: atom() | pid()) -> {ok, Pos :: wa_raft_log:log_pos()} | wa_raft:error().
 refresh_config(Name) ->
-    gen_server:call(Name, ?ADJUST_MEMBERSHIP_COMMAND(refresh, undefined), ?RAFT_RPC_CALL_TIMEOUT()).
+    gen_statem:call(Name, ?ADJUST_MEMBERSHIP_COMMAND(refresh, undefined), ?RAFT_RPC_CALL_TIMEOUT()).
 
 -spec adjust_membership(Name :: atom() | pid(), Action :: add | remove | add_witness | remove_witness, Peer :: peer()) -> {ok, Pos :: wa_raft_log:log_pos()} | wa_raft:error().
 adjust_membership(Name, Action, Peer) ->
-    gen_server:call(Name, ?ADJUST_MEMBERSHIP_COMMAND(Action, Peer), ?RAFT_RPC_CALL_TIMEOUT()).
+    gen_statem:call(Name, ?ADJUST_MEMBERSHIP_COMMAND(Action, Peer), ?RAFT_RPC_CALL_TIMEOUT()).
 
 -spec handover_candidates(Name :: atom() | pid()) -> {ok, Candidates :: [node()]} | wa_raft:error().
 handover_candidates(Name) ->
-    gen_server:call(Name, ?HANDOVER_CANDIDATES_COMMAND, ?RAFT_RPC_CALL_TIMEOUT()).
+    gen_statem:call(Name, ?HANDOVER_CANDIDATES_COMMAND, ?RAFT_RPC_CALL_TIMEOUT()).
 
 %% Instruct a RAFT leader to attempt a handover to a random handover candidate.
 -spec handover(Name :: atom() | pid()) -> ok.
 handover(Name) ->
-    gen_server:cast(Name, ?HANDOVER_COMMAND(undefined)).
+    gen_statem:cast(Name, ?HANDOVER_COMMAND(undefined)).
 
 %% Instruct a RAFT leader to attempt a handover to the specified peer node.
 %% If an `undefined` peer node is specified, then handover to a random handover candidate.
 %% Returns which peer node the handover was sent to or otherwise an error.
 -spec handover(Name :: atom() | pid(), Peer :: node() | undefined) -> {ok, Peer :: node()} | wa_raft:error().
 handover(Name, Peer) ->
-    gen_server:call(Name, ?HANDOVER_COMMAND(Peer), ?RAFT_RPC_CALL_TIMEOUT()).
+    gen_statem:call(Name, ?HANDOVER_COMMAND(Peer), ?RAFT_RPC_CALL_TIMEOUT()).
 
 -spec disable(Name :: atom() | pid(), Reason :: term()) -> ok | {error, ErrorReason :: atom()}.
 disable(Name, Reason) ->
-    gen_server:cast(Name, ?DISABLE_COMMAND(Reason)).
+    gen_statem:cast(Name, ?DISABLE_COMMAND(Reason)).
 
 -spec enter_witness(Name :: atom() | pid()) -> ok | {error, ErrorReason :: atom()}.
 enter_witness(Name) ->
-    gen_server:cast(Name, ?WITNESS_COMMAND()).
+    gen_statem:cast(Name, ?WITNESS_COMMAND()).
 
 -spec enable(Name :: atom() | pid()) -> ok | {error, ErrorReason :: atom()}.
 enable(Name) ->
-    gen_server:call(Name, ?ENABLE_COMMAND, ?RAFT_RPC_CALL_TIMEOUT()).
+    gen_statem:call(Name, ?ENABLE_COMMAND, ?RAFT_RPC_CALL_TIMEOUT()).
 
 %%-------------------------------------------------------------------
 %% Internal API
