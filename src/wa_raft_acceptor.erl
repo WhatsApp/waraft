@@ -35,7 +35,6 @@
     init/1,
     handle_call/3,
     handle_cast/2,
-    handle_info/2,
     terminate/2
 ]).
 
@@ -82,17 +81,15 @@
 -type commit_result() :: Result :: eqwalizer:dynamic() | Error :: commit_error() | call_error().
 
 %% Acceptor state
--record(raft_acceptor, {
-    % Service name
+-record(state, {
+    % Acceptor service name
     name :: atom(),
     % Table name
     table :: wa_raft:table(),
-    % Partition
+    % Partition number
     partition :: wa_raft:partition(),
     % Server service name
-    server_name :: atom(),
-    % Storage service name
-    storage_name :: atom()
+    server :: atom()
 }).
 
 %%-------------------------------------------------------------------
@@ -177,105 +174,98 @@ registered_name(Table, Partition) ->
         Options   -> Options#raft_options.acceptor_name
     end.
 
-%% gen_server callbacks
--spec init(Options :: #raft_options{}) -> {ok, #raft_acceptor{}}.
-init(#raft_options{table = Table, partition = Partition, acceptor_name = Name, server_name = Server, storage_name = Storage}) ->
+%%-------------------------------------------------------------------
+%% RAFT Acceptor - Server Callbacks
+%%-------------------------------------------------------------------
+
+-spec init(Options :: #raft_options{}) -> {ok, #state{}}.
+init(#raft_options{table = Table, partition = Partition, acceptor_name = Name, server_name = Server}) ->
     process_flag(trap_exit, true),
 
     ?LOG_NOTICE("Acceptor[~0p] starting for partition ~0p/~0p",
         [Name, Table, Partition], #{domain => [whatsapp, wa_raft]}),
 
-    {ok, #raft_acceptor{
+    {ok, #state{
         name = Name,
         table = Table,
         partition = Partition,
-        server_name = Server,
-        storage_name = Storage
+        server = Server
     }}.
 
--spec handle_call(Request, From :: gen_server:from(), State :: #raft_acceptor{}) ->
-    {noreply, NewState :: #raft_acceptor{}} | {stop, Reason :: term(), Reply :: term(), NewState :: #raft_acceptor{}}
+-spec handle_call(Request, From :: gen_server:from(), State :: #state{}) ->
+    {noreply, NewState :: #state{}} | {stop, Reason :: term(), Reply :: term(), NewState :: #state{}}
     when Request :: {read, command()} | {commit, op()} | stop.
-
-handle_call({read, Command}, From, #raft_acceptor{} = State0) ->
-    State1 = read_impl(From, Command, State0),
-    {noreply, State1};
-
-handle_call({commit, Op}, From, State0) ->
-    State1 = commit_impl(From, Op, State0),
-    {noreply, State1};
-
-handle_call(stop, _From, State) ->
-    {stop, normal, ok, State};
-
-handle_call(Cmd, From, #raft_acceptor{name = Name} = State) ->
-    ?LOG_ERROR("[~p] Unexpected call ~p from ~p", [Name, Cmd, From], #{domain => [whatsapp, wa_raft]}),
+handle_call({read, Command}, From, State) ->
+    {noreply, read_impl(From, Command, State)};
+handle_call({commit, Op}, From, State) ->
+    {noreply, commit_impl(From, Op, State)};
+handle_call(Request, From, #state{name = Name} = State) ->
+    ?LOG_ERROR("Acceptor[~0p] received unexpected call ~0P from ~0p.",
+        [Name, Request, 30, From], #{domain => [whatsapp, wa_raft]}),
     {noreply, State}.
 
-
--spec handle_cast(Request, State :: #raft_acceptor{}) -> {noreply, NewState :: #raft_acceptor{}}
-    when Request :: {commit, gen_server:from(), op()}.
-handle_cast({commit, From, Op}, State0) ->
-    State1 = commit_impl(From, Op, State0),
-    {noreply, State1};
-
-handle_cast(Cmd, #raft_acceptor{name = Name} = State) ->
-    ?LOG_ERROR("[~p] Unexpected cast ~p", [Name, Cmd], #{domain => [whatsapp, wa_raft]}),
+-spec handle_cast(Request, State :: #state{}) -> {noreply, NewState :: #state{}}
+when Request :: {commit, gen_server:from(), op()}.
+handle_cast({commit, From, Op}, State) ->
+    {noreply, commit_impl(From, Op, State)};
+handle_cast(Request, #state{name = Name} = State) ->
+    ?LOG_ERROR("Acceptor[~0p] received unexpected cast ~0P.",
+        [Name, Request, 30], #{domain => [whatsapp, wa_raft]}),
     {noreply, State}.
 
+-spec terminate(Reason :: term(), State :: #state{}) -> ok.
+terminate(Reason, #state{name = Name}) ->
+    ?LOG_NOTICE("Acceptor[~0p] terminating with reason ~0P",
+        [Name, Reason, 30], #{domain => [whatsapp, wa_raft]}),
+    ok.
 
--spec handle_info(Request :: term(), State :: #raft_acceptor{}) -> {noreply, NewState :: #raft_acceptor{}}.
-handle_info(Command, #raft_acceptor{name = Name} = State) ->
-    ?LOG_ERROR("[~p] Unexpected info ~p", [Name, Command], #{domain => [whatsapp, wa_raft]}),
-    {noreply, State}.
+%%-------------------------------------------------------------------
+%% RAFT Acceptor - Implementations
+%%-------------------------------------------------------------------
 
--spec terminate(Reason :: term(), State0 :: #raft_acceptor{}) -> State1 :: #raft_acceptor{}.
-terminate(Reason, #raft_acceptor{name = Name} = State) ->
-    ?LOG_NOTICE("[~p] Acceptor terminated for reason ~p", [Name, Reason], #{domain => [whatsapp, wa_raft]}),
-    State.
-
-%% Private functions
-
--spec commit_impl(From :: gen_server:from(), Request :: op(), State :: #raft_acceptor{}) -> NewState :: #raft_acceptor{}.
-commit_impl(From, {Ref, _} = Op, #raft_acceptor{table = Table, partition = Partition, server_name = Server, name = Name} = State) ->
+%% Enqueue a commit.
+-spec commit_impl(From :: gen_server:from(), Request :: op(), State :: #state{}) -> #state{}.
+commit_impl(From, {Key, _} = Op, #state{table = Table, partition = Partition, server = Server, name = Name} = State) ->
     StartT = os:timestamp(),
-    ?LOG_DEBUG("[~p] Commit starts", [Name], #{domain => [whatsapp, wa_raft]}),
-    case wa_raft_queue:commit(Table, Partition, Ref, From) of
+    ?LOG_DEBUG("Acceptor[~0p] starts to handle commit of ~0P from ~0p.",
+        [Name, Op, 30, From], #{domain => [whatsapp, wa_raft]}),
+    case wa_raft_queue:commit(Table, Partition, Key, From) of
         duplicate ->
-            ?LOG_WARNING("[~p] Duplicate request ~p.", [Name, Ref, 100], #{domain => [whatsapp, wa_raft]}),
+            ?LOG_WARNING("Acceptor[~0p] is rejecting commit request from ~0p because it has duplicate key ~0p.",
+                [Name, From, Key], #{domain => [whatsapp, wa_raft]}),
             ?RAFT_COUNT('raft.acceptor.error.duplicate_commit'),
-            gen_server:reply(From, {error, {duplicate_request, Ref}});
+            gen_server:reply(From, {error, {duplicate_request, Key}});
         commit_queue_full ->
-            ?LOG_WARNING("[~p] Reject request ~p. Commit queue is full", [Name, Ref], #{domain => [whatsapp, wa_raft]}),
+            ?LOG_WARNING("Acceptor[~0p] is rejecting commit request from ~0p with key ~0p because the commit queue is full.",
+                [Name, From, Key], #{domain => [whatsapp, wa_raft]}),
             ?RAFT_COUNT('raft.acceptor.error.commit_queue_full'),
-            gen_server:reply(From, {error, {commit_queue_full, Ref}});
+            gen_server:reply(From, {error, {commit_queue_full, Key}});
         apply_queue_full ->
-            ?LOG_WARNING("[~p] Reject request ~p. Apply queue is full", [Name, Ref], #{domain => [whatsapp, wa_raft]}),
+            ?LOG_WARNING("Acceptor[~0p] is rejecting commit request from ~0p with key ~0p because the apply queue is full.",
+                [Name, From, Key], #{domain => [whatsapp, wa_raft]}),
             ?RAFT_COUNT('raft.acceptor.error.apply_queue_full'),
-            gen_server:reply(From, {error, {apply_queue_full, Ref}});
+            gen_server:reply(From, {error, {apply_queue_full, Key}});
         ok ->
             wa_raft_server:commit(Server, Op)
     end,
     ?RAFT_GATHER('raft.acceptor.commit.func', timer:now_diff(os:timestamp(), StartT)),
     State.
 
--spec read_impl(From :: gen_server:from(),
-                Command :: command(),
-                State0 :: #raft_acceptor{}) -> State1 :: #raft_acceptor{}.
-%% Strongly-consistent read.
-read_impl(From, Command, #raft_acceptor{name = Name, table = Table, partition = Partition, server_name = Server} = State) ->
+%% Enqueue a strongly-consistent read.
+-spec read_impl(gen_server:from(), command(), #state{}) -> #state{}.
+read_impl(From, Command, #state{name = Name, table = Table, partition = Partition, server = Server} = State) ->
     StartT = os:timestamp(),
     ?LOG_DEBUG("Acceptor[~p] starts to handle read of ~0P from ~0p.",
         [Name, Command, 100, From], #{domain => [whatsapp, wa_raft]}),
     case wa_raft_queue:reserve_read(Table, Partition) of
         read_queue_full ->
             ?RAFT_COUNT('raft.acceptor.strong_read.error.read_queue_full'),
-            ?LOG_WARNING("Acceptor[~p] is rejecting read request from ~p because the read queue is full.",
+            ?LOG_WARNING("Acceptor[~0p] is rejecting read request from ~0p because the read queue is full.",
                 [Name, From], #{domain => [whatsapp, wa_raft]}),
             gen_server:reply(From, {error, read_queue_full});
         apply_queue_full ->
             ?RAFT_COUNT('raft.acceptor.strong_read.error.apply_queue_full'),
-            ?LOG_WARNING("Acceptor[~p] is rejecting read request from ~p because the apply queue is full.",
+            ?LOG_WARNING("Acceptor[~0p] is rejecting read request from ~0p because the apply queue is full.",
                 [Name, From], #{domain => [whatsapp, wa_raft]}),
             gen_server:reply(From, {error, apply_queue_full});
         ok ->
