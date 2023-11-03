@@ -67,7 +67,7 @@ storage_write_metadata(#state{name = Name}, Key, Version, Value) ->
     true = ets:insert(Name, {{?METADATA_TAG, Key}, {Version, Value}}),
     ok.
 
--spec storage_read(Command :: wa_raft_acceptor:command(), Position :: wa_raft_log:log_pos(), State :: #state{}) -> ok | {ok, Value :: eqwalizer:dynamic()} | not_found.
+-spec storage_read(Command :: wa_raft_acceptor:command(), Position :: wa_raft_log:log_pos(), State :: #state{}) -> ok | {ok, Value :: dynamic()} | not_found.
 storage_read(noop, _Position, #state{}) ->
     ok;
 storage_read({read, _Table, Key}, _Position, #state{name = Name}) ->

@@ -172,7 +172,7 @@
 %% If the command could not be applied in a manner so as to preserve the
 %% desired consistency guarantee then implementations can raise an error to
 %% cause the apply to be aborted safely.
--callback storage_apply(Command :: wa_raft_acceptor:command(), Position :: wa_raft_log:log_pos(), Handle :: storage_handle()) -> {Result :: eqwalizer:dynamic(), NewHandle :: storage_handle()}.
+-callback storage_apply(Command :: wa_raft_acceptor:command(), Position :: wa_raft_log:log_pos(), Handle :: storage_handle()) -> {Result :: dynamic(), NewHandle :: storage_handle()}.
 
 %% Apply a write command to update metadata stored by the storage provider
 %% on behalf of the RAFT implementation. Subsequent calls to read metadata
@@ -207,7 +207,7 @@
 
 %% Apply a read command against the storage state, returning the result of
 %% the read command.
--callback storage_read(Command :: wa_raft_acceptor:command(), Position :: wa_raft_log:log_pos(), Handle :: storage_handle()) -> Result :: eqwalizer:dynamic().
+-callback storage_read(Command :: wa_raft_acceptor:command(), Position :: wa_raft_log:log_pos(), Handle :: storage_handle()) -> Result :: dynamic().
 
 %% Apply a read command against the storage state to read the most recently
 %% written value of the metadata with the provided key, if such a value exists.
@@ -243,7 +243,7 @@
 %%-----------------------------------------------------------------------------
 
 -type metadata() :: config | atom().
--type storage_handle() :: eqwalizer:dynamic().
+-type storage_handle() :: dynamic().
 -type error() :: {error, term()}.
 
 -type status() :: [status_element()].
@@ -327,7 +327,7 @@ create_snapshot(ServiceRef, Name) ->
 delete_snapshot(ServiceRef, Name) ->
     gen_server:cast(ServiceRef, {snapshot_delete, Name}).
 
--spec read_metadata(ServiceRef :: pid() | atom(), Key :: metadata()) -> {ok, Version :: wa_raft_log:log_pos(), Value :: eqwalizer:dynamic()} | undefined | error().
+-spec read_metadata(ServiceRef :: pid() | atom(), Key :: metadata()) -> {ok, Version :: wa_raft_log:log_pos(), Value :: dynamic()} | undefined | error().
 read_metadata(ServiceRef, Key) ->
     gen_server:call(ServiceRef, {read_metadata, Key}, ?RAFT_STORAGE_CALL_TIMEOUT()).
 

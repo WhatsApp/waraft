@@ -41,7 +41,7 @@ database_path(Scope) ->
 %% Internal API
 %%-------------------------------------------------------------------
 
--spec get_env(Scope :: scope(), Key :: key()) -> {ok, Value :: eqwalizer:dynamic()} | undefined.
+-spec get_env(Scope :: scope(), Key :: key()) -> {ok, Value :: dynamic()} | undefined.
 get_env(Scope, Key) ->
     get_env_impl(search_apps(Scope), key(Key), fallback(Key)).
 
@@ -52,7 +52,7 @@ get_env(Scope, Key, Default) ->
         undefined   -> Default
     end.
 
--spec get_env_impl(SearchApps :: [atom()], Key :: atom(), FallbackKey :: atom()) -> {ok, Value :: eqwalizer:dynamic()} | undefined.
+-spec get_env_impl(SearchApps :: [atom()], Key :: atom(), FallbackKey :: atom()) -> {ok, Value :: dynamic()} | undefined.
 get_env_impl([], _Key, FallbackKey) ->
     application:get_env(?APP, FallbackKey);
 get_env_impl([App | SearchApps], Key, FallbackKey) ->

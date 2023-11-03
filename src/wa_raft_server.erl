@@ -248,8 +248,8 @@ status(ServerRef) ->
     gen_statem:call(ServerRef, ?STATUS_COMMAND, ?RAFT_RPC_CALL_TIMEOUT()).
 
 -spec status
-    (ServerRef :: gen_statem:server_ref(), Key :: atom()) -> Value :: eqwalizer:dynamic();
-    (ServerRef :: gen_statem:server_ref(), Keys :: [atom()]) -> Value :: [eqwalizer:dynamic()].
+    (ServerRef :: gen_statem:server_ref(), Key :: atom()) -> Value :: dynamic();
+    (ServerRef :: gen_statem:server_ref(), Keys :: [atom()]) -> Value :: [dynamic()].
 status(ServerRef, Key) when is_atom(Key) ->
     hd(status(ServerRef, [Key]));
 status(ServerRef, Keys) when is_list(Keys) ->

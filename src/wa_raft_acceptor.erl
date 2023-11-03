@@ -60,7 +60,7 @@
 -include_lib("kernel/include/logger.hrl").
 -include("wa_raft.hrl").
 
--type command() :: noop_command() | config_command() | eqwalizer:dynamic().
+-type command() :: noop_command() | config_command() | dynamic().
 -type noop_command() :: noop.
 -type config_command() :: {config, Config :: wa_raft_server:config()}.
 
@@ -70,12 +70,12 @@
 
 -type call_error_type() :: timeout | unreachable | {call_error, Reason :: term()}.
 -type call_error() :: {error, call_error_type()}.
--type call_result() :: Result :: eqwalizer:dynamic() | Error :: call_error().
+-type call_result() :: Result :: dynamic() | Error :: call_error().
 
 -type read_request() :: {read, Command :: command()}.
 -type read_error_type() :: not_leader | read_queue_full | apply_queue_full | {notify_redirect, Peer :: node()}.
 -type read_error() :: {error, read_error_type()}.
--type read_result() :: Result :: eqwalizer:dynamic() | Error :: read_error() | call_error().
+-type read_result() :: Result :: dynamic() | Error :: read_error() | call_error().
 
 -type commit_request() :: {commit, Op :: op()}.
 -type commit_async_request() :: {commit, From :: gen_server:from(), Op :: op()}.
@@ -87,7 +87,7 @@
     {notify_redirect, Peer :: node()} |
     commit_stalled.
 -type commit_error() :: {error, commit_error_type()}.
--type commit_result() :: Result :: eqwalizer:dynamic() | Error :: commit_error() | call_error().
+-type commit_result() :: Result :: dynamic() | Error :: commit_error() | call_error().
 
 %% Acceptor state
 -record(state, {

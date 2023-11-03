@@ -171,7 +171,7 @@ commit_queue_full(Table, Partition) ->
 
 % Fulfill a pending commit with the result of the application of the command contained
 % within the commit.
--spec fulfill_commit(wa_raft:table(), wa_raft:partition(), term(), eqwalizer:dynamic()) -> ok | not_found.
+-spec fulfill_commit(wa_raft:table(), wa_raft:partition(), term(), dynamic()) -> ok | not_found.
 fulfill_commit(Table, Partition, Reference, Reply) ->
     {_, Counters, CommitQueue, _} = require_info(Table, Partition),
     case ets:take(CommitQueue, Reference) of
@@ -248,7 +248,7 @@ query_reads(Table, Partition, MaxLogIndex) ->
     ),
     ets:select(ReadQueue, MatchSpec).
 
--spec fulfill_read(wa_raft:table(), wa_raft:partition(), term(), eqwalizer:dynamic()) -> ok | not_found.
+-spec fulfill_read(wa_raft:table(), wa_raft:partition(), term(), dynamic()) -> ok | not_found.
 fulfill_read(Table, Partition, Reference, Reply) ->
     {_, Counters, _, ReadQueue} = require_info(Table, Partition),
     case ets:take(ReadQueue, Reference) of
