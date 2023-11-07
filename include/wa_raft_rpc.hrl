@@ -74,20 +74,20 @@
 
 -define(RAFT_COMMAND(Type, Payload), {command, Type, Payload}).
 
--define(COMMIT_COMMAND(Op),                         ?RAFT_COMMAND(commit, Op)).
--define(READ_COMMAND(Op),                           ?RAFT_COMMAND(read, Op)).
+-define(COMMIT_COMMAND(Op),                                     ?RAFT_COMMAND(commit, Op)).
+-define(READ_COMMAND(Op),                                       ?RAFT_COMMAND(read, Op)).
 
--define(STATUS_COMMAND,                             ?RAFT_COMMAND(status, undefined)).
--define(PROMOTE_COMMAND(Term, Force, Config),       ?RAFT_COMMAND(promote, {Term, Force, Config})).
--define(RESIGN_COMMAND,                             ?RAFT_COMMAND(resign, undefined)).
+-define(STATUS_COMMAND,                                         ?RAFT_COMMAND(status, undefined)).
+-define(PROMOTE_COMMAND(Term, Force, Config),                   ?RAFT_COMMAND(promote, {Term, Force, Config})).
+-define(RESIGN_COMMAND,                                         ?RAFT_COMMAND(resign, undefined)).
 
--define(ADJUST_MEMBERSHIP_COMMAND(Action, Peer),    ?RAFT_COMMAND(adjust_membership, {Action, Peer})).
+-define(ADJUST_MEMBERSHIP_COMMAND(Action, Peer, ConfigIndex),   ?RAFT_COMMAND(adjust_membership, {Action, Peer, ConfigIndex})).
 
--define(SNAPSHOT_AVAILABLE_COMMAND(Root, Position), ?RAFT_COMMAND(snapshot_available, {Root, Position})).
+-define(SNAPSHOT_AVAILABLE_COMMAND(Root, Position),             ?RAFT_COMMAND(snapshot_available, {Root, Position})).
 
--define(HANDOVER_CANDIDATES_COMMAND,                ?RAFT_COMMAND(handover_candidates, undefined)).
--define(HANDOVER_COMMAND(Peer),                     ?RAFT_COMMAND(handover, Peer)).
+-define(HANDOVER_CANDIDATES_COMMAND,                            ?RAFT_COMMAND(handover_candidates, undefined)).
+-define(HANDOVER_COMMAND(Peer),                                 ?RAFT_COMMAND(handover, Peer)).
 
--define(ENABLE_COMMAND,                             ?RAFT_COMMAND(enable, undefined)).
--define(DISABLE_COMMAND(Reason),                    ?RAFT_COMMAND(disable, Reason)).
--define(WITNESS_COMMAND(),                          ?RAFT_COMMAND(witness, undefined)).
+-define(ENABLE_COMMAND,                                         ?RAFT_COMMAND(enable, undefined)).
+-define(DISABLE_COMMAND(Reason),                                ?RAFT_COMMAND(disable, Reason)).
+-define(WITNESS_COMMAND(),                                      ?RAFT_COMMAND(witness, undefined)).

@@ -72,6 +72,7 @@
     resign/1,
     refresh_config/1,
     adjust_membership/3,
+    adjust_membership/4,
     handover/1,
     handover/2,
     handover_candidates/1,
@@ -163,7 +164,7 @@
 -type status_command()              :: ?STATUS_COMMAND.
 -type promote_command()             :: ?PROMOTE_COMMAND(wa_raft_log:log_term(), boolean(), config() | undefined).
 -type resign_command()              :: ?RESIGN_COMMAND.
--type adjust_membership_command()   :: ?ADJUST_MEMBERSHIP_COMMAND(membership_action(), peer() | undefined).
+-type adjust_membership_command()   :: ?ADJUST_MEMBERSHIP_COMMAND(membership_action(), peer() | undefined, wa_raft_log:log_index() | undefined).
 -type snapshot_available_command()  :: ?SNAPSHOT_AVAILABLE_COMMAND(string(), wa_raft_log:log_pos()).
 -type handover_candidates_command() :: ?HANDOVER_CANDIDATES_COMMAND.
 -type handover_command()            :: ?HANDOVER_COMMAND(node()).
@@ -303,11 +304,25 @@ resign(Pid) ->
 
 -spec refresh_config(Name :: atom() | pid()) -> {ok, Pos :: wa_raft_log:log_pos()} | wa_raft:error().
 refresh_config(Name) ->
-    gen_statem:call(Name, ?ADJUST_MEMBERSHIP_COMMAND(refresh, undefined), ?RAFT_RPC_CALL_TIMEOUT()).
+    gen_statem:call(Name, ?ADJUST_MEMBERSHIP_COMMAND(refresh, undefined, undefined), ?RAFT_RPC_CALL_TIMEOUT()).
 
--spec adjust_membership(Name :: atom() | pid(), Action :: add | remove | add_witness | remove_witness, Peer :: peer()) -> {ok, Pos :: wa_raft_log:log_pos()} | wa_raft:error().
+-spec adjust_membership(
+    Name :: atom() | pid(),
+    Action :: add | remove | add_witness | remove_witness,
+    Peer :: peer()
+) ->
+    {ok, Pos :: wa_raft_log:log_pos()} | wa_raft:error().
 adjust_membership(Name, Action, Peer) ->
-    gen_statem:call(Name, ?ADJUST_MEMBERSHIP_COMMAND(Action, Peer), ?RAFT_RPC_CALL_TIMEOUT()).
+    adjust_membership(Name, Action, Peer, undefined).
+
+-spec adjust_membership(
+    Name :: atom() | pid(),
+    Action :: add | remove | add_witness | remove_witness,
+    Peer :: peer(),
+    ConfigIndex :: wa_raft_log:log_index() | undefined
+) -> {ok, Pos :: wa_raft_log:log_pos()} | wa_raft:error().
+adjust_membership(Name, Action, Peer, ConfigIndex) ->
+    gen_statem:call(Name, ?ADJUST_MEMBERSHIP_COMMAND(Action, Peer, ConfigIndex), ?RAFT_RPC_CALL_TIMEOUT()).
 
 -spec handover_candidates(Name :: atom() | pid()) -> {ok, Candidates :: [node()]} | wa_raft:error().
 handover_candidates(Name) ->
@@ -923,7 +938,7 @@ leader({call, From}, ?RESIGN_COMMAND, #raft_state{name = Name, log_view = View, 
     {next_state, follower, clear_leader(?FUNCTION_NAME, State#raft_state{log_view = NewView}), {reply, From, ok}};
 
 %% [Adjust Membership] Leader attempts to commit a single-node membership change.
-leader(Type, ?ADJUST_MEMBERSHIP_COMMAND(Action, Peer),
+leader(Type, ?ADJUST_MEMBERSHIP_COMMAND(Action, Peer, ExpectedConfigIndex),
        #raft_state{name = Name, log_view = View0, storage = Storage,
                    current_term = CurrentTerm, last_applied = LastApplied} = State0) ->
     % Try to adjust the configuration according to the current request.
@@ -951,18 +966,26 @@ leader(Type, ?ADJUST_MEMBERSHIP_COMMAND(Action, Peer),
                             reply(Type, {error, rejected}),
                             {keep_state, State0};
                         false ->
-                            % Now that we have completed all the required checks, the leader is free to
-                            % attempt to change the config. We heartbeat immediately to make the change as
-                            % soon as possible.
-                            Op = {make_ref(), {config, NewConfig}},
-                            {ok, LogIndex, View1} = wa_raft_log:append(View0, [{CurrentTerm, Op}]),
-                            ?LOG_NOTICE("Server[~0p, term ~0p, leader] appended configuration change from ~0p to ~0p at log index ~p.",
-                                [Name, CurrentTerm, Config, NewConfig, LogIndex], #{domain => [whatsapp, wa_raft]}),
-                            State1 = State0#raft_state{log_view = View1},
-                            State2 = apply_single_node_cluster(State1),
-                            State3 = append_entries_to_followers(State2),
-                            reply(Type, {ok, #raft_log_pos{index = LogIndex, term = CurrentTerm}}),
-                            {keep_state, State3, ?HEARTBEAT_TIMEOUT(State3)}
+                            case ExpectedConfigIndex =/= undefined andalso ExpectedConfigIndex =/= LogConfigIndex of
+                                true ->
+                                    ?LOG_NOTICE("Server[~0p, term ~0p, leader] rejecting request to ~p peer ~p because it has a different config index than expected (log: ~p, expected: ~p).",
+                                        [Name, CurrentTerm, Action, Peer, LogConfigIndex, ExpectedConfigIndex], #{domain => [whatsapp, wa_raft]}),
+                                    reply(Type, {error, rejected}),
+                                    {keep_state, State0};
+                                false ->
+                                    % Now that we have completed all the required checks, the leader is free to
+                                    % attempt to change the config. We heartbeat immediately to make the change as
+                                    % soon as possible.
+                                    Op = {make_ref(), {config, NewConfig}},
+                                    {ok, LogIndex, View1} = wa_raft_log:append(View0, [{CurrentTerm, Op}]),
+                                    ?LOG_NOTICE("Server[~0p, term ~0p, leader] appended configuration change from ~0p to ~0p at log index ~p.",
+                                        [Name, CurrentTerm, Config, NewConfig, LogIndex], #{domain => [whatsapp, wa_raft]}),
+                                    State1 = State0#raft_state{log_view = View1},
+                                    State2 = apply_single_node_cluster(State1),
+                                    State3 = append_entries_to_followers(State2),
+                                    reply(Type, {ok, #raft_log_pos{index = LogIndex, term = CurrentTerm}}),
+                                    {keep_state, State3, ?HEARTBEAT_TIMEOUT(State3)}
+                            end
                     end;
                 {ok, _OtherTerm} ->
                     ?LOG_NOTICE("Server[~0p, term ~0p, leader] rejecting request to ~p peer ~p because it has not established current term commit quorum.",
@@ -1615,9 +1638,9 @@ command(StateName, {call, From}, ?RESIGN_COMMAND, #raft_state{name = Name, curre
         [Name, CurrentTerm, StateName], #{domain => [whatsapp, wa_raft]}),
     {keep_state_and_data, {reply, From, {error, not_leader}}};
 %% [AdjustMembership] Non-leader nodes cannot adjust their config.
-command(StateName, Type, ?ADJUST_MEMBERSHIP_COMMAND(Action, Peer), #raft_state{name = Name, current_term = CurrentTerm} = State) when StateName =/= leader ->
-    ?LOG_NOTICE("Server[~0p, term ~0p, ~0p] cannot ~p peer ~p because we are not leader.",
-        [Name, CurrentTerm, StateName, Action, Peer], #{domain => [whatsapp, wa_raft]}),
+command(StateName, Type, ?ADJUST_MEMBERSHIP_COMMAND(Action, Peer, ConfigIndex), #raft_state{name = Name, current_term = CurrentTerm} = State) when StateName =/= leader ->
+    ?LOG_NOTICE("Server[~0p, term ~0p, ~0p] cannot ~p peer ~p config index ~p because we are not leader.",
+        [Name, CurrentTerm, StateName, Action, Peer, ConfigIndex], #{domain => [whatsapp, wa_raft]}),
     reply(Type, {error, not_leader}),
     {keep_state, State};
 %% [Snapshot Available] Follower and candidate nodes might switch to stalled to install snapshot.
