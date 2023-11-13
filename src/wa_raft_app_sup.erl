@@ -27,7 +27,7 @@
 start_link() ->
     supervisor:start_link({local, ?MODULE}, ?MODULE, []).
 
--spec init(Arg :: term()) -> {ok, {supervisor:sup_flags(), list(supervisor:child_spec())}}.
+-spec init(Arg :: term()) -> {ok, {supervisor:sup_flags(), [supervisor:child_spec()]}}.
 init(_) ->
     % Cache certain commonly used configuration values.
     case ?RAFT_METRICS_MODULE() of
