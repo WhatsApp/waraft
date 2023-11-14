@@ -1527,12 +1527,11 @@ terminate(Reason, State, #raft_state{name = Name, table = Table, partition = Par
 %% handler for a particular command defined for a particular RAFT server FSM state.
 -spec command(state(), gen_statem:event_type(), command(), #raft_state{}) -> gen_statem:event_handler_result(state(), #raft_state{}).
 %% [Commit] Non-leader nodes should fail commits with {error, not_leader}.
-command(StateName, Type, ?COMMIT_COMMAND({Reference, _}),
+command(StateName, cast, ?COMMIT_COMMAND({Key, _}),
         #raft_state{name = Name, table = Table, partition = Partition, current_term = CurrentTerm, leader_id = LeaderId}) when StateName =/= leader ->
-    ?LOG_WARNING("Server[~0p, term ~0p, ~0p] commit ~p fails. Leader is ~p.",
-        [Name, CurrentTerm, StateName, Reference, LeaderId], #{domain => [whatsapp, wa_raft]}),
-    wa_raft_queue:fulfill_incomplete_commit(Table, Partition, Reference, {error, not_leader}),
-    reply(Type, {error, not_leader}),
+    ?LOG_WARNING("Server[~0p, term ~0p, ~0p] commit with key ~p fails. Leader is ~p.",
+        [Name, CurrentTerm, StateName, Key, LeaderId], #{domain => [whatsapp, wa_raft]}),
+    wa_raft_queue:fulfill_incomplete_commit(Table, Partition, Key, {error, not_leader}),
     keep_state_and_data;
 %% [Strong Read] Non-leader nodes are not eligible for strong reads.
 command(StateName, cast, ?READ_COMMAND({From, _}),
