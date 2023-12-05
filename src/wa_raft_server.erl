@@ -960,6 +960,7 @@ leader(Type, ?ADJUST_MEMBERSHIP_COMMAND(Action, Peer, ExpectedConfigIndex),
                         {ok, LI, _} -> LI;
                         not_found   -> 0
                     end,
+                    ConfigIndex = max(StorageConfigIndex, LogConfigIndex),
                     case LogConfigIndex > StorageConfigIndex of
                         true ->
                             ?LOG_NOTICE("Server[~0p, term ~0p, leader] rejecting request to ~p peer ~p because it has a pending reconfiguration (storage: ~p, log: ~p).",
@@ -967,10 +968,10 @@ leader(Type, ?ADJUST_MEMBERSHIP_COMMAND(Action, Peer, ExpectedConfigIndex),
                             reply(Type, {error, rejected}),
                             {keep_state, State0};
                         false ->
-                            case ExpectedConfigIndex =/= undefined andalso ExpectedConfigIndex =/= LogConfigIndex of
+                            case ExpectedConfigIndex =/= undefined andalso ExpectedConfigIndex =/= ConfigIndex of
                                 true ->
-                                    ?LOG_NOTICE("Server[~0p, term ~0p, leader] rejecting request to ~p peer ~p because it has a different config index than expected (log: ~p, expected: ~p).",
-                                        [Name, CurrentTerm, Action, Peer, LogConfigIndex, ExpectedConfigIndex], #{domain => [whatsapp, wa_raft]}),
+                                    ?LOG_NOTICE("Server[~0p, term ~0p, leader] rejecting request to ~p peer ~p because it has a different config index than expected (storage: ~p, log: ~p expected: ~p).",
+                                        [Name, CurrentTerm, Action, Peer, StorageConfigIndex, LogConfigIndex, ExpectedConfigIndex], #{domain => [whatsapp, wa_raft]}),
                                     reply(Type, {error, rejected}),
                                     {keep_state, State0};
                                 false ->
