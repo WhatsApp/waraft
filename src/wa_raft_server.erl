@@ -95,6 +95,7 @@
 -export_type([
     state/0,
     config/0,
+    membership/0,
     status/0
 ]).
 
