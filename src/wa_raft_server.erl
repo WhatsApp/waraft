@@ -1506,6 +1506,50 @@ witness({call, From}, ?SNAPSHOT_AVAILABLE_COMMAND(_, #raft_log_pos{index = Snaps
             {keep_state_and_data, {reply, From, {error, rejected}}}
     end;
 
+%% [RequestVote] A witness with an unallocated vote should decide if the requesting candidate is eligible to receive
+%%               its vote for the current term and affirm or reject accordingly.
+witness(_Type, ?REMOTE(?IDENTITY_REQUIRES_MIGRATION(_, CandidateId) = Candidate, ?REQUEST_VOTE(_ElectionType, CandidateIndex, CandidateTerm)),
+         #raft_state{name = Name, log_view = View, current_term = CurrentTerm, voted_for = undefined} = State) ->
+    Index = wa_raft_log:last_index(View),
+    {ok, Term} = wa_raft_log:term(View, Index),
+    % Witnesses should only vote for candidates whose logs are at least as up-to-date as the local log.
+    % Logs are ordered in up-to-dateness by the lexicographic order of the {Term, Index} pair of their latest entry. (5.4.1)
+    case {CandidateTerm, CandidateIndex} >= {Term, Index} of
+        true ->
+            ?LOG_NOTICE("Server[~0p, term ~0p, witness] decides to vote for candidate ~0p with up-to-date log at ~0p:~0p versus local log at ~0p:~0p.",
+                [Name, CurrentTerm, Candidate, CandidateIndex, CandidateTerm, Index, Term], #{domain => [whatsapp, wa_raft]}),
+            NewState = State#raft_state{voted_for = CandidateId},
+            % Persist the vote to stable storage before responding to the vote request. (Fig. 2)
+            wa_raft_durable_state:store(NewState),
+            send_rpc(Candidate, ?VOTE(true), State),
+            {keep_state, NewState};
+        false ->
+            ?LOG_NOTICE("Server[~0p, term ~0p, witness] refuses to vote for candidate ~0p with outdated log at ~0p:~0p versus local log at ~0p:~0p.",
+                [Name, CurrentTerm, Candidate, CandidateIndex, CandidateTerm, Index, Term], #{domain => [whatsapp, wa_raft]}),
+            send_rpc(Candidate, ?VOTE(false), State),
+            keep_state_and_data
+    end;
+%% [RequestVote] A witness should affirm any vote requests for the candidate it already voted for in the current term.
+witness(_Type, ?REMOTE(?IDENTITY_REQUIRES_MIGRATION(_, CandidateId) = Candidate, ?REQUEST_VOTE(_ElectionType, _CandidateIndex, _CandidateTerm)),
+         #raft_state{name = Name, current_term = CurrentTerm, voted_for = CandidateId} = State) ->
+    ?LOG_NOTICE("Server[~0p, term ~0p, witness] repeating prior vote for candidate ~0p.",
+        [Name, CurrentTerm, Candidate], #{domain => [whatsapp, wa_raft]}),
+    send_rpc(Candidate, ?VOTE(true), State),
+    keep_state_and_data;
+%% [RequestVote] A witness should reject any vote requests for the candidate it did not vote for in the current term.
+witness(_Type, ?REMOTE(Candidate, ?REQUEST_VOTE(_ElectionType, _CandidateIndex, _CandidateTerm)),
+         #raft_state{name = Name, current_term = CurrentTerm, voted_for = VotedFor} = State) ->
+    ?LOG_NOTICE("Server[~0p, term ~0p, witness] refusing to vote for candidate ~0p after previously voting for candidate ~0p in the current term.",
+        [Name, CurrentTerm, Candidate, VotedFor], #{domain => [whatsapp, wa_raft]}),
+    send_rpc(Candidate, ?VOTE(false), State),
+    keep_state_and_data;
+
+%% [Vote] A witness should ignore any votes because its not eligible for leadership
+witness(_Type, ?REMOTE(Sender, ?VOTE(Voted)), #raft_state{name = Name, current_term = CurrentTerm}) ->
+    ?LOG_WARNING("Server[~0p, term ~0p, witness] got unexecpted vote ~p from ~p.",
+        [Name, CurrentTerm, Voted, Sender], #{domain => [whatsapp, wa_raft]}),
+    keep_state_and_data;
+
 %% [Witness] Witness receives RAFT command
 witness(Type, ?RAFT_COMMAND(_COMMAND, _Payload) = Event, State) ->
     command(?FUNCTION_NAME, Type, Event, State);
