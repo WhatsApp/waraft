@@ -3,74 +3,101 @@
 %%% This source code is licensed under the Apache 2.0 license found in
 %%% the LICENSE file in the root directory of this source tree.
 %%%
-%%% Module to interface with raft metadata
+%%% API for accessing certain useful information about the state of local
+%%% RAFT servers without requiring a status request against the RAFT server
+%%% itself.
 
 -module(wa_raft_info).
 -compile(warn_missing_spec_all).
 
+%% Public API
 -export([
-    init_tables/0,
-    set_state/3,
     get_state/2,
-    delete_state/2,
-    set_leader/3,
+    get_current_term/2,
     get_leader/2,
-    set_stale/3,
     get_stale/2
 ]).
 
-%% Raft leader node
--define(RAFT_LEADER_NODE(Table, Partition), {leader, Table, Partition}).
-%% Raft server state
--define(RAFT_SERVER_STATE(Table, Partition), {state, Table, Partition}).
-%% Raft stale flag
--define(RAFT_STALE_FLAG(Table, Partition), {stale, Table, Partition}).
+%% Internal API
+-export([
+    init_tables/0,
+    set_state/3,
+    delete_state/2,
+    set_current_term/3,
+    set_leader/3,
+    set_stale/3
+]).
+
+%% Local RAFT server's current FSM state
+-define(RAFT_SERVER_STATE_KEY(Table, Partition), {state, Table, Partition}).
+%% Local RAFT server's most recently known term
+-define(RAFT_CURRENT_TERM_KEY(Table, Partition), {term, Table, Partition}).
+%% Local RAFT server's most recently known leader node
+-define(RAFT_CURRENT_LEADER_KEY(Table, Partition), {leader, Table, Partition}).
+%% Local RAFT server's current stale flag - indicates if the server thinks its data is stale
+-define(RAFT_STALE_KEY(Table, Partition), {stale, Table, Partition}).
+
+%%-------------------------------------------------------------------
+%% RAFT Info - Public API
+%%-------------------------------------------------------------------
+
+-spec get(term(), Default) -> Default.
+get(Key, Default) ->
+    try
+        ets:lookup_element(?MODULE, Key, 2)
+    catch error:badarg ->
+        Default
+    end.
+
+-spec get_leader(wa_raft:table(), wa_raft:partition()) -> node() | undefined.
+get_leader(Table, Partition) ->
+    get(?RAFT_CURRENT_LEADER_KEY(Table, Partition), undefined).
+
+-spec get_current_term(wa_raft:table(), wa_raft:partition()) -> wa_raft_log:log_term() | undefined.
+get_current_term(Table, Partition) ->
+    get(?RAFT_CURRENT_TERM_KEY(Table, Partition), undefined).
+
+-spec get_state(wa_raft:table(), wa_raft:partition()) -> wa_raft_server:state() | undefined.
+get_state(Table, Partition) ->
+    get(?RAFT_SERVER_STATE_KEY(Table, Partition), undefined).
+
+-spec get_stale(wa_raft:table(), wa_raft:partition()) -> boolean().
+get_stale(Table, Partition) ->
+    get(?RAFT_STALE_KEY(Table, Partition), true).
+
+%%-------------------------------------------------------------------
+%% RAFT Info - Internal API
+%%-------------------------------------------------------------------
 
 -spec init_tables() -> ok.
 init_tables() ->
     ets:new(?MODULE, [set, public, named_table, {write_concurrency, true}, {read_concurrency, true}]),
     ok.
 
+-spec set(term(), term()) -> true.
+set(Key, Value) ->
+    ets:update_element(?MODULE, Key, {2, Value}) orelse ets:insert(?MODULE, {Key, Value}).
+
+-spec delete(term()) -> true.
+delete(Key) ->
+    ets:delete(?MODULE, Key).
+
 -spec set_leader(wa_raft:table(), wa_raft:partition(), node()) -> true.
 set_leader(Table, Partition, Value) ->
-    ets:update_element(?MODULE, ?RAFT_LEADER_NODE(Table, Partition), {2, Value})
-        orelse ets:insert(?MODULE, {?RAFT_LEADER_NODE(Table, Partition), Value}).
+    set(?RAFT_CURRENT_LEADER_KEY(Table, Partition), Value).
 
--spec get_leader(wa_raft:table(), wa_raft:partition()) -> node() | undefined.
-get_leader(Table, Partition) ->
-    try
-        ets:lookup_element(?MODULE, ?RAFT_LEADER_NODE(Table, Partition), 2)
-    catch error:badarg ->
-        undefined
-    end.
+-spec set_current_term(wa_raft:table(), wa_raft:partition(), wa_raft_log:log_term()) -> true.
+set_current_term(Table, Partition, Term) ->
+    set(?RAFT_CURRENT_TERM_KEY(Table, Partition), Term).
 
 -spec set_state(wa_raft:table(), wa_raft:partition(), wa_raft_server:state()) -> true.
 set_state(Table, Partition, State) ->
-    ets:update_element(?MODULE, ?RAFT_SERVER_STATE(Table, Partition), {2, State})
-        orelse ets:insert(?MODULE, {?RAFT_SERVER_STATE(Table, Partition), State}).
-
--spec get_state(wa_raft:table(), wa_raft:partition()) -> wa_raft_server:state() | undefined.
-get_state(Table, Partition) ->
-    try
-        ets:lookup_element(?MODULE, ?RAFT_SERVER_STATE(Table, Partition), 2)
-    catch error:badarg ->
-        undefined
-    end.
+    set(?RAFT_SERVER_STATE_KEY(Table, Partition), State).
 
 -spec delete_state(wa_raft:table(), wa_raft:partition()) -> true.
 delete_state(Table, Partition) ->
-    ets:delete(?MODULE, ?RAFT_SERVER_STATE(Table, Partition)).
+    delete(?RAFT_SERVER_STATE_KEY(Table, Partition)).
 
-%% Set to true if data on current node is stale. Read on this node may return out-of-dated data
 -spec set_stale(wa_raft:table(), wa_raft:partition(), boolean()) -> true.
 set_stale(Table, Partition, Stale) ->
-    ets:update_element(?MODULE, ?RAFT_STALE_FLAG(Table, Partition), {2, Stale})
-        orelse ets:insert(?MODULE, {?RAFT_STALE_FLAG(Table, Partition), Stale}).
-
--spec get_stale(wa_raft:table(), wa_raft:partition()) -> boolean().
-get_stale(Table, Partition) ->
-    try
-        ets:lookup_element(?MODULE, ?RAFT_STALE_FLAG(Table, Partition), 2)
-    catch error:badarg ->
-        true
-    end.
+    set(?RAFT_STALE_KEY(Table, Partition), Stale).

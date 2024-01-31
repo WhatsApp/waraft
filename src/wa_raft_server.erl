@@ -435,6 +435,7 @@ init(#raft_options{application = Application, table = Table, partition = Partiti
         {ok, NewState} -> NewState;
         _              -> State1
     end,
+    true = wa_raft_info:set_current_term(Table, Partition, State2#raft_state.current_term),
     % 1. Begin as disabled if a disable reason is set
     % 2. Begin as witness if configured
     % 3. Begin as stalled if there is no data
@@ -2094,7 +2095,9 @@ check_stale_upon_entry(_StateName, _Now, #raft_state{table = Table, partition = 
 
 %% Set a new current term and voted-for peer and clear any state that is associated with the previous term.
 -spec advance_term(StateName :: state(), NewerTerm :: wa_raft_log:log_term(), VotedFor :: undefined | node(), State :: #raft_state{}) -> #raft_state{}.
-advance_term(StateName, NewerTerm, VotedFor, #raft_state{current_term = CurrentTerm} = State0) when NewerTerm > CurrentTerm ->
+advance_term(StateName, NewerTerm, VotedFor,
+             #raft_state{table = Table, partition = Partition,
+                         current_term = CurrentTerm} = State0) when NewerTerm > CurrentTerm ->
     State1 = clear_leader(StateName, State0),
     State2 = State1#raft_state{
         current_term = NewerTerm,
@@ -2107,6 +2110,7 @@ advance_term(StateName, NewerTerm, VotedFor, #raft_state{current_term = CurrentT
         handover = undefined
     },
     ok = wa_raft_durable_state:store(State2),
+    true = wa_raft_info:set_current_term(Table, Partition, NewerTerm),
     State2.
 
 %%-------------------------------------------------------------------
