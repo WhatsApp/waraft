@@ -517,7 +517,7 @@ handle_rpc_impl(Type, Event, ?REQUEST_VOTE, Term, Sender, Payload, State,
     AllowedDelay = ?RAFT_ELECTION_TIMEOUT_MIN(App) div 2,
     Delay = case LeaderHeartbeatTs of
         undefined -> infinity;
-        _         -> erlang:system_time(millisecond) - LeaderHeartbeatTs
+        _         -> erlang:monotonic_time(millisecond) - LeaderHeartbeatTs
     end,
     case Delay > AllowedDelay of
         true ->
@@ -608,7 +608,7 @@ stalled(Type, Event, State) when is_tuple(Event), element(1, Event) =:= rpc ->
 
 %% [AppendEntries] Stalled nodes always discard AppendEntries
 stalled(_Type, ?REMOTE(Sender, ?APPEND_ENTRIES(PrevLogIndex, _PrevLogTerm, _Entries, _LeaderCommit, _TrimIndex)), State) ->
-    NewState = State#raft_state{leader_heartbeat_ts = erlang:system_time(millisecond)},
+    NewState = State#raft_state{leader_heartbeat_ts = erlang:monotonic_time(millisecond)},
     send_rpc(Sender, ?APPEND_ENTRIES_RESPONSE(PrevLogIndex, false, 0), NewState),
     {keep_state, NewState};
 
@@ -733,7 +733,7 @@ leader(cast, ?REMOTE(?IDENTITY_REQUIRES_MIGRATION(_, FollowerId) = Sender, ?APPE
     StartT = os:timestamp(),
     ?LOG_DEBUG("Server[~0p, term ~0p, leader] append ok on ~p. Follower end index ~p. Leader commitIndex ~p",
         [Name, CurrentTerm, Sender, FollowerEndIndex, CommitIndex0], #{domain => [whatsapp, wa_raft]}),
-    HeartbeatResponse1 = HeartbeatResponse0#{FollowerId => erlang:system_time(millisecond)},
+    HeartbeatResponse1 = HeartbeatResponse0#{FollowerId => erlang:monotonic_time(millisecond)},
     State1 = State0#raft_state{heartbeat_response_ts = HeartbeatResponse1},
 
     case select_follower_replication_mode(FollowerEndIndex, State1) of
@@ -856,7 +856,7 @@ leader(_Type, ?REMOTE(Sender, ?HANDOVER_FAILED(_Ref)),
 
 %% [Timeout] Suspend periodic heartbeat to followers while handover is active
 leader(state_timeout = Type, Event, #raft_state{name = Name, current_term = CurrentTerm, handover = {Peer, _Ref, Timeout}} = State) ->
-    NowMillis = erlang:system_time(millisecond),
+    NowMillis = erlang:monotonic_time(millisecond),
     case NowMillis > Timeout of
         true ->
             ?LOG_NOTICE("Server[~0p, term ~0p, leader] handover to ~p times out",
@@ -1057,7 +1057,7 @@ leader(Type, ?HANDOVER_COMMAND(Peer),
                     ?LOG_NOTICE("Server[~0p, term ~0p, leader] starting handover to ~p.",
                         [Name, CurrentTerm, Peer], #{domain => [whatsapp, wa_raft]}),
                     Ref = make_ref(),
-                    Timeout = erlang:system_time(millisecond) + ?RAFT_HANDOVER_TIMEOUT(App),
+                    Timeout = erlang:monotonic_time(millisecond) + ?RAFT_HANDOVER_TIMEOUT(App),
                     State1 = State0#raft_state{handover = {Peer, Ref, Timeout}},
 
                     PrevLogIndex = PeerSendIndex - 1,
@@ -1235,7 +1235,7 @@ follower(state_timeout, _,
                      log_view = View, leader_heartbeat_ts = HeartbeatTs} = State) ->
     WaitingMs = case HeartbeatTs of
         undefined -> undefined;
-        _         -> erlang:system_time(millisecond) - HeartbeatTs
+        _         -> erlang:monotonic_time(millisecond) - HeartbeatTs
     end,
     ?LOG_NOTICE("Server[~0p, term ~0p, follower] times out after ~p ms. Last leader ~p. Max log index ~p. Promote to candidate and restart election.",
         [Name, CurrentTerm, WaitingMs, LeaderId, wa_raft_log:last_index(View)], #{domain => [whatsapp, wa_raft]}),
@@ -1330,7 +1330,7 @@ candidate(_Type, ?REMOTE(Sender, ?REQUEST_VOTE(_ElectionType, _LastLogIndex, _La
 candidate(cast, ?REMOTE(?IDENTITY_REQUIRES_MIGRATION(_, NodeId), ?VOTE(true)),
           #raft_state{name = Name, log_view = View, current_term = CurrentTerm, state_start_ts = StateStartTs,
                       heartbeat_response_ts = HeartbeatResponse0, votes = Votes0} = State0) ->
-    HeartbeatResponse1 = HeartbeatResponse0#{NodeId => erlang:system_time(millisecond)},
+    HeartbeatResponse1 = HeartbeatResponse0#{NodeId => erlang:monotonic_time(millisecond)},
     Votes1 = Votes0#{NodeId => true},
     State1 = State0#raft_state{heartbeat_response_ts = HeartbeatResponse1, votes = Votes1},
     case compute_quorum(Votes1, false, config(State1)) of
@@ -1650,7 +1650,7 @@ command(StateName, {call, From}, ?PROMOTE_COMMAND(Term, Force, Config),
         HeartbeatTs =:= undefined ->
             true;
         true ->
-            erlang:system_time(millisecond) - HeartbeatTs >= ?RAFT_PROMOTION_GRACE_PERIOD(App) * 1000
+            erlang:monotonic_time(millisecond) - HeartbeatTs >= ?RAFT_PROMOTION_GRACE_PERIOD(App) * 1000
     end,
     case Allowed of
         true ->
@@ -2129,7 +2129,7 @@ heartbeat(?IDENTITY_REQUIRES_MIGRATION(_, FollowerId) = Sender,
     FollowerMatchIndex =/= 0 andalso
         ?RAFT_GATHER('raft.leader.follower.lag', CommitIndex - FollowerMatchIndex),
     IsCatchingUp = wa_raft_log_catchup:is_catching_up(Catchup, Sender),
-    NowTs = erlang:system_time(millisecond),
+    NowTs = erlang:monotonic_time(millisecond),
     LastFollowerHeartbeatTs = maps:get(FollowerId, LastHeartbeatTs, undefined),
     State1 = State0#raft_state{last_heartbeat_ts = LastHeartbeatTs#{FollowerId => NowTs}, leader_heartbeat_ts = NowTs},
     LastIndex = wa_raft_log:last_index(View),
@@ -2141,7 +2141,7 @@ heartbeat(?IDENTITY_REQUIRES_MIGRATION(_, FollowerId) = Sender,
                 [Name, CurrentTerm, FollowerId, LastIndex, PrevLogIndex, IsCatchingUp], #{domain => [whatsapp, wa_raft]}),
             % Send append entries request.
             send_rpc(Sender, ?APPEND_ENTRIES(LastIndex, LastTerm, [], CommitIndex, 0), State1),
-            LastFollowerHeartbeatTs =/= undefined andalso ?RAFT_GATHER('raft.leader.heartbeat.interval_ms', erlang:system_time(millisecond) - LastFollowerHeartbeatTs),
+            LastFollowerHeartbeatTs =/= undefined andalso ?RAFT_GATHER('raft.leader.heartbeat.interval_ms', erlang:monotonic_time(millisecond) - LastFollowerHeartbeatTs),
             State1;
         false ->
             MaxHeartbeatSize = ?RAFT_HEARTBEAT_MAX_BYTES(App),
@@ -2173,7 +2173,7 @@ heartbeat(?IDENTITY_REQUIRES_MIGRATION(_, FollowerId) = Sender,
                     _ ->
                         NextIndex0
                 end,
-            LastFollowerHeartbeatTs =/= undefined andalso ?RAFT_GATHER('raft.leader.heartbeat.interval_ms', erlang:system_time(millisecond) - LastFollowerHeartbeatTs),
+            LastFollowerHeartbeatTs =/= undefined andalso ?RAFT_GATHER('raft.leader.heartbeat.interval_ms', erlang:monotonic_time(millisecond) - LastFollowerHeartbeatTs),
             State1#raft_state{next_index = NextIndex1}
     end.
 
@@ -2247,7 +2247,7 @@ handle_heartbeat(State, Event, Leader, PrevLogIndex, PrevLogTerm, Entries, Commi
                 true  -> TrimIndex;
                 false -> infinity
             end,
-            Data2 = Data1#raft_state{leader_heartbeat_ts = erlang:system_time(millisecond)},
+            Data2 = Data1#raft_state{leader_heartbeat_ts = erlang:monotonic_time(millisecond)},
             Data3 = case Accepted of
                 true -> apply_log(Data2, min(CommitIndex, NewLastIndex), LocalTrimIndex, undefined);
                 _    -> Data2
@@ -2365,7 +2365,7 @@ should_heartbeat(#raft_state{handover = Handover}) when Handover =/= undefined -
     false;
 should_heartbeat(#raft_state{application = App, last_heartbeat_ts = LastHeartbeatTs}) ->
     Latest = lists:max(maps:values(LastHeartbeatTs)),
-    Current = erlang:system_time(millisecond),
+    Current = erlang:monotonic_time(millisecond),
     Current - Latest > ?RAFT_HEARTBEAT_INTERVAL(App).
 
 %% Check follower/witness state due to log entry lag and change stale flag if needed
@@ -2393,7 +2393,7 @@ check_follower_lagging(LeaderCommit, #raft_state{application = App, name = Name,
 -spec check_leader_lagging(#raft_state{}) -> term().
 check_leader_lagging(#raft_state{application = App, name = Name, table = Table, partition = Partition,
                                  current_term = CurrentTerm, heartbeat_response_ts = HeartbeatResponse} = State) ->
-    NowTs = erlang:system_time(millisecond),
+    NowTs = erlang:monotonic_time(millisecond),
     QuorumTs = compute_quorum(HeartbeatResponse#{node() => NowTs}, 0, config(State)),
 
     Stale = wa_raft_info:get_stale(Table, Partition),

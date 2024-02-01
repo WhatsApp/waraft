@@ -364,7 +364,7 @@
     %%  * at least the most recently applied RAFT configuration
     cached_config :: undefined | {wa_raft_log:log_index(), wa_raft_server:config()},
     % Timestamp of last heartbeat from leader
-    leader_heartbeat_ts :: undefined | pos_integer(),
+    leader_heartbeat_ts :: undefined | integer(),
 
     %% The current RAFT term as locally determined
     current_term = 0 :: non_neg_integer(),
@@ -382,9 +382,9 @@
     next_index = #{} :: #{node() => non_neg_integer()},
     match_index = #{} :: #{node() => non_neg_integer()},
     %% last timestamp in ms when we send heartbeat
-    last_heartbeat_ts = #{} :: #{node() => non_neg_integer()},
+    last_heartbeat_ts = #{} :: #{node() => integer()},
     %% Timestamps in milliseconds of last time each follower responded successfully to a heartbeat
-    heartbeat_response_ts = #{} :: #{node() => non_neg_integer()},
+    heartbeat_response_ts = #{} :: #{node() => integer()},
     first_current_term_log_index = 0 :: wa_raft_log:log_index(),
     handover :: undefined | {node(), reference(), integer()},
 
