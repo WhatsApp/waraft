@@ -1445,7 +1445,8 @@ witness(enter, PreviousStateName, #raft_state{name = Name, current_term = Curren
     ?RAFT_COUNT('raft.witness.enter'),
     ?LOG_NOTICE("Server[~0p, term ~0p, witness] becomes witness from state ~0p.",
         [Name, CurrentTerm, PreviousStateName], #{domain => [whatsapp, wa_raft]}),
-    {keep_state, enter_state(?FUNCTION_NAME, State#raft_state{witness = true})};
+    State1 = enter_state(?FUNCTION_NAME, State#raft_state{witness = true}),
+    {keep_state, State1, ?ELECTION_TIMEOUT(State1)};
 
 %% [AdvanceTerm] Advance to newer term when requested
 witness(internal, ?ADVANCE_TERM(NewerTerm), #raft_state{name = Name, current_term = CurrentTerm} = State) when NewerTerm > CurrentTerm ->
@@ -1459,6 +1460,17 @@ witness(internal, ?ADVANCE_TERM(Term), #raft_state{name = Name, current_term = C
     ?LOG_WARNING("Server[~0p, term ~0p, witness] ignoring attempt to advance to older or current term ~0p.",
         [Name, CurrentTerm, Term], #{domain => [whatsapp, wa_raft]}),
     keep_state_and_data;
+
+witness(state_timeout, _, #raft_state{name = Name, current_term = CurrentTerm, leader_id = LeaderId,
+log_view = View, leader_heartbeat_ts = HeartbeatTs} = State) ->
+    WaitingMs = case HeartbeatTs of
+        undefined -> undefined;
+        _         -> erlang:monotonic_time(millisecond) - HeartbeatTs
+    end,
+    ?LOG_NOTICE("Server[~0p, term ~0p, witness] times out after ~p ms. Last leader ~p. Max log index ~p.",
+        [Name, CurrentTerm, WaitingMs, LeaderId, wa_raft_log:last_index(View)], #{domain => [whatsapp, wa_raft]}),
+    ?RAFT_COUNT('raft.witness.timeout'),
+    {repeat_state, State};
 
 %% [Protocol] Handle any RPCs
 witness(Type, Event, State) when is_tuple(Event), element(1, Event) =:= rpc ->
