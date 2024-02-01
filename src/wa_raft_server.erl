@@ -1246,7 +1246,7 @@ follower(state_timeout, _,
         false ->
             ?LOG_NOTICE("Server[~0p, term ~0p, follower] not advancing to next term after heartbeat timeout due to being ineligible or having zero election weight.",
                 [Name, CurrentTerm], #{domain => [whatsapp, wa_raft]}),
-            {keep_state, State, ?ELECTION_TIMEOUT(State)}
+            {repeat_state, State}
     end;
 
 follower(Type, ?RAFT_COMMAND(_COMMAND, _Payload) = Event, State) ->
