@@ -77,7 +77,6 @@
     handover/2,
     handover_candidates/1,
     disable/2,
-    enter_witness/1,
     enable/1,
     cast/3,
     witness/3
@@ -159,7 +158,7 @@
 -type rpc_named() :: ?RAFT_NAMED_RPC(atom(), wa_raft_log:log_term(), atom(), node(), undefined | tuple()).
 
 -type command() :: commit_command() | read_command() | status_command() | promote_command() | resign_command() | adjust_membership_command() | snapshot_available_command() |
-                   handover_candidates_command() | handover_command() | enable_command() | disable_command() | witness_command().
+                   handover_candidates_command() | handover_command() | enable_command() | disable_command().
 -type commit_command()              :: ?COMMIT_COMMAND(wa_raft_acceptor:op()).
 -type read_command()                :: ?READ_COMMAND(wa_raft_acceptor:read_op()).
 -type status_command()              :: ?STATUS_COMMAND.
@@ -171,7 +170,6 @@
 -type handover_command()            :: ?HANDOVER_COMMAND(node()).
 -type enable_command()              :: ?ENABLE_COMMAND.
 -type disable_command()             :: ?DISABLE_COMMAND(term()).
--type witness_command()             :: ?WITNESS_COMMAND().
 
 -type internal_event() :: advance_term_event() | force_election_event().
 -type advance_term_event() :: ?ADVANCE_TERM(wa_raft_log:log_term()).
@@ -344,10 +342,6 @@ handover(Name, Peer) ->
 -spec disable(Name :: atom() | pid(), Reason :: term()) -> ok | {error, ErrorReason :: atom()}.
 disable(Name, Reason) ->
     gen_statem:cast(Name, ?DISABLE_COMMAND(Reason)).
-
--spec enter_witness(Name :: atom() | pid()) -> ok | {error, ErrorReason :: atom()}.
-enter_witness(Name) ->
-    gen_statem:cast(Name, ?WITNESS_COMMAND()).
 
 -spec enable(Name :: atom() | pid()) -> ok | {error, ErrorReason :: atom()}.
 enable(Name) ->

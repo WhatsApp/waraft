@@ -90,4 +90,3 @@
 
 -define(ENABLE_COMMAND,                                         ?RAFT_COMMAND(enable, undefined)).
 -define(DISABLE_COMMAND(Reason),                                ?RAFT_COMMAND(disable, Reason)).
--define(WITNESS_COMMAND(),                                      ?RAFT_COMMAND(witness, undefined)).
