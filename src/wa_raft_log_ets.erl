@@ -18,6 +18,7 @@
     first_index/1,
     last_index/1,
     fold/6,
+    fold_terms/5,
     get/2,
     term/2,
     config/1
@@ -89,6 +90,31 @@ fold_impl(Log, Start, End, Size, SizeLimit, Func, Acc) ->
         [] ->
             fold_impl(Log, ets:next(Log, Start), End, Size, SizeLimit, Func, Acc)
     end.
+
+-spec fold_terms(Log :: wa_raft_log:log(),
+    Start :: wa_raft_log:log_index() | '$end_of_table',
+    End :: wa_raft_log:log_index(),
+    Func :: fun((Index :: wa_raft_log:log_index(), Entry :: wa_raft_log:log_term(), Acc) -> Acc),
+    Acc) -> {ok, Acc}.
+fold_terms(Log, Start, End, Func, Acc) ->
+    fold_terms_impl(Log, Start, End, Func, Acc).
+
+-spec fold_terms_impl(
+    Log :: wa_raft_log:log(),
+    Start :: wa_raft_log:log_index() | '$end_of_table',
+    End :: wa_raft_log:log_index(),
+    Func :: fun((Index :: wa_raft_log:log_index(), Term :: wa_raft_log:log_term(), Acc) -> Acc),
+    Acc
+    ) -> {ok, Acc}.
+fold_terms_impl(_Log, Start, End, _Func, Acc) when End < Start ->
+    {ok, Acc};
+fold_terms_impl(Log, Start, End, Func, Acc) ->
+    case ets:lookup(Log, Start) of
+        [{Start, {Term, _Op}}] ->
+            fold_terms_impl(Log, ets:next(Log, Start), End, Func, Func(Start, Term, Acc));
+        [] ->
+            fold_terms_impl(Log, ets:next(Log, Start), End, Func, Acc)
+        end.
 
 -spec get(Log :: wa_raft_log:log(), Index :: wa_raft_log:log_index()) -> {ok, Entry :: wa_raft_log:log_entry()} | not_found.
 get(Log, Index) ->

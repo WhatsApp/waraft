@@ -30,11 +30,13 @@
     fold/5,
     fold/6,
 
+    fold_terms/5,
+
     term/2,
     get/2,
     get/3,
     get/4,
-    get_terms/4,
+    get_terms/3,
 
     config/1
 ]).
@@ -174,6 +176,21 @@
                Start :: log_index(),
                End :: log_index(),
                SizeLimit :: non_neg_integer() | infinity,
+               Func :: fun((Index :: log_index(), Entry :: log_entry(), Acc) -> Acc),
+               Acc) ->
+    {ok, Acc} | wa_raft:error().
+
+%% Fold over a range (inclusive) of log terms from the RAFT log by
+%% calling the provided accumulator function on successive log terms.
+%% There is no expectation that the log terms folded over are complete,
+%% only that the accumulator is called on log terms with indices that
+%% are strictly increasing however implementations should try to call the
+%% accumulator on all available log terms within the range. Callers of
+%% this function are responsible for performing any necessary validation
+%% of log indices.
+-callback fold_terms(Log :: log(),
+               Start :: log_index(),
+               End :: log_index(),
                Func :: fun((Index :: log_index(), Entry :: log_entry(), Acc) -> Acc),
                Acc) ->
     {ok, Acc} | wa_raft:error().
@@ -420,6 +437,47 @@ fold_impl(Provider, Log, First, Last, SizeLimit, Func, AccIn) ->
             {error, Reason}
     end.
 
+%% Folds over the terms in the log view of raw entries from the log provider
+%% between the provided first and last log indices (inclusive).
+%% If there exists a log term between the provided first and last indices then
+%% the accumulator function will be called on at least that term.
+%% This API provides no validation of the log indices and term passed by the
+%% provider to the callback function.
+-spec fold_terms(Log :: log() | view(),
+           First :: log_index(),
+           Last :: log_index() | infinity,
+           Func :: fun((Index :: log_index(), Term :: log_term(), Acc) -> Acc),
+           Acc) ->
+    {ok, Acc} | wa_raft:error().
+fold_terms(#log_view{log = Log, provider = Provider, first = LogFirst, last = LogLast}, First, Last, Func, Acc) ->
+    % eqwalizer:fixme - min [T166261957]
+    fold_terms_impl(Provider, Log, max(First, LogFirst), min(Last, LogLast), Func, Acc);
+fold_terms(Log, First, Last, Func, Acc) ->
+    Provider = provider(Log),
+    LogFirst = Provider:first_index(Log),
+    LogLast = Provider:last_index(Log),
+    % eqwalizer:fixme - min [T166261957]
+    fold_terms_impl(Provider, Log, max(First, LogFirst), min(Last, LogLast), Func, Acc).
+
+-spec fold_terms_impl(
+    Provider :: module(),
+    Log :: log(),
+    First :: log_index(),
+    Last :: log_index(),
+    Func :: fun((Index :: log_index(), Term :: log_term(), Acc) -> Acc),
+    Acc :: term()
+) -> {ok, Acc} | wa_raft:error().
+fold_terms_impl(Provider, Log, First, Last, Func, AccIn) ->
+    ?RAFT_COUNT('raft.log.fold_terms'),
+    ?RAFT_COUNTV('raft.log.fold_terms.total', Last - First + 1),
+    case Provider:fold_terms(Log, First, Last, Func, AccIn) of
+        {ok, AccOut} ->
+            {ok, AccOut};
+        {error, Reason} ->
+            ?RAFT_COUNT('raft.log.fold_terms.error'),
+            {error, Reason}
+    end.
+
 %% Gets the term of entry at the provided log index. When using a log view
 %% this function may return 'not_found' even if the underlying log entry still
 %% exists if the entry is outside of the log view.
@@ -476,14 +534,14 @@ get(View, First, CountLimit, SizeLimit) ->
             {error, corruption}
     end.
 
--spec get_terms(View :: log() | view(), First :: log_index(), Limit :: non_neg_integer(), Bytes :: non_neg_integer() | infinity) ->
-    {ok, Entries :: [wa_raft_log:log_term()]} | wa_raft:error().
-get_terms(View, First, Limit, Bytes) ->
+-spec get_terms(View :: log() | view(), First :: log_index(), Limit :: non_neg_integer()) ->
+    {ok, Terms :: [wa_raft_log:log_term()]} | wa_raft:error().
+get_terms(View, First, Limit) ->
     try
-        fold(View, First, First + Limit - 1, Bytes,
+        fold_terms(View, First, First + Limit - 1,
             fun
-                (Index, {Term, _}, {Index, Acc})        -> {Index + 1, [Term | Acc]};
-                (_Index, _Entry, {ExpectedIndex, _Acc}) -> throw({missing, ExpectedIndex})
+                (Index, Term, {Index, Acc})            -> {Index + 1, [Term | Acc]};
+                (_Index, _Term, {ExpectedIndex, _Acc}) -> throw({missing, ExpectedIndex})
             end, {First, []})
     of
         {ok, {_, TermsRev}} -> {ok, lists:reverse(TermsRev)};

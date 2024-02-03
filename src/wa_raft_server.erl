@@ -2150,15 +2150,15 @@ heartbeat(?IDENTITY_REQUIRES_MIGRATION(_, FollowerId) = Sender,
             LastFollowerHeartbeatTs =/= undefined andalso ?RAFT_GATHER('raft.leader.heartbeat.interval_ms', erlang:monotonic_time(millisecond) - LastFollowerHeartbeatTs),
             State1;
         false ->
-            MaxHeartbeatSize = ?RAFT_HEARTBEAT_MAX_BYTES(App),
             Entries =
                 case lists:member({Name, FollowerId}, Witnesses) of
                     true ->
                         MaxWitnessLogEntries = ?RAFT_HEARTBEAT_MAX_ENTRIES_TO_WITNESS(App),
-                        {ok, Terms} = wa_raft_log:get_terms(View, FollowerNextIndex, MaxWitnessLogEntries, MaxHeartbeatSize),
+                        {ok, Terms} = wa_raft_log:get_terms(View, FollowerNextIndex, MaxWitnessLogEntries),
                         [{Term, []} || Term <- Terms];
                     _ ->
                         MaxLogEntries = ?RAFT_HEARTBEAT_MAX_ENTRIES(App),
+                        MaxHeartbeatSize = ?RAFT_HEARTBEAT_MAX_BYTES(App),
                         {ok, Ret} = wa_raft_log:get(View, FollowerNextIndex, MaxLogEntries, MaxHeartbeatSize),
                         Ret
                     end,

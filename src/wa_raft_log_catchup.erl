@@ -248,13 +248,13 @@ send_logs_impl(#raft_identity{node = PeerNode} = Peer, NextLogIndex, LeaderTerm,
     {ok, PrevLogTerm} = wa_raft_log:term(Log, PrevLogIndex),
 
     LogBatchEntries = ?RAFT_CATCHUP_MAX_ENTRIES_PER_BATCH(App),
-    LogBatchBytes = ?RAFT_CATCHUP_MAX_BYTES_PER_BATCH(App),
     Entries = case Witness of
         false ->
+            LogBatchBytes = ?RAFT_CATCHUP_MAX_BYTES_PER_BATCH(App),
             {ok, E} = wa_raft_log:get(Log, NextLogIndex, LogBatchEntries, LogBatchBytes),
             E;
         true ->
-            {ok, T} = wa_raft_log:get_terms(Log, NextLogIndex, LogBatchEntries, LogBatchBytes),
+            {ok, T} = wa_raft_log:get_terms(Log, NextLogIndex, LogBatchEntries),
             [{Term, []} || Term <- T]
     end,
 
