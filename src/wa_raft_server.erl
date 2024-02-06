@@ -1455,15 +1455,7 @@ witness(internal, ?ADVANCE_TERM(Term), #raft_state{name = Name, current_term = C
         [Name, CurrentTerm, Term], #{domain => [whatsapp, wa_raft]}),
     keep_state_and_data;
 
-witness(state_timeout, _, #raft_state{name = Name, current_term = CurrentTerm, leader_id = LeaderId,
-log_view = View, leader_heartbeat_ts = HeartbeatTs} = State) ->
-    WaitingMs = case HeartbeatTs of
-        undefined -> undefined;
-        _         -> erlang:monotonic_time(millisecond) - HeartbeatTs
-    end,
-    ?LOG_NOTICE("Server[~0p, term ~0p, witness] times out after ~p ms. Last leader ~p. Max log index ~p.",
-        [Name, CurrentTerm, WaitingMs, LeaderId, wa_raft_log:last_index(View)], #{domain => [whatsapp, wa_raft]}),
-    ?RAFT_COUNT('raft.witness.timeout'),
+witness(state_timeout, _, State) ->
     {repeat_state, State};
 
 %% [Protocol] Handle any RPCs
