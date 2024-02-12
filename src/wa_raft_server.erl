@@ -1820,9 +1820,10 @@ config_index(#raft_state{cached_config = undefined} = State) ->
 %% available in the RAFT log and so needs to be kept in sync with what
 %% the RAFT server expects is in storage.
 -spec load_config(State :: #raft_state{}) -> NewState :: #raft_state{}.
-load_config(#raft_state{storage = Storage} = State) ->
+load_config(#raft_state{storage = Storage, table = Table, partition = Partition} = State) ->
     case wa_raft_storage:read_metadata(Storage, config) of
         {ok, #raft_log_pos{index = ConfigIndex}, Config} ->
+            wa_raft_info:set_membership(Table, Partition, maps:get(membership, Config, [])),
             State#raft_state{cached_config = {ConfigIndex, maybe_upgrade_config(Config)}};
         undefined ->
             State#raft_state{cached_config = undefined};
@@ -1840,7 +1841,8 @@ maybe_upgrade_config(#{version := ?RAFT_CONFIG_CURRENT_VERSION} = Config) ->
 %% being applied. If it is, then update the cached configuration.
 -spec maybe_update_config(Index :: wa_raft_log:log_index(), Term :: wa_raft_log:log_term(),
                           Op :: wa_raft_acceptor:op() | [] | undefined, State :: #raft_state{}) -> NewState :: #raft_state{}.
-maybe_update_config(Index, _Term, {_Ref, {config, Config}}, State) ->
+maybe_update_config(Index, _Term, {_Ref, {config, Config}}, #raft_state{table = Table, partition = Partition} = State) ->
+    wa_raft_info:set_membership(Table, Partition, maps:get(membership, Config, [])),
     State#raft_state{cached_config = {Index, Config}};
 maybe_update_config(_Index, _Term, _Op, State) ->
     State.
