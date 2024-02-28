@@ -254,6 +254,15 @@
     term = 0 :: wa_raft_log:log_term()
 }).
 
+%% Log handle.
+-record(raft_log, {
+    name :: wa_raft_log:log_name(),
+    application :: atom(),
+    table :: wa_raft:table(),
+    partition :: wa_raft:partition(),
+    provider :: module()
+}).
+
 %% This record represents the identity of a RAFT replica, usable to
 %% distinguish different RAFT replicas from one another. This record
 %% is not guaranteed to remain structurally compatible between versions

@@ -31,8 +31,8 @@
 
 %% RAFT log provider interface for managing underlying RAFT log
 -export([
-    init/2,
-    open/2,
+    init/1,
+    open/1,
     close/2,
     reset/3,
     truncate/3,
@@ -49,15 +49,15 @@
 %%-------------------------------------------------------------------
 
 -spec first_index(Log :: wa_raft_log:log()) -> undefined | wa_raft_log:log_index().
-first_index(Log) ->
-    case ets:first(Log) of
+first_index(#raft_log{name = Name}) ->
+    case ets:first(Name) of
         '$end_of_table' -> undefined;
         Key             -> Key
     end.
 
 -spec last_index(Log :: wa_raft_log:log()) -> undefined | wa_raft_log:log_index().
-last_index(Log) ->
-    case ets:last(Log) of
+last_index(#raft_log{name = Name}) ->
+    case ets:last(Name) of
         '$end_of_table' -> undefined;
         Key             -> Key
     end.
@@ -82,13 +82,13 @@ fold(Log, Start, End, SizeLimit, Func, Acc) ->
 ) -> {ok, Acc}.
 fold_impl(_Log, Start, End, Size, SizeLimit, _Func, Acc) when End < Start orelse Size >= SizeLimit ->
     {ok, Acc};
-fold_impl(Log, Start, End, Size, SizeLimit, Func, Acc) ->
-    case ets:lookup(Log, Start) of
+fold_impl(#raft_log{name = Name} = Log, Start, End, Size, SizeLimit, Func, Acc) ->
+    case ets:lookup(Name, Start) of
         [{Start, Entry}] ->
             EntrySize = erlang:external_size(Entry),
-            fold_impl(Log, ets:next(Log, Start), End, Size + EntrySize, SizeLimit, Func, Func(Start, Entry, Acc));
+            fold_impl(Log, ets:next(Name, Start), End, Size + EntrySize, SizeLimit, Func, Func(Start, Entry, Acc));
         [] ->
-            fold_impl(Log, ets:next(Log, Start), End, Size, SizeLimit, Func, Acc)
+            fold_impl(Log, ets:next(Name, Start), End, Size, SizeLimit, Func, Acc)
     end.
 
 -spec fold_terms(Log :: wa_raft_log:log(),
@@ -108,17 +108,17 @@ fold_terms(Log, Start, End, Func, Acc) ->
     ) -> {ok, Acc}.
 fold_terms_impl(_Log, Start, End, _Func, Acc) when End < Start ->
     {ok, Acc};
-fold_terms_impl(Log, Start, End, Func, Acc) ->
-    case ets:lookup(Log, Start) of
+fold_terms_impl(#raft_log{name = Name} = Log, Start, End, Func, Acc) ->
+    case ets:lookup(Name, Start) of
         [{Start, {Term, _Op}}] ->
-            fold_terms_impl(Log, ets:next(Log, Start), End, Func, Func(Start, Term, Acc));
+            fold_terms_impl(Log, ets:next(Name, Start), End, Func, Func(Start, Term, Acc));
         [] ->
-            fold_terms_impl(Log, ets:next(Log, Start), End, Func, Acc)
+            fold_terms_impl(Log, ets:next(Name, Start), End, Func, Acc)
         end.
 
 -spec get(Log :: wa_raft_log:log(), Index :: wa_raft_log:log_index()) -> {ok, Entry :: wa_raft_log:log_entry()} | not_found.
-get(Log, Index) ->
-    case ets:lookup(Log, Index) of
+get(#raft_log{name = Name}, Index) ->
+    case ets:lookup(Name, Index) of
         [{Index, Entry}] -> {ok, Entry};
         []               -> not_found
     end.
@@ -131,8 +131,8 @@ term(Log, Index) ->
     end.
 
 -spec config(Log :: wa_raft_log:log()) -> {ok, Index :: wa_raft_log:log_index(), Entry :: wa_raft_server:config()} | not_found.
-config(Log) ->
-    case ets:select_reverse(Log, [{{'$1', {'_', {'_', {config, '$2'}}}}, [], [{{'$1', '$2'}}]}], 1) of
+config(#raft_log{name = Name}) ->
+    case ets:select_reverse(Name, [{{'$1', {'_', {'_', {config, '$2'}}}}, [], [{{'$1', '$2'}}]}], 1) of
         {[{Index, Config}], _Cont} -> {ok, Index, Config};
         _                          -> not_found
     end.
@@ -163,8 +163,8 @@ append_impl(Log, Start, [{Term, _Entry} | Entries], First, Last) when Start =< L
         {ok, Term} -> append_impl(Log, Start + 1, Entries, First, Last);
         _          -> {mismatch, Start}
     end;
-append_impl(Log, Start, [_|_] = Entries, _First, Last) when Start =:= Last + 1 ->
-    true = ets:insert(Log,
+append_impl(#raft_log{name = Name}, Start, [_|_] = Entries, _First, Last) when Start =:= Last + 1 ->
+    true = ets:insert(Name,
         lists:zip(
             lists:seq(Start, Start + length(Entries) - 1),
             Entries)),
@@ -176,14 +176,13 @@ append_impl(_Log, _Start, [_|_], _First, _Last) ->
 %% RAFT log provider interface for managing underlying RAFT log
 %%-------------------------------------------------------------------
 
--spec init(Table :: wa_raft:table(), Partition :: wa_raft:partition()) -> ok.
-init(Table, Partition) ->
-    Log = wa_raft_log:registered_name(Table, Partition),
-    Log = ets:new(Log, [ordered_set, public, named_table]),
+-spec init(Log :: wa_raft_log:log()) -> ok.
+init(#raft_log{name = LogName}) ->
+    LogName = ets:new(LogName, [ordered_set, public, named_table]),
     ok.
 
--spec open(Table :: wa_raft:table(), Partition :: wa_raft:partition()) -> {ok, State :: state()}.
-open(_Table, _Partition) ->
+-spec open(Log :: wa_raft_log:log()) -> {ok, State :: state()}.
+open(_Log) ->
     {ok, undefined}.
 
 -spec close(Log :: wa_raft_log:log(), State :: state()) -> term().
@@ -192,18 +191,18 @@ close(_Log, _State) ->
 
 -spec reset(Log :: wa_raft_log:log(), Position :: wa_raft_log:log_pos(), State :: state()) ->
     {ok, NewState :: state()}.
-reset(Log, #raft_log_pos{index = Index, term = Term}, State) ->
-    true = ets:delete_all_objects(Log),
-    true = ets:insert(Log, {Index, {Term, undefined}}),
+reset(#raft_log{name = Name}, #raft_log_pos{index = Index, term = Term}, State) ->
+    true = ets:delete_all_objects(Name),
+    true = ets:insert(Name, {Index, {Term, undefined}}),
     {ok, State}.
 
 -spec truncate(Log :: wa_raft_log:log(), Index :: wa_raft_log:log_index() | '$end_of_table', State :: state()) ->
     {ok, NewState :: state()}.
 truncate(_Log, '$end_of_table', State) ->
     {ok, State};
-truncate(Log, Index, State) ->
-    true = ets:delete(Log, Index),
-    truncate(Log, ets:next(Log, Index), State).
+truncate(#raft_log{name = Name} = Log, Index, State) ->
+    true = ets:delete(Name, Index),
+    truncate(Log, ets:next(Name, Index), State).
 
 -spec trim(Log :: wa_raft_log:log(), Index :: wa_raft_log:log_index(), State :: state()) ->
     {ok, NewState :: state()}.
@@ -214,9 +213,9 @@ trim(Log, Index, State) ->
 -spec trim_impl(Log :: wa_raft_log:log(), Index :: wa_raft_log:log_index()) -> ok.
 trim_impl(_Log, '$end_of_table') ->
     ok;
-trim_impl(Log, Index) ->
-    true = ets:delete(Log, Index),
-    trim_impl(Log, ets:prev(Log, Index)).
+trim_impl(#raft_log{name = Name} = Log, Index) ->
+    true = ets:delete(Name, Index),
+    trim_impl(Log, ets:prev(Name, Index)).
 
 -spec flush(Log :: wa_raft_log:log()) -> term().
 flush(_Log) ->

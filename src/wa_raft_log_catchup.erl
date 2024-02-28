@@ -55,7 +55,7 @@
     self :: #raft_identity{},
 
     distribution_module :: module(),
-    log_name :: wa_raft_log:log(),
+    log :: wa_raft_log:log(),
     server_name :: atom(),
 
     lockouts = #{} :: #{#raft_identity{} => non_neg_integer()}
@@ -156,13 +156,22 @@ registered_name(Table, Partition) ->
 
 %% RAFT log catchup server implementation
 -spec init(Options :: #raft_options{}) -> {ok, #state{}, timeout()}.
-init(#raft_options{application = Application, table = Table, partition = Partition, self = Self, distribution_module = DistributionModule, log_name = Log, log_catchup_name = Name, server_name = Server}) ->
+init(#raft_options{application = Application, table = Table, partition = Partition, self = Self,
+                   distribution_module = DistributionModule, log_name = LogName, log_module = LogModule,
+                   log_catchup_name = Name, server_name = Server}) ->
     process_flag(trap_exit, true),
 
     ?LOG_NOTICE("Catchup[~0p] starting for partition ~0p/~0p",
         [Name, Table, Partition], #{domain => [whatsapp, wa_raft]}),
 
     Name = ets:new(Name, [set, public, named_table, {write_concurrency, true}]),
+    Log = #raft_log{
+        name = LogName,
+        application = Application,
+        table = Table,
+        partition = Partition,
+        provider = LogModule
+    },
     State = #state{
         application = Application,
         name = Name,
@@ -170,7 +179,7 @@ init(#raft_options{application = Application, table = Table, partition = Partiti
         partition = Partition,
         self = Self,
         distribution_module = DistributionModule,
-        log_name = Log,
+        log = Log,
         server_name = Server
     },
 
@@ -243,7 +252,7 @@ send_logs(Peer, NextLogIndex, LeaderTerm, LeaderCommitIndex, Witness, #state{nam
     NewState.
 
 -spec send_logs_impl(#raft_identity{}, wa_raft_log:log_index(), wa_raft_log:log_term(), wa_raft_log:log_index(), boolean(), #state{}) -> term().
-send_logs_impl(#raft_identity{node = PeerNode} = Peer, NextLogIndex, LeaderTerm, LeaderCommitIndex, Witness, #state{application = App, name = Name, self = Self, distribution_module = DistributionModule, server_name = Server, log_name = Log} = State) ->
+send_logs_impl(#raft_identity{node = PeerNode} = Peer, NextLogIndex, LeaderTerm, LeaderCommitIndex, Witness, #state{application = App, name = Name, self = Self, distribution_module = DistributionModule, server_name = Server, log = Log} = State) ->
     PrevLogIndex = NextLogIndex - 1,
     {ok, PrevLogTerm} = wa_raft_log:term(Log, PrevLogIndex),
 
