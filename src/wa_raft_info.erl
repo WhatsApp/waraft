@@ -14,6 +14,7 @@
 -export([
     get_current_term/2,
     get_leader/2,
+    get_current_term_and_leader/2,
     get_membership/2,
     get_stale/2,
     get_state/2
@@ -23,8 +24,7 @@
 -export([
     init_tables/0,
     delete_state/2,
-    set_current_term/3,
-    set_leader/3,
+    set_current_term_and_leader/4,
     set_membership/3,
     set_stale/3,
     set_state/3
@@ -32,10 +32,8 @@
 
 %% Local RAFT server's current FSM state
 -define(RAFT_SERVER_STATE_KEY(Table, Partition), {state, Table, Partition}).
-%% Local RAFT server's most recently known term
--define(RAFT_CURRENT_TERM_KEY(Table, Partition), {term, Table, Partition}).
-%% Local RAFT server's most recently known leader node
--define(RAFT_CURRENT_LEADER_KEY(Table, Partition), {leader, Table, Partition}).
+%% Local RAFT server's most recently known term and leader
+-define(RAFT_CURRENT_TERM_AND_LEADER_KEY(Table, Partition), {term, Table, Partition}).
 %% Local RAFT server's current stale flag - indicates if the server thinks its data is stale
 -define(RAFT_STALE_KEY(Table, Partition), {stale, Table, Partition}).
 %% Local RAFT server's most recently known membership
@@ -55,11 +53,21 @@ get(Key, Default) ->
 
 -spec get_leader(wa_raft:table(), wa_raft:partition()) -> node() | undefined.
 get_leader(Table, Partition) ->
-    get(?RAFT_CURRENT_LEADER_KEY(Table, Partition), undefined).
+    {_, Leader} = get(?RAFT_CURRENT_TERM_AND_LEADER_KEY(Table, Partition), {undefined, undefined}),
+    Leader.
 
 -spec get_current_term(wa_raft:table(), wa_raft:partition()) -> wa_raft_log:log_term() | undefined.
 get_current_term(Table, Partition) ->
-    get(?RAFT_CURRENT_TERM_KEY(Table, Partition), undefined).
+    {Term, _} = get(?RAFT_CURRENT_TERM_AND_LEADER_KEY(Table, Partition), {undefined, undefined}),
+    Term.
+
+%% The RAFT server always sets both the known term and leader together, so that
+%% the atomic read performed by this method will not return a known leader for
+%% a different term.
+-spec get_current_term_and_leader(wa_raft:table(), wa_raft:partition()) ->
+    {wa_raft_log:log_term() | undefined, node() | undefined}.
+get_current_term_and_leader(Table, Partition) ->
+    get(?RAFT_CURRENT_TERM_AND_LEADER_KEY(Table, Partition), {undefined, undefined}).
 
 -spec get_state(wa_raft:table(), wa_raft:partition()) -> wa_raft_server:state() | undefined.
 get_state(Table, Partition) ->
@@ -90,13 +98,9 @@ set(Key, Value) ->
 delete(Key) ->
     ets:delete(?MODULE, Key).
 
--spec set_leader(wa_raft:table(), wa_raft:partition(), node()) -> true.
-set_leader(Table, Partition, Value) ->
-    set(?RAFT_CURRENT_LEADER_KEY(Table, Partition), Value).
-
--spec set_current_term(wa_raft:table(), wa_raft:partition(), wa_raft_log:log_term()) -> true.
-set_current_term(Table, Partition, Term) ->
-    set(?RAFT_CURRENT_TERM_KEY(Table, Partition), Term).
+-spec set_current_term_and_leader(wa_raft:table(), wa_raft:partition(), wa_raft_log:log_term(), node()) -> true.
+set_current_term_and_leader(Table, Partition, Term, Leader) ->
+    set(?RAFT_CURRENT_TERM_AND_LEADER_KEY(Table, Partition), {Term, Leader}).
 
 -spec set_state(wa_raft:table(), wa_raft:partition(), wa_raft_server:state()) -> true.
 set_state(Table, Partition, State) ->

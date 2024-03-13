@@ -429,7 +429,7 @@ init(#raft_options{application = Application, table = Table, partition = Partiti
         {ok, NewState} -> NewState;
         _              -> State1
     end,
-    true = wa_raft_info:set_current_term(Table, Partition, State2#raft_state.current_term),
+    true = wa_raft_info:set_current_term_and_leader(Table, Partition, State2#raft_state.current_term, undefined),
     % 1. Begin as disabled if a disable reason is set
     % 2. Begin as witness if configured
     % 3. Begin as stalled if there is no data
@@ -2040,7 +2040,7 @@ set_leader(_StateName, ?IDENTITY_REQUIRES_MIGRATION(_, Node), #raft_state{leader
 set_leader(StateName, ?IDENTITY_REQUIRES_MIGRATION(_, Node), #raft_state{name = Name, table = Table, partition = Partition, current_term = CurrentTerm} = State) ->
     ?LOG_NOTICE("Server[~0p, term ~0p, ~0p] changes leader to ~0p.",
         [Name, CurrentTerm, StateName, Node], #{domain => [whatsapp, wa_raft]}),
-    wa_raft_info:set_leader(Table, Partition, Node),
+    wa_raft_info:set_current_term_and_leader(Table, Partition, CurrentTerm, Node),
     State#raft_state{leader_id = Node}.
 
 -spec clear_leader(state(), #raft_state{}) -> #raft_state{}.
@@ -2049,7 +2049,7 @@ clear_leader(_StateName, #raft_state{leader_id = undefined} = State) ->
 clear_leader(StateName, #raft_state{name = Name, table = Table, partition = Partition, current_term = CurrentTerm} = State) ->
     ?LOG_NOTICE("Server[~0p, term ~0p, ~0p] clears leader record.",
         [Name, CurrentTerm, StateName], #{domain => [whatsapp, wa_raft]}),
-    wa_raft_info:set_leader(Table, Partition, undefined),
+    wa_raft_info:set_current_term_and_leader(Table, Partition, CurrentTerm, undefined),
     State#raft_state{leader_id = undefined}.
 
 %% Setup the RAFT state upon entry into a new RAFT server state.
@@ -2095,11 +2095,8 @@ check_stale_upon_entry(_StateName, _Now, #raft_state{table = Table, partition = 
 
 %% Set a new current term and voted-for peer and clear any state that is associated with the previous term.
 -spec advance_term(StateName :: state(), NewerTerm :: wa_raft_log:log_term(), VotedFor :: undefined | node(), State :: #raft_state{}) -> #raft_state{}.
-advance_term(StateName, NewerTerm, VotedFor,
-             #raft_state{table = Table, partition = Partition,
-                         current_term = CurrentTerm} = State0) when NewerTerm > CurrentTerm ->
-    State1 = clear_leader(StateName, State0),
-    State2 = State1#raft_state{
+advance_term(StateName, NewerTerm, VotedFor, #raft_state{current_term = CurrentTerm} = State0) when NewerTerm > CurrentTerm ->
+    State1 = State0#raft_state{
         current_term = NewerTerm,
         voted_for = VotedFor,
         votes = #{},
@@ -2109,8 +2106,8 @@ advance_term(StateName, NewerTerm, VotedFor,
         heartbeat_response_ts = #{},
         handover = undefined
     },
+    State2 = clear_leader(StateName, State1),
     ok = wa_raft_durable_state:store(State2),
-    true = wa_raft_info:set_current_term(Table, Partition, NewerTerm),
     State2.
 
 %%-------------------------------------------------------------------
