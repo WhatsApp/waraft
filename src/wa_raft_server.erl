@@ -392,7 +392,7 @@ parse_rpc(#raft_identity{name = Name} = Self, ?LEGACY_RAFT_RPC(Procedure, Term, 
 
 %% gen_statem callbacks
 -spec init(Options :: #raft_options{}) -> gen_statem:init_result(state()).
-init(#raft_options{application = Application, table = Table, partition = Partition, witness = Witness, self = Self, database = DataDir,
+init(#raft_options{application = Application, table = Table, partition = Partition, witness = Witness, self = Self, identifier = Identifier, database = DataDir,
                    distribution_module = DistributionModule, log_name = Log, log_catchup_name = Catchup, server_name = Name, storage_name = Storage} = Options) ->
     process_flag(trap_exit, true),
 
@@ -407,6 +407,7 @@ init(#raft_options{application = Application, table = Table, partition = Partiti
         application = Application,
         name = Name,
         self = Self,
+        identifier = Identifier,
         table = Table,
         partition = Partition,
         data_dir = DataDir,
@@ -2337,9 +2338,9 @@ broadcast_rpc(ProcedureCall, #raft_state{self = Self} = State) ->
     [send_rpc(Peer, ProcedureCall, State) || Peer <- config_identities(config(State)), Peer =/= Self].
 
 -spec cast(#raft_identity{}, rpc(), #raft_state{}) -> ok | {error, term()}.
-cast(#raft_identity{name = Name, node = Node} = Destination, Message, #raft_state{distribution_module = DistributionModule}) ->
+cast(#raft_identity{name = Name, node = Node} = Destination, Message, #raft_state{identifier = Identifier, distribution_module = DistributionModule}) ->
     try
-        ok = DistributionModule:cast({Name, Node}, Message)
+        ok = DistributionModule:cast({Name, Node}, Identifier, Message)
     catch
         _:E ->
             ?RAFT_COUNT({'raft.server.cast.error', E}),

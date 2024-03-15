@@ -10,9 +10,11 @@
 -compile(warn_missing_spec_all).
 
 -export([
-    cast/2,
-    call/3
+    cast/3,
+    call/4
 ]).
+
+-include("wa_raft.hrl").
 
 -type dest_addr() :: {Name :: atom(), Node :: node()}.
 
@@ -24,17 +26,17 @@
 %%%  Behaviour callbacks
 %%%
 
--callback cast(dest_addr(), term()) -> term().
--callback call(dest_addr(), term(), integer() | infinity) -> term().
+-callback cast(dest_addr(), #raft_identifier{}, term()) -> term().
+-callback call(dest_addr(), #raft_identifier{}, term(), integer() | infinity) -> term().
 
 %%% ------------------------------------------------------------------------
 %%%  Erlang distribution default implementation
 %%%
 
--spec cast(DestAddr :: dest_addr(), Message :: term()) -> term().
-cast(DestAddr, Message) ->
+-spec cast(DestAddr :: dest_addr(), Identifier :: #raft_identifier{}, Message :: term()) -> term().
+cast(DestAddr, _Identifier, Message) ->
     erlang:send(DestAddr, {'$gen_cast', Message}, [noconnect, nosuspend]).
 
--spec call(DestAddr :: dest_addr(), Message :: term(), Timeout :: integer() | infinity) -> term().
-call(DestAddr, Message, Timeout) ->
+-spec call(DestAddr :: dest_addr(), Identifier :: #raft_identifier{}, Message :: term(), Timeout :: integer() | infinity) -> term().
+call(DestAddr, _Identifier, Message, Timeout) ->
     gen_server:call(DestAddr, Message, Timeout).

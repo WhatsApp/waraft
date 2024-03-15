@@ -279,6 +279,13 @@
     node :: node()
 }).
 
+%% This record represents a RAFT instance identifier.
+-record(raft_identifier, {
+    application :: atom(),
+    table :: wa_raft:table(),
+    partition :: wa_raft:partition()
+}).
+
 %%-------------------------------------------------------------------
 %% Records for registered application and partition information
 %%-------------------------------------------------------------------
@@ -300,6 +307,7 @@
     partition :: wa_raft:partition(),
     witness :: boolean(),
     self :: #raft_identity{},
+    identifier :: #raft_identifier{},
     database :: file:filename(),
 
     % Acceptor options
@@ -349,6 +357,8 @@
     name :: atom(),
     %% Self identity
     self :: #raft_identity{},
+    %% Raft instance identifier
+    identifier :: #raft_identifier{},
     %% Table name
     table :: wa_raft:table(),
     %% Partition
