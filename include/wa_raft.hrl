@@ -237,6 +237,9 @@
 %% Maximum bytes per heartbeat for catchup by bulk log transfer
 -define(RAFT_CATCHUP_MAX_BYTES_PER_BATCH, raft_catchup_log_batch_bytes).
 -define(RAFT_CATCHUP_MAX_BYTES_PER_BATCH(App), ?RAFT_APP_CONFIG(App, ?RAFT_CATCHUP_MAX_BYTES_PER_BATCH, 4 * 1024 * 1024)).
+% Time to wait before retrying snapshot transport to a overloaded peer.
+-define(RAFT_SNAPSHOT_CATCHUP_OVERLOADED_BACKOFF_MS, snapshot_catchup_overloaded_backoff_ms).
+-define(RAFT_SNAPSHOT_CATCHUP_OVERLOADED_BACKOFF_MS(App), ?RAFT_APP_CONFIG(App, ?RAFT_SNAPSHOT_CATCHUP_OVERLOADED_BACKOFF_MS, 1000)).
 
 %% Time in seconds to retain transport destination directories after use
 -define(RAFT_TRANSPORT_RETAIN_INTERVAL, transport_retain_min_secs).

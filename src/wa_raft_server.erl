@@ -2437,7 +2437,7 @@ select_follower_replication_mode(FollowerLastIndex, #raft_state{application = Ap
 %% transports have been started then no transport is created. This function
 %% always performs this request asynchronously.
 -spec request_snapshot_for_follower(node(), #raft_state{}) -> term().
-request_snapshot_for_follower(FollowerId, #raft_state{name = Name, table = Table, partition = Partition, data_dir = DataDir, log_view = View} = State) ->
+request_snapshot_for_follower(FollowerId, #raft_state{application = App, name = Name, table = Table, partition = Partition, data_dir = DataDir, log_view = View} = State) ->
     case lists:member({Name, FollowerId}, config_witnesses(config(State))) of
         true  ->
             % If node is a witness, we can bypass the transport process since we don't have to
@@ -2447,7 +2447,7 @@ request_snapshot_for_follower(FollowerId, #raft_state{name = Name, table = Table
             LastLogPos = #raft_log_pos{index = LastLogIndex, term = LastLogTerm},
             wa_raft_server:snapshot_available({Name, FollowerId}, DataDir, LastLogPos);
         false ->
-            wa_raft_snapshot_catchup:request_snapshot_transport(FollowerId, Table, Partition)
+            wa_raft_snapshot_catchup:request_snapshot_transport(App, FollowerId, Table, Partition)
     end.
 
 -spec request_bulk_logs_for_follower(#raft_identity{}, wa_raft_log:log_index(), #raft_state{}) -> ok.

@@ -22,7 +22,7 @@
 %% Internal API
 -export([
     current_snapshot_transports/0,
-    request_snapshot_transport/3
+    request_snapshot_transport/4
 ]).
 
 %% Snapshot catchup server implementation
@@ -47,7 +47,9 @@
     % currently active transports
     transports = #{} :: #{key() => #transport{}},
     % counts of active transports that are using a particular snapshot
-    snapshots = #{} :: #{snapshot_key() => pos_integer()}
+    snapshots = #{} :: #{snapshot_key() => pos_integer()},
+    % backoff windows for nodes that previously reported being overloaded
+    backoff_windows = #{} :: #{node() => pos_integer()}
 }).
 
 -spec child_spec() -> supervisor:child_spec().
@@ -68,9 +70,9 @@ start_link() ->
 current_snapshot_transports() ->
     gen_server:call(?MODULE, current_snapshot_transports).
 
--spec request_snapshot_transport(Peer :: node(), Table :: wa_raft:table(), Partition :: wa_raft:partition()) -> ok.
-request_snapshot_transport(Peer, Table, Partition) ->
-    gen_server:cast(?MODULE, {request_snapshot_transport, Peer, Table, Partition}).
+-spec request_snapshot_transport(App :: atom(), Peer :: node(), Table :: wa_raft:table(), Partition :: wa_raft:partition()) -> ok.
+request_snapshot_transport(App, Peer, Table, Partition) ->
+    gen_server:cast(?MODULE, {request_snapshot_transport, App, Peer, Table, Partition}).
 
 -spec init(Args :: term()) -> {ok, #state{}}.
 init([]) ->
@@ -85,24 +87,35 @@ handle_call(Request, From, #state{} = State) ->
     ?LOG_NOTICE("received unrecognized call ~P from ~0p", [Request, 25, From], #{domain => [whatsapp, wa_raft]}),
     {noreply, State}.
 
--spec handle_cast({request_snapshot_transport, node(), wa_raft:table(), wa_raft:partition()}, State :: #state{}) -> {noreply, #state{}}.
-handle_cast({request_snapshot_transport, Peer, Table, Partition}, #state{transports = Transports, snapshots = Snapshots} = State) ->
-    case Transports of
-        #{{Peer, Table, Partition} := _} ->
+-spec handle_cast({request_snapshot_transport, atom(), node(), wa_raft:table(), wa_raft:partition()}, State :: #state{}) -> {noreply, #state{}}.
+handle_cast({request_snapshot_transport, App, Peer, Table, Partition}, #state{transports = Transports, snapshots = Snapshots, backoff_windows  = BackoffWindows} = State) ->
+    NowMillis = erlang:monotonic_time(millisecond),
+    case {Transports,  BackoffWindows} of
+        {#{{Peer, Table, Partition} := _}, _} ->
             {noreply, State};
-        _ ->
+        {_, #{Peer := RetryAfterTs}} when RetryAfterTs > NowMillis ->
+            {noreply, State};
+        {_, _} ->
             case maps:size(Transports) < ?RAFT_MAX_CONCURRENT_SNAPSHOT_CATCHUP() of
                 true ->
                     try
                         StorageRef = wa_raft_storage:registered_name(Table, Partition),
                         {ok, #raft_log_pos{index = Index, term = Term} = LogPos} = wa_raft_storage:create_snapshot(StorageRef),
                         Path = ?RAFT_SNAPSHOT_PATH(Table, Partition, Index, Term),
-                        {ok, ID} = wa_raft_transport:start_snapshot_transfer(Peer, Table, Partition, LogPos, Path, infinity),
-                        ?LOG_NOTICE("started sending snapshot for ~0p:~0p at ~0p:~0p over transport ~0p",
-                            [Table, Partition, Index, Term, ID], #{domain => [whatsapp, wa_raft]}),
-                        NewTransports = Transports#{{Peer, Table, Partition} => #transport{id = ID, snapshot = LogPos}},
-                        NewSnapshots = maps:update_with({Table, Partition, LogPos}, fun(V) -> V + 1 end, 1, Snapshots),
-                        {noreply, State#state{transports = NewTransports, snapshots = NewSnapshots}}
+                        case wa_raft_transport:start_snapshot_transfer(Peer, Table, Partition, LogPos, Path, infinity) of
+                            {error, receiver_overloaded} ->
+                                ?LOG_NOTICE("Peer ~0p reported being overloaded. Not sending snapshot for ~0p:~0p. Will try again later",
+                                    [Peer, Table, Partition], #{domain => [whatsapp, wa_raft]}),
+                                NewRetryAfterTs = NowMillis + ?RAFT_SNAPSHOT_CATCHUP_OVERLOADED_BACKOFF_MS(App),
+                                {noreply, State#state{backoff_windows = BackoffWindows#{Peer => NewRetryAfterTs}}};
+                            {ok, ID} ->
+                                ?LOG_NOTICE("started sending snapshot for ~0p:~0p at ~0p:~0p over transport ~0p",
+                                    [Table, Partition, Index, Term, ID], #{domain => [whatsapp, wa_raft]}),
+                                NewTransports = Transports#{{Peer, Table, Partition} => #transport{id = ID, snapshot = LogPos}},
+                                NewSnapshots = maps:update_with({Table, Partition, LogPos}, fun(V) -> V + 1 end, 1, Snapshots),
+                                NewBackoffWindows = maps:remove(Peer, BackoffWindows),
+                                {noreply, State#state{transports = NewTransports, snapshots = NewSnapshots, backoff_windows = NewBackoffWindows}}
+                        end
                     catch
                         _T:_E:S ->
                             ?LOG_ERROR("failed to start accepted snapshot transport of ~0p:~0p to ~0p at ~p",
