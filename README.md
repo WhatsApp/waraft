@@ -16,20 +16,43 @@ The following code snippet gives a quick glance about how WARaft works. It creat
 The [example directory](https://github.com/WhatsApp/waraft/tree/main/examples/kvstore/src) contains a generic key-value store built on top of WARaft.
 
 ```
+% Remember: This is for getting started with waraft, NOT a deployment guide.
+
+% Init ets tables used by raft
+1> wa_raft_info:init_tables().
+ok
+2> wa_raft_log_catchup:init_tables().
+wa_raft_log_catchup
+
+% Set test database storage location in erlang application environment.
+% /tmp is used here as this is most likely available on any system to get started easily.
+% In case of error clear out raft database before start, e.g. rm -rf /tmp/watest.1/
+3> application:set_env(watest, raft_database, '/tmp').
+ok
+
 % Cluster config - single node. table name test, partition 1
-1> Spec = wa_raft_sup:child_spec([#{table => test, partition => 1, nodes => [node()]}]).
+4> Spec = wa_raft_sup:child_spec(watest, [#{table => watest, partition => 1, nodes => [node()]}]).
+#{id => wa_raft_sup,restart => permanent,shutdown => infinity,
+  start =>
+      {wa_raft_sup,start_link,
+                   [watest,
+                    [#{table => watest,nodes => [yo@fedora],partition => 1}],
+                    #{}]},
+  type => supervisor,
+  modules => [wa_raft_sup]}
 
 % Start raft processes under kernel_sup as supervisor. It's for demo purpose only. An app supervisor should be used for a real case
-2> supervisor:start_child(kernel_sup, Spec).
-{ok,<0.140.0>}
+5> supervisor:start_child(kernel_sup, Spec).
+{ok,<0.219.0>}
 
-% Check raft server status
-3> wa_raft_server:status(raft_server_test_1).
+% Check raft server status. We expect state to be stalled.
+6> wa_raft_server:status(raft_server_watest_1).
 [{state,stalled},
- {id,nonode@nohost},
+ {id,yo@fedora},
+ {table,watest},
  {partition,1},
- {data_dir,"missing/test.1/"},
- {current_term,0},
+ {data_dir,"/tmp/watest.1"},
+ {current_term,1},
  {voted_for,undefined},
  {commit_index,0},
  {last_applied,0},
@@ -42,22 +65,26 @@ The [example directory](https://github.com/WhatsApp/waraft/tree/main/examples/kv
  {votes,#{}},
  {inflight_applies,0},
  {disable_reason,undefined},
- {config,#{version => 1}}]
+ {config,#{version => 1}},
+ {config_index,0},
+ {witness,false}]
 
-% Promote current node as leader
-4> wa_raft_server:promote(raft_server_test_1, 1, true, #{version => 1, membership => [{raft_server_test_1, node()}]}).
+% Promote current node as leader ( in case you get {error,rejected} read not for 3> )
+7> wa_raft_server:promote(raft_server_watest_1, 1, true, #{version => 1, membership => [{raft_server_watest_1, node()}]}).
 ok
 
-5> wa_raft_server:status(raft_server_test_1).
-[{state,leader},  % leader node
- {id,nonode@nohost},
+% Confirm promotion was successful
+8> wa_raft_server:status(raft_server_watest_1).
+[{state,leader},
+ {id,yo@fedora},
+ {table,watest},
  {partition,1},
- {data_dir,"missing/test.1/"},
+ {data_dir,"/tmp/watest.1"},
  {current_term,1},
  {voted_for,undefined},
  {commit_index,1},
  {last_applied,1},
- {leader_id,nonode@nohost},
+ {leader_id,yo@fedora},
  {next_index,#{}},
  {match_index,#{}},
  {log_module,wa_raft_log_ets},
@@ -66,21 +93,23 @@ ok
  {votes,#{}},
  {inflight_applies,0},
  {disable_reason,undefined},
- {config,#{membership => [{raft_server_test_1,nonode@nohost}],
-           version => 1}}]
+ {config,#{version => 1,
+           membership => [{raft_server_watest_1,yo@fedora}]}},
+ {config_index,1},
+ {witness,false}]
 
 % Write {key, 1000} to raft_server_test_1
-6> wa_raft_acceptor:commit(raft_acceptor_test_1, {make_ref(), {write, test, key, 1000}}).
-{ok, 2}
+9> wa_raft_acceptor:commit(raft_acceptor_watest_1, {make_ref(), {write, test, key, 1000}}).
+ok
 
 % Read key
-7> wa_raft_acceptor:commit(raft_acceptor_test_1, {make_ref(), {read, test, key}}).
-{ok,{1000,#{},2}}
+10> wa_raft_acceptor:read(raft_acceptor_watest_1, {read, test, key}).
+{ok,1000}
 
 % Stop raft
-8> supervisor:terminate_child(kernel_sup, wa_raft_sup).
+11> supervisor:terminate_child(kernel_sup, wa_raft_sup).
 ok
-9> supervisor:delete_child(kernel_sup, wa_raft_sup).
+12> supervisor:delete_child(kernel_sup, wa_raft_sup).
 ok
 ```
 
