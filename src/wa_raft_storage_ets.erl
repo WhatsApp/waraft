@@ -12,7 +12,7 @@
 -behaviour(wa_raft_storage).
 
 -export([
-    storage_open/4,
+    storage_open/3,
     storage_close/1,
     storage_position/1,
     storage_apply/3,
@@ -38,8 +38,8 @@
     position = #raft_log_pos{} :: wa_raft_log:log_pos()
 }).
 
--spec storage_open(atom(), wa_raft:table(), wa_raft:partition(), file:filename()) -> #state{}.
-storage_open(Name, Table, Partition, _RootDir) ->
+-spec storage_open(atom(), #raft_identifier{}, file:filename()) -> #state{}.
+storage_open(Name, #raft_identifier{table = Table, partition = Partition}, _RootDir) ->
     Name = ets:new(Name, [set, named_table, public, {read_concurrency, true}, {write_concurrency, true}]),
     #state{name = Name, table = Table, partition = Partition}.
 

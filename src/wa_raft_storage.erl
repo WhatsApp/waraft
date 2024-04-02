@@ -109,7 +109,7 @@
 %%-----------------------------------------------------------------------------
 
 %% Open the storage state for the specified RAFT partition.
--callback storage_open(Name :: atom(), Table :: wa_raft:table(), Partition :: wa_raft:partition(), PartitionPath :: file:filename()) -> Handle :: storage_handle().
+-callback storage_open(Name :: atom(), RaftIdentifier :: #raft_identifier{}, PartitionPath :: file:filename()) -> Handle :: storage_handle().
 
 %% Get any custom status to be reported alongside the status reported by the
 %% RAFT storage server.
@@ -366,13 +366,13 @@ registered_name(Table, Partition) ->
 %%-------------------------------------------------------------------
 
 -spec init(Options :: #raft_options{}) -> {ok, #state{}}.
-init(#raft_options{table = Table, partition = Partition, database = RootDir, storage_name = Name, storage_module = Module}) ->
+init(#raft_options{application = App, table = Table, partition = Partition, database = RootDir, storage_name = Name, storage_module = Module}) ->
     process_flag(trap_exit, true),
 
     ?LOG_NOTICE("Storage[~0p] starting for partition ~0p/~0p at ~0p using ~0p",
         [Name, Table, Partition, RootDir, Module], #{domain => [whatsapp, wa_raft]}),
 
-    Handle = Module:storage_open(Name, Table, Partition, RootDir),
+    Handle = Module:storage_open(Name, #raft_identifier{application = App, table = Table, partition = Partition}, RootDir),
     LastApplied = Module:storage_position(Handle),
 
     ?LOG_NOTICE("Storage[~0p] opened at position ~0p.",
