@@ -942,6 +942,7 @@ leader(Type, ?ADJUST_MEMBERSHIP_COMMAND(Action, Peer, ExpectedConfigIndex),
                    current_term = CurrentTerm, last_applied = LastApplied} = State0) ->
     % Try to adjust the configuration according to the current request.
     Config = config(State0),
+    % eqwalizer:ignore Peer can be undefined
     case adjust_config({Action, Peer}, Config, State0) of
         {ok, NewConfig} ->
             % Ensure that we have committed (applied entries are committed) at least one log entry
