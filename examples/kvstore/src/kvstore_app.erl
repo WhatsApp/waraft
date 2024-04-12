@@ -4,7 +4,7 @@
 %%% the LICENSE file in the root directory of this source tree.
 
 -module(kvstore_app).
--compile(warn_missing_spec).
+-compile(warn_missing_spec_all).
 
 %% API
 -export([

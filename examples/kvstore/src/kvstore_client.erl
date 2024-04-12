@@ -7,7 +7,7 @@
 %%% This module offers APIs to access the storage.
 %%%
 -module(kvstore_client).
--compile(warn_missing_spec).
+-compile(warn_missing_spec_all).
 
 -export([
     read/1,
