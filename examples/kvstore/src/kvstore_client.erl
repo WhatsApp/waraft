@@ -15,6 +15,11 @@
     delete/1
 ]).
 
+-export_type([
+    read_result/0,
+    commit_result/0
+]).
+
 -include_lib("kernel/include/logger.hrl").
 
 -define(CALL_TIMEOUT, 5000).
@@ -22,25 +27,29 @@
 -define(NUM_PARTITIONS, 4).
 -define(PARTITION(P), list_to_atom(lists:concat(["raft_acceptor_", ?TABLE, "_" , P]))).
 
+-type read_result() :: {ok, term()} | not_found | wa_raft_acceptor:read_error() | wa_raft_acceptor:call_error().
+-type commit_result() :: ok | wa_raft_acceptor:commit_error() | wa_raft_acceptor:call_error().
+
 %% Read value for a given key. It's a blocking call.
--spec read(term()) ->  {ok, {term(), map(), number()}} | {error, term()}.
+-spec read(term()) -> read_result().
 read(Key) ->
-    execute(Key, {read, ?TABLE, Key}).
+    Partition = ?PARTITION(partition(Key)),
+    wa_raft_acceptor:read(Partition, {read, ?TABLE, Key}, ?CALL_TIMEOUT).
 
 %% Write a key/value pair to storage. It's a blocking call.
--spec write(term(), term()) ->  {ok, number()} | {error, term()}.
+-spec write(term(), term()) -> commit_result().
 write(Key, Value) ->
     execute(Key, {write, ?TABLE, Key, Value}).
 
 %% Delete a key/value pair. It's a blocking call.
--spec delete(term()) ->  ok | {error, term()}.
+-spec delete(term()) -> commit_result().
 delete(Key) ->
     execute(Key, {delete, ?TABLE, Key}).
 
--spec execute(term(), term()) -> term().
+-spec execute(term(), term()) -> commit_result().
 execute(Key, Command) ->
-    Partition = ?PARTITION(partition(Key)), 
-    gen_server:call(Partition, {commit, {make_ref(), Command}}, ?CALL_TIMEOUT).
+    Partition = ?PARTITION(partition(Key)),
+    wa_raft_acceptor:commit(Partition, {make_ref(), Command}, ?CALL_TIMEOUT).
 
 -spec partition(term()) -> number().
 partition(Key) ->
