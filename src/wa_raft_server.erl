@@ -201,17 +201,17 @@ start_link(#raft_options{server_name = Name} = Options) ->
 %%  RAFT Server - Cluster Config API
 %% ==================================================
 
--spec get_config_members(Config :: config()) -> undefined | [#raft_identity{}].
+-spec get_config_members(Config :: config()) -> [#raft_identity{}].
 get_config_members(#{version := ?RAFT_CONFIG_CURRENT_VERSION, membership := Members}) ->
     [#raft_identity{name = Name, node = Node} || {Name, Node} <- Members];
 get_config_members(_Config) ->
-    undefined.
+    [].
 
--spec get_config_witnesses(Config :: config()) -> undefined | [#raft_identity{}].
+-spec get_config_witnesses(Config :: config()) -> [#raft_identity{}].
 get_config_witnesses(#{version := ?RAFT_CONFIG_CURRENT_VERSION, witness := Witnesses}) ->
     [#raft_identity{name = Name, node = Node} || {Name, Node} <- Witnesses];
 get_config_witnesses(_Config) ->
-    undefined.
+    [].
 
 -spec make_config(Members :: [#raft_identity{}]) -> config().
 make_config(Members) ->
