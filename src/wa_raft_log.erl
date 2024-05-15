@@ -401,7 +401,6 @@ fold(LogOrView, First, Last, Func, Acc) ->
            Acc) ->
     {ok, Acc} | wa_raft:error().
 fold(#log_view{log = Log, first = LogFirst, last = LogLast}, First, Last, SizeLimit, Func, Acc) ->
-    % eqwalizer:fixme - min [T166261957]
     fold_impl(Log, max(First, LogFirst), min(Last, LogLast), SizeLimit, Func, Acc);
 fold(Log, First, Last, SizeLimit, Func, Acc) ->
     Provider = provider(Log),
@@ -443,7 +442,6 @@ fold_impl(Log, First, Last, SizeLimit, Func, AccIn) ->
                  Acc) ->
     {ok, Acc} | wa_raft:error().
 fold_terms(#log_view{log = Log, first = LogFirst, last = LogLast}, First, Last, Func, Acc) ->
-    % eqwalizer:fixme - min [T166261957]
     fold_terms_impl(Log, max(First, LogFirst), min(Last, LogLast), Func, Acc);
 fold_terms(Log, First, Last, Func, Acc) ->
     Provider = provider(Log),
