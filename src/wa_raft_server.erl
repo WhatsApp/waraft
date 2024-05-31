@@ -1021,11 +1021,11 @@ leader(Type, ?HANDOVER_COMMAND(undefined), #raft_state{name = Name, current_term
             leader(Type, ?HANDOVER_COMMAND(Peer), State)
     end;
 
-%% [Handover] Do not allow handover to self
+%% [Handover] Handover to self results in no-op
 leader(Type, ?HANDOVER_COMMAND(Peer), #raft_state{name = Name, current_term = CurrentTerm} = State) when Peer =:= node() ->
     ?LOG_WARNING("Server[~0p, term ~0p, leader] dropping handover to self.",
         [Name, CurrentTerm], #{domain => [whatsapp, wa_raft]}),
-    reply(Type, {error, badarg}),
+    reply(Type, {ok, Peer}),
     {keep_state, State};
 
 %% [Handover] Attempt to start a handover to the specified peer
@@ -1037,7 +1037,7 @@ leader(Type, ?HANDOVER_COMMAND(Peer),
         false ->
             ?LOG_WARNING("Server[~0p, term ~0p, leader] dropping handover to unknown peer ~p.",
                 [Name, CurrentTerm, Peer], #{domain => [whatsapp, wa_raft]}),
-            reply(Type, {error, badarg}),
+            reply(Type, {error, invalid_peer}),
             keep_state_and_data;
         true ->
             PeerMatchIndex = maps:get(Peer, State0#raft_state.match_index, 0),
