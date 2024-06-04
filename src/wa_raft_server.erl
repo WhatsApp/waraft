@@ -598,7 +598,6 @@ stalled(internal, ?ADVANCE_TERM(Term), #raft_state{name = Name, current_term = C
 
 %% [Protocol] Handle any RPCs
 stalled(Type, Event, State) when is_tuple(Event), element(1, Event) =:= rpc ->
-    % eqwalizer:fixme T169659719
     handle_rpc(Type, Event, ?FUNCTION_NAME, State);
 
 %% [AppendEntries] Stalled nodes always discard AppendEntries
@@ -701,7 +700,6 @@ leader(internal, ?ADVANCE_TERM(Term), #raft_state{name = Name, current_term = Cu
 
 %% [Protocol] Handle any RPCs
 leader(Type, Event, State) when is_tuple(Event), element(1, Event) =:= rpc ->
-    % eqwalizer:fixme T169659719
     handle_rpc(Type, Event, ?FUNCTION_NAME, State);
 
 %% [Leader] Handle AppendEntries RPC (5.1, 5.2)
@@ -1122,7 +1120,6 @@ follower(internal, ?ADVANCE_TERM(Term), #raft_state{name = Name, current_term = 
 
 %% [Protocol] Handle any RPCs
 follower(Type, Event, State) when is_tuple(Event), element(1, Event) =:= rpc ->
-    % eqwalizer:fixme T169659719
     handle_rpc(Type, Event, ?FUNCTION_NAME, State);
 
 %% [Follower] Handle AppendEntries RPC (5.2, 5.3)
@@ -1307,7 +1304,6 @@ candidate(internal, ?FORCE_ELECTION(Term), #raft_state{name = Name, log_view = V
 
 %% [Protocol] Handle any RPCs
 candidate(Type, Event, State) when is_tuple(Event), element(1, Event) =:= rpc ->
-    % eqwalizer:fixme T169659719
     handle_rpc(Type, Event, ?FUNCTION_NAME, State);
 
 %% [AppendEntries RPC] Switch to follower because current term now has a leader (5.2, 5.3)
@@ -1404,7 +1400,6 @@ disabled(internal, ?ADVANCE_TERM(Term), #raft_state{name = Name, current_term = 
 
 %% [Protocol] Handle any RPCs
 disabled(Type, Event, State) when is_tuple(Event), element(1, Event) =:= rpc ->
-    % eqwalizer:fixme T169659719
     handle_rpc(Type, Event, ?FUNCTION_NAME, State);
 
 disabled(_Type, ?REMOTE(_Sender, ?APPEND_ENTRIES(_PrevLogIndex, _PrevLogTerm, _Entries, _CommitIndex, _TrimIndex)), #raft_state{}) ->
@@ -1462,7 +1457,6 @@ witness(state_timeout, _, State) ->
 
 %% [Protocol] Handle any RPCs
 witness(Type, Event, State) when is_tuple(Event), element(1, Event) =:= rpc ->
-    % eqwalizer:fixme T169659719
     handle_rpc(Type, Event, ?FUNCTION_NAME, State);
 
 %% [Witness] Handle AppendEntries RPC (5.2, 5.3)
