@@ -210,7 +210,7 @@ trim(Log, Index, State) ->
     trim_impl(Log, Index - 1),
     {ok, State}.
 
--spec trim_impl(Log :: wa_raft_log:log(), Index :: wa_raft_log:log_index()) -> ok.
+-spec trim_impl(Log :: wa_raft_log:log(), Index :: wa_raft_log:log_index() | '$end_of_table') -> ok.
 trim_impl(_Log, '$end_of_table') ->
     ok;
 trim_impl(#raft_log{name = Name} = Log, Index) ->

@@ -1984,7 +1984,7 @@ apply_log(#raft_state{application = App, name = Name, table = Table, partition =
 apply_log(State, _CommitIndex, _TrimIndex, _EffectiveTerm) ->
     State.
 
--spec apply_op(wa_raft_log:log_index(), wa_raft_log:log_entry(), wa_raft_log:log_term() | undefined, #raft_state{}) -> #raft_state{}.
+-spec apply_op(wa_raft_log:log_index(), wa_raft_log:log_entry() | undefined, wa_raft_log:log_term() | undefined, #raft_state{}) -> #raft_state{}.
 apply_op(LogIndex, _Entry, _EffectiveTerm, #raft_state{name = Name, last_applied = LastAppliedIndex, current_term = CurrentTerm} = State) when LogIndex =< LastAppliedIndex ->
     ?LOG_WARNING("Server[~0p, term ~0p] is skipping applying log entry ~0p because log entries up to ~0p are already applied.",
         [Name, CurrentTerm, LogIndex, LastAppliedIndex], #{domain => [whatsapp, wa_raft]}),
