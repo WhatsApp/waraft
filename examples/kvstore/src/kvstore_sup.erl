@@ -25,18 +25,13 @@ start_link() ->
 init([]) ->
     Partitions = [1, 2, 3, 4],
     Args = [raft_args(P) || P <- Partitions],
-    ChildSpecs = wa_raft_sup:child_spec(Args),
-    {ok, {#{}, [ChildSpecs]}}.
+    ChildSpecs = [
+        wa_raft_sup:child_spec(Args)
+    ],
+    {ok, {#{}, ChildSpecs}}.
 
-%% Return raft arguments for the provided partition
--spec raft_args(wa_raft:partition()) -> wa_raft:args().
+% Construct a RAFT "args" for a partition.
+-spec raft_args(Partition :: wa_raft:partition()) -> wa_raft:args().
 raft_args(Partition) ->
-    #{
-        %% Table name and partition uniquely identify a RAFT partition
-        table => kvstore,
-        partition => Partition,
-        %% Use in-memory log (Implement your own to meet your needs)
-        log_module => wa_raft_log_ets,
-        %% Use in-memory local storage (Implement your own to meet your needs)
-        storage_module => wa_raft_storage_ets
-    }.
+    % RAFT clusters are primarily identified by their table and partition number
+    #{table => kvstore, partition => Partition}.

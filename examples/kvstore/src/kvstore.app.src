@@ -15,6 +15,14 @@
         stdlib,
         wa_raft
     ]},
-    {env, []},
+    {env, [
+        % Specify where you want your data to be stored here
+        {raft_database, "/mnt/kvstore"},
+        % Specify your own implementations here
+        {raft_log_module, wa_raft_log_ets},
+        {raft_storage_module, wa_raft_storage_ets},
+        {raft_distribution_module, wa_raft_distribution},
+        {raft_transport_module, wa_raft_transport}
+    ]},
     {mod, {kvstore_app, []}}
 ]}.

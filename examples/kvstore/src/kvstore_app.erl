@@ -6,16 +6,18 @@
 -module(kvstore_app).
 -compile(warn_missing_spec_all).
 
+-behaviour(application).
+
 %% API
 -export([
     start/2,
     stop/1
 ]).
 
--spec start(application:start_type(), term()) -> {ok, pid()} | {ok, pid(), State :: term()} | {error, Reason :: term()}.
+-spec start(application:start_type(), term()) -> {ok, pid()}.
 start(normal, _Args) ->
-    kvstore_sup:start_link().
+    {ok, _Pid} = kvstore_sup:start_link().
 
--spec stop(State) -> ok when State :: term().
+-spec stop(term()) -> ok.
 stop(_State) ->
     ok.

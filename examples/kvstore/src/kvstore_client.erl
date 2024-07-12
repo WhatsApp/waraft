@@ -15,34 +15,33 @@
     delete/1
 ]).
 
--include_lib("kernel/include/logger.hrl").
+-include_lib("wa_raft/include/wa_raft.hrl").
 
 -define(CALL_TIMEOUT, 5000).
 -define(TABLE, kvstore).
 -define(NUM_PARTITIONS, 4).
--define(PARTITION(P), list_to_atom(lists:concat(["raft_acceptor_", ?TABLE, "_" , P]))).
 
 %% Read value for a given key. It's a blocking call.
--spec read(term()) ->  {ok, {term(), map(), number()}} | {error, term()}.
+-spec read(term()) ->  {ok, term()} | wa_raft_acceptor:read_error().
 read(Key) ->
-    execute(Key, {read, ?TABLE, Key}).
+    Acceptor = ?RAFT_ACCEPTOR_NAME(?TABLE, partition(Key)),
+    wa_raft_acceptor:read(Acceptor, {read, ?TABLE, Key}, ?CALL_TIMEOUT).
 
 %% Write a key/value pair to storage. It's a blocking call.
--spec write(term(), term()) ->  {ok, number()} | {error, term()}.
+-spec write(term(), term()) ->  ok | wa_raft_acceptor:commit_error().
 write(Key, Value) ->
-    execute(Key, {write, ?TABLE, Key, Value}).
+    commit(Key, {write, ?TABLE, Key, Value}).
 
 %% Delete a key/value pair. It's a blocking call.
--spec delete(term()) ->  ok | {error, term()}.
+-spec delete(term()) ->  ok | wa_raft_acceptor:commit_error().
 delete(Key) ->
-    execute(Key, {delete, ?TABLE, Key}).
+    commit(Key, {delete, ?TABLE, Key}).
 
--spec execute(term(), term()) -> term().
-execute(Key, Command) ->
-    Partition = ?PARTITION(partition(Key)), 
-    gen_server:call(Partition, {commit, {make_ref(), Command}}, ?CALL_TIMEOUT).
+-spec commit(term(), term()) -> term() | wa_raft_acceptor:commit_error().
+commit(Key, Command) ->
+    Acceptor = ?RAFT_ACCEPTOR_NAME(?TABLE, partition(Key)),
+    wa_raft_acceptor:commit(Acceptor, {make_ref(), Command}, ?CALL_TIMEOUT).
 
 -spec partition(term()) -> number().
 partition(Key) ->
     erlang:phash2(Key, ?NUM_PARTITIONS) + 1.
-
