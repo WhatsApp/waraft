@@ -63,9 +63,6 @@
 
 -define(READ_OP, '$read').
 
-%% Current version of RAFT config
--define(RAFT_CONFIG_CURRENT_VERSION, 1).
-
 %%-------------------------------------------------------------------
 %% Metrics
 %%-------------------------------------------------------------------

@@ -13,57 +13,101 @@
 -compile(warn_missing_spec_all).
 -behaviour(gen_statem).
 
-%% OTP supervisor
+%%------------------------------------------------------------------------------
+%% RAFT Server - OTP Supervision
+%%------------------------------------------------------------------------------
+
 -export([
     child_spec/1,
     start_link/1
 ]).
 
-%% RAFT Cluster Config API
+%%------------------------------------------------------------------------------
+%% RAFT Server - Public APIs - RAFT Cluster Configuration
+%%------------------------------------------------------------------------------
+
 -export([
-    make_config/1,
-    make_config/2,
+    latest_config_version/0
+]).
+
+%% Inspection of cluster configuration
+-export([
+    get_config_version/1,
     get_config_members/1,
-    get_config_witnesses/1,
+    get_config_witnesses/1
+]).
+
+%% Creation and modification of cluster configuration
+-export([
+    make_config/0,
+    make_config/1,
+    make_config/2
+]).
+
+%% Modification of cluster configuration
+-export([
     set_config_members/2,
     set_config_members/3
 ]).
 
-%% API
+%%------------------------------------------------------------------------------
+%% RAFT Server - Public APIs
+%%------------------------------------------------------------------------------
+
 -export([
     status/1,
     status/2,
-    membership/1,
-    stop/1,
-    commit/2,
-    read/2
+    membership/1
 ]).
 
-%% Internal API
+%%------------------------------------------------------------------------------
+%% RAFT Server - Internal APIs - Local Options
+%%------------------------------------------------------------------------------
+
 -export([
     default_name/2,
     registered_name/2
 ]).
 
-%% Internal API
+%%------------------------------------------------------------------------------
+%% RAFT Server - Internal APIs - RPC Handling
+%%------------------------------------------------------------------------------
+
 -export([
     make_rpc/3,
     parse_rpc/2
 ]).
 
-%% gen_statem callbacks
+%%------------------------------------------------------------------------------
+%% RAFT Server - State Machine Implementation
+%%------------------------------------------------------------------------------
+
+%% General callbacks
 -export([
     init/1,
     callback_mode/0,
-    terminate/3,
+    terminate/3
+]).
+
+%% State-specific callbacks
+-export([
     stalled/3,
     leader/3,
     follower/3,
     candidate/3,
-    disabled/3
+    disabled/3,
+    witness/3
 ]).
 
-%% Internal RAFT Server API
+%%------------------------------------------------------------------------------
+%% RAFT Server - Internal APIs - Commands
+%%------------------------------------------------------------------------------
+
+-export([
+    commit/2,
+    read/2
+]).
+
 -export([
     snapshot_available/3,
     promote/2,
@@ -78,29 +122,41 @@
     handover_candidates/1,
     disable/2,
     enable/1,
-    cast/3,
-    witness/3
+    cast/3
 ]).
 
-%% Exports for CT tests
+%%------------------------------------------------------------------------------
+%% RAFT Server - Test Exports
+%%------------------------------------------------------------------------------
+
 -ifdef(TEST).
 -export([
     compute_quorum/3,
     config/1,
-    max_index_to_apply/3
+    max_index_to_apply/3,
+    adjust_config/3
 ]).
 -endif.
+
+%%------------------------------------------------------------------------------
+%% RAFT Server - Public Types
+%%------------------------------------------------------------------------------
 
 -export_type([
     state/0,
     config/0,
+    config_all/0,
     membership/0,
     status/0
 ]).
 
+%%------------------------------------------------------------------------------
+
 -include_lib("kernel/include/logger.hrl").
 -include("wa_raft.hrl").
 -include("wa_raft_rpc.hrl").
+
+%%------------------------------------------------------------------------------
 
 %% Section 5.2. Randomized election timeout for fast election and to avoid split votes
 -define(ELECTION_TIMEOUT(State), {state_timeout, random_election_timeout(State), election}).
@@ -109,6 +165,10 @@
 -define(HEARTBEAT_TIMEOUT(State),    {state_timeout, ?RAFT_HEARTBEAT_INTERVAL(State#raft_state.application), heartbeat}).
 %% Timeout in milliseconds before the next heartbeat is to be sent by a RAFT leader with pending log entries
 -define(COMMIT_BATCH_TIMEOUT(State), {state_timeout, ?RAFT_COMMIT_BATCH_INTERVAL(State#raft_state.application), batch_commit}).
+
+%%------------------------------------------------------------------------------
+%% RAFT Server - Public Types
+%%------------------------------------------------------------------------------
 
 -type state() ::
     stalled |
@@ -120,9 +180,13 @@
 
 -type peer() :: {Name :: atom(), Node :: node()}.
 -type membership() :: [peer()].
--opaque config() ::
+
+-opaque config() :: config_v1().
+-opaque config_all() :: config_v1().
+
+-type config_v1() ::
     #{
-        version := integer(),
+        version := 1,
         membership => membership(),
         witness => membership()
     }.
@@ -150,6 +214,10 @@
     | {witness, boolean()}
     | {config, config()}
     | {config_index, wa_raft_log:log_index()}.
+
+%%------------------------------------------------------------------------------
+%% RAFT Server - Private Types
+%%------------------------------------------------------------------------------
 
 -type event() :: rpc() | remote(normalized_procedure()) | command() | internal_event() | timeout_type().
 
@@ -179,9 +247,9 @@
 
 -type membership_action() :: add | add_witness | remove | remove_witness | refresh.
 
-%% ==================================================
-%%  OTP Supervision Callbacks
-%% ==================================================
+%%------------------------------------------------------------------------------
+%% RAFT Server - OTP Supervision
+%%------------------------------------------------------------------------------
 
 -spec child_spec(Options :: #raft_options{}) -> supervisor:child_spec().
 child_spec(Options) ->
@@ -197,41 +265,88 @@ child_spec(Options) ->
 start_link(#raft_options{server_name = Name} = Options) ->
     gen_statem:start_link({local, Name}, ?MODULE, Options, []).
 
-%% ==================================================
-%%  RAFT Server - Cluster Config API
-%% ==================================================
+%%------------------------------------------------------------------------------
+%% RAFT Server - Public APIs - RAFT Cluster Configuration
+%%------------------------------------------------------------------------------
 
--spec get_config_members(Config :: config()) -> [#raft_identity{}].
-get_config_members(#{version := ?RAFT_CONFIG_CURRENT_VERSION, membership := Members}) ->
+%% Returns the version number for the latest cluster configuration format that
+%% is supported by the current RAFT implementation. All cluster configurations
+%% returned by methods used to create or modify cluster configurations in this
+%% module will return cluster configurations of this version.
+-spec latest_config_version() -> pos_integer().
+latest_config_version() ->
+    1.
+
+-spec get_config_version(Config :: config() | config_all()) -> pos_integer().
+get_config_version(#{version := Version}) ->
+    Version.
+
+-spec get_config_members(Config :: config() | config_all()) -> [#raft_identity{}].
+get_config_members(#{version := 1, membership := Members}) ->
     [#raft_identity{name = Name, node = Node} || {Name, Node} <- Members];
 get_config_members(_Config) ->
     [].
 
--spec get_config_witnesses(Config :: config()) -> [#raft_identity{}].
-get_config_witnesses(#{version := ?RAFT_CONFIG_CURRENT_VERSION, witness := Witnesses}) ->
+-spec get_config_witnesses(Config :: config() | config_all()) -> [#raft_identity{}].
+get_config_witnesses(#{version := 1, witness := Witnesses}) ->
     [#raft_identity{name = Name, node = Node} || {Name, Node} <- Witnesses];
 get_config_witnesses(_Config) ->
     [].
 
+%% Create a new cluster configuration with no members.
+%% Without any members, this cluster configuration should not be used as
+%% the active configuration for a RAFT cluster.
+-spec make_config() -> config().
+make_config() ->
+    #{
+        version => 1,
+        membership => [],
+        witness => []
+    }.
+
+%% Create a new cluster configuration with the provided members.
 -spec make_config(Members :: [#raft_identity{}]) -> config().
 make_config(Members) ->
-    set_config_members(Members, #{version => ?RAFT_CONFIG_CURRENT_VERSION}).
+    set_config_members(Members, make_config()).
 
+%% Create a new cluster configuration with the provided members and witnesses.
 -spec make_config(Members :: [#raft_identity{}], Witnesses :: [#raft_identity{}]) -> config().
 make_config(Members, Witnesses) ->
-    set_config_members(Members, Witnesses, #{version => ?RAFT_CONFIG_CURRENT_VERSION}).
+    set_config_members(Members, Witnesses, make_config()).
 
--spec set_config_members(Members :: [#raft_identity{}], Config :: config()) -> AdjustedConfig :: config().
-set_config_members(Members, #{version := ?RAFT_CONFIG_CURRENT_VERSION} = Config) ->
-    Config#{membership => [{Name, Node} || #raft_identity{name = Name, node = Node} <- Members]}.
+%% Replace the set of members in the provided cluster configuration.
+%% Will upgrade the cluster configuration to the latest version.
+-spec set_config_members(Members :: [#raft_identity{}], ConfigAll :: config() | config_all()) -> config().
+set_config_members(Members, ConfigAll) ->
+    Config = maybe_upgrade_config(ConfigAll),
+    Config#{membership => lists:sort([{Name, Node} || #raft_identity{name = Name, node = Node} <- Members])}.
 
--spec set_config_members(Members :: [#raft_identity{}], Witnesses :: [#raft_identity{}], Config :: config()) -> AdjustedConfig :: config().
-set_config_members(Members, Witnesses, #{version := ?RAFT_CONFIG_CURRENT_VERSION} = Config) ->
-    (set_config_members(Members, Config))#{witness => [{Name, Node} || #raft_identity{name = Name, node = Node} <- Witnesses]}.
+%% Replace the set of members and witnesses in the provided cluster configuration.
+%% Will upgrade the cluster configuration to the latest version.
+-spec set_config_members(Members :: [#raft_identity{}], Witnesses :: [#raft_identity{}], ConfigAll :: config() | config_all()) -> config().
+set_config_members(Members, Witnesses, ConfigAll) ->
+    Config = set_config_members(Members, ConfigAll),
+    Config#{witness => lists:sort([{Name, Node} || #raft_identity{name = Name, node = Node} <- Witnesses])}.
 
-%% ==================================================
-%%  RAFT Server Internal API
-%% ==================================================
+%% Attempt to upgrade any configuration from an older configuration version to the
+%% latest configuration version if possible.
+-spec maybe_upgrade_config(ConfigAll :: config() | config_all()) -> Config :: config().
+maybe_upgrade_config(#{version := 1} = Config) ->
+    % Fill in any missing fields.
+    Config#{
+        membership => maps:get(membership, Config, []),
+        witness => maps:get(witness, Config, [])
+    };
+maybe_upgrade_config(#{version := Version}) ->
+    % We are not able to properly handle configurations with newer versions.
+    error({unsupported_version, Version});
+maybe_upgrade_config(_Config) ->
+    % All valid configurations will contain at least their own version.
+    error(badarg).
+
+%%------------------------------------------------------------------------------
+%% RAFT Server - Internal APIs - Commands
+%%------------------------------------------------------------------------------
 
 %% Commit an op to the consensus group.
 -spec commit(Pid :: gen_statem:server_ref(), Op :: wa_raft_acceptor:op()) -> ok | wa_raft:error().
@@ -242,6 +357,10 @@ commit(Pid, Op) ->
 -spec read(Pid :: gen_statem:server_ref(), Op :: wa_raft_acceptor:op()) -> ok | wa_raft:error().
 read(Pid, Op) ->
     gen_statem:cast(Pid, ?READ_COMMAND(Op)).
+
+%%------------------------------------------------------------------------------
+%% RAFT Server - Public APIs
+%%------------------------------------------------------------------------------
 
 -spec status(ServerRef :: gen_statem:server_ref()) -> status().
 status(ServerRef) ->
@@ -273,10 +392,6 @@ membership(Service) ->
         undefined -> undefined;
         Config    -> get_config_members(Config)
     end.
-
--spec stop(Pid :: gen_statem:server_ref()) -> ok.
-stop(Pid) ->
-    gen_statem:stop(Pid).
 
 % An API that uses storage timeout since it interacts with storage layer directly
 -spec snapshot_available(Pid :: gen_statem:server_ref(), Root :: string(), Pos :: wa_raft_log:log_pos()) -> ok | wa_raft:error().
@@ -347,9 +462,9 @@ disable(Name, Reason) ->
 enable(Name) ->
     gen_statem:call(Name, ?ENABLE_COMMAND, ?RAFT_RPC_CALL_TIMEOUT()).
 
-%%-------------------------------------------------------------------
+%%------------------------------------------------------------------------------
 %% Internal API
-%%-------------------------------------------------------------------
+%%------------------------------------------------------------------------------
 
 %% Get the default name for the RAFT server associated with the provided
 %% RAFT partition.
@@ -386,9 +501,9 @@ parse_rpc(_Self, ?RAFT_NAMED_RPC(Key, Term, SenderName, SenderNode, PayloadOrUnd
 parse_rpc(#raft_identity{name = Name} = Self, ?LEGACY_RAFT_RPC(Procedure, Term, SenderId, Payload)) ->
     parse_rpc(Self, ?RAFT_NAMED_RPC(Procedure, Term, Name, SenderId, Payload)).
 
-%% ==================================================
-%%  gen_statem Callbacks
-%% ==================================================
+%%------------------------------------------------------------------------------
+%% RAFT Server - State Machine Implementation
+%%------------------------------------------------------------------------------
 
 %% gen_statem callbacks
 -spec init(Options :: #raft_options{}) -> gen_statem:init_result(state()).
@@ -446,9 +561,9 @@ init(#raft_options{application = Application, table = Table, partition = Partiti
 callback_mode() ->
     [state_functions, state_enter].
 
-%%-------------------------------------------------------------------
+%%------------------------------------------------------------------------------
 %% Procedure Call Marshalling
-%%-------------------------------------------------------------------
+%%------------------------------------------------------------------------------
 
 %% A macro that destructures the identity record indicating that the
 %% relevant procedure should be refactored to treat identities
@@ -568,9 +683,9 @@ defaultize_payload(Defaults, Payload, N, M) when N > M ->
 defaultize_payload(Defaults, Payload, N, M) when N < M ->
     defaultize_payload(Defaults, erlang:delete_element(M, Payload), N, M - 1).
 
-%% ==================================================
-%%  RAFT Server state-specific event callbacks
-%% ==================================================
+%%------------------------------------------------------------------------------
+%% RAFT Server - State Machien Implementation - State-specific Callbacks
+%%------------------------------------------------------------------------------
 
 %% [RAFT Extension]
 %% Stalled - an extension of raft protocol to handle the situation that a node join after being wiped(tupperware preemption).
@@ -1609,42 +1724,55 @@ command(StateName, {call, From}, ?STATUS_COMMAND, State) ->
     {keep_state_and_data, {reply, From, Status}};
 
 %% [Promote] Non-disabled nodes check if eligible to promote and then promote to leader.
-command(StateName, {call, From}, ?PROMOTE_COMMAND(Term, Force, Config),
+command(StateName, {call, From}, ?PROMOTE_COMMAND(Term, Force, ConfigAll),
         #raft_state{application = App, name = Name, log_view = View0, current_term = CurrentTerm, leader_heartbeat_ts = HeartbeatTs} = State0) when StateName =/= disabled ->
     ElectionWeight = ?RAFT_ELECTION_WEIGHT(App),
+    Config = case ConfigAll of
+        undefined -> undefined;
+        _         -> maybe_upgrade_config(ConfigAll)
+    end,
     SavedConfig = config(State0),
+    SavedMembership = get_config_members(SavedConfig),
+    OverrideMembership = case Config of
+        undefined -> [];
+        _         -> get_config_members(Config)
+    end,
+    Now = erlang:monotonic_time(millisecond),
+    HeartbeatGracePeriodMs = ?RAFT_PROMOTION_GRACE_PERIOD(App) * 1000,
     Allowed = if
         Term =< CurrentTerm ->
             ?LOG_ERROR("Server[~0p, term ~0p, ~0p] cannot attempt promotion to invalid term ~p.",
                 [Name, CurrentTerm, StateName, Term], #{domain => [whatsapp, wa_raft]}),
-            false;
+            invalid_term;
         ElectionWeight =:= 0 ->
             ?LOG_ERROR("Server[~0p, term ~0p, ~0p] node election weight is zero and cannot be promoted as leader.",
                 [Name, CurrentTerm, StateName], #{domain => [whatsapp, wa_raft]}),
-            false;
+            ineligible;
         % Prevent promotions to any operational state when there is no cluster membership configuration.
-        (not is_map_key(membership, SavedConfig)) andalso (Config =:= undefined orelse not is_map_key(membership, Config)) ->
+        SavedMembership =:= [] andalso OverrideMembership =:= [] ->
             ?LOG_ERROR("Server[~0p, term ~0p, ~0p] cannot promote with neither existing nor forced config having configured membership.",
                 [Name, CurrentTerm, StateName], #{domain => [whatsapp, wa_raft]}),
-            false;
+            invalid_configuration;
         StateName =:= witness ->
             ?LOG_ERROR("Server[~0p, term ~0p, ~0p] cannot promote a witness node.",
                 [Name, CurrentTerm, StateName], #{domain => [whatsapp, wa_raft]}),
-            false;
+            invalid_state;
         Force ->
             true;
         Config =/= undefined ->
             ?LOG_ERROR("Server[~0p, term ~0p, ~0p] cannot forcibly apply a configuration when doing a non-forced promotion.",
                 [Name, CurrentTerm, StateName], #{domain => [whatsapp, wa_raft]}),
-            false;
+            not_forced;
         StateName =:= stalled ->
             ?LOG_ERROR("Server[~0p, term ~0p, ~0p] cannot promote a stalled node.",
                 [Name, CurrentTerm, StateName], #{domain => [whatsapp, wa_raft]}),
-            false;
+            invalid_state;
         HeartbeatTs =:= undefined ->
             true;
+        Now - HeartbeatTs >= HeartbeatGracePeriodMs ->
+            true;
         true ->
-            erlang:monotonic_time(millisecond) - HeartbeatTs >= ?RAFT_PROMOTION_GRACE_PERIOD(App) * 1000
+            rejected
     end,
     case Allowed of
         true ->
@@ -1672,10 +1800,10 @@ command(StateName, {call, From}, ?PROMOTE_COMMAND(Term, Force, Config),
                 true  -> {repeat_state, State2, {reply, From, ok}};
                 false -> {next_state, NewStateName, State2, {reply, From, ok}}
             end;
-        false ->
-            ?LOG_NOTICE("Server[~0p, term ~0p, ~0p] rejected leader promotion of term ~p.",
-                [Name, CurrentTerm, StateName, Term], #{domain => [whatsapp, wa_raft]}),
-            {keep_state_and_data, {reply, From, {error, rejected}}}
+        Reason ->
+            ?LOG_NOTICE("Server[~0p, term ~0p, ~0p] rejected leader promotion to term ~0p due to ~0p.",
+                [Name, CurrentTerm, StateName, Term, Reason], #{domain => [whatsapp, wa_raft]}),
+            {keep_state_and_data, {reply, From, {error, Reason}}}
     end;
 %% [Resign] Non-leader nodes cannot resign.
 command(StateName, {call, From}, ?RESIGN_COMMAND, #raft_state{name = Name, current_term = CurrentTerm}) when StateName =/= leader ->
@@ -1737,9 +1865,9 @@ command(StateName, Type, Event, #raft_state{name = Name, current_term = CurrentT
         [Name, CurrentTerm, StateName, Type, Event], #{domain => [whatsapp, wa_raft]}),
     keep_state_and_data.
 
-%% ==================================================
-%%  RAFT Configuration Change Helpers
-%% ==================================================
+%%------------------------------------------------------------------------------
+%% RAFT Configuration Change Helpers
+%%------------------------------------------------------------------------------
 
 %% Determine if the specified peer is a member of the current cluster configuration,
 %% returning false if the specified peer is not a member or there is no current cluster
@@ -1754,9 +1882,10 @@ member(Peer, #{membership := Membership}, _Default) ->
 member(_Peer, _Config, Default) ->
     Default.
 
-%% Helper function to get the membership list from a config with unknown version.
--spec config_membership(Config :: config()) -> Membership :: [peer()].
-config_membership(#{membership := Membership}) ->
+%% Get the non-empty membership list from the provided config. Raises an error
+%% if the membership list is missing or empty.
+-spec config_membership(Config :: config()) -> Membership :: membership().
+config_membership(#{membership := Membership}) when Membership =/= [] ->
     Membership;
 config_membership(_Config) ->
     error(membership_not_set).
@@ -1789,11 +1918,7 @@ config(#raft_state{log_view = View, cached_config = {ConfigIndex, Config}}) ->
             Config
     end;
 config(#raft_state{cached_config = undefined} = State) ->
-    config(State#raft_state{cached_config = {0, default_config(State)}}).
-
--spec default_config(State :: #raft_state{}) -> Config :: config().
-default_config(#raft_state{}) ->
-    #{version => ?RAFT_CONFIG_CURRENT_VERSION}.
+    config(State#raft_state{cached_config = {0, make_config()}}).
 
 -spec config_index(State :: #raft_state{}) -> ConfigIndex :: wa_raft_log:log_index().
 config_index(#raft_state{log_view = View, cached_config = {ConfigIndex, _Config}}) ->
@@ -1809,7 +1934,7 @@ config_index(#raft_state{log_view = View, cached_config = {ConfigIndex, _Config}
             ConfigIndex
     end;
 config_index(#raft_state{cached_config = undefined} = State) ->
-    config_index(State#raft_state{cached_config = {0, default_config(State)}}).
+    config_index(State#raft_state{cached_config = {0, make_config()}}).
 
 %% Loads and caches the current configuration stored in the RAFT storage.
 %% This configuration is used whenever there is no newer configuration
@@ -1826,12 +1951,6 @@ load_config(#raft_state{storage = Storage, table = Table, partition = Partition}
         {error, Reason} ->
             error({could_not_load_config, Reason})
     end.
-
-%% Maybe upgrade an old configuration to a new configuration compatibility
-%% version.
--spec maybe_upgrade_config(RawConfig :: map()) -> Config :: config().
-maybe_upgrade_config(#{version := ?RAFT_CONFIG_CURRENT_VERSION} = Config) ->
-    Config.
 
 %% After an apply is sent to storage, check to see if it is a new configuration
 %% being applied. If it is, then update the cached configuration.
@@ -2026,9 +2145,9 @@ append_entries_to_followers(#raft_state{name = Name, table = Table, partition = 
             (Peer, StateN)                            -> heartbeat(Peer, StateN)
         end, State1, config_identities(config(State1))).
 
-%%-------------------------------------------------------------------
+%%------------------------------------------------------------------------------
 %% RAFT Server State Management
-%%-------------------------------------------------------------------
+%%------------------------------------------------------------------------------
 
 -spec set_leader(StateName :: state(), Leader :: #raft_identity{}, State :: #raft_state{}) -> #raft_state{}.
 set_leader(_StateName, ?IDENTITY_REQUIRES_MIGRATION(_, Node), #raft_state{leader_id = Node} = State) ->
@@ -2106,9 +2225,9 @@ advance_term(StateName, NewerTerm, VotedFor, #raft_state{current_term = CurrentT
     ok = wa_raft_durable_state:store(State2),
     State2.
 
-%%-------------------------------------------------------------------
+%%------------------------------------------------------------------------------
 %% RAFT Leader Functionality
-%%-------------------------------------------------------------------
+%%------------------------------------------------------------------------------
 
 -spec heartbeat(#raft_identity{}, #raft_state{}) -> #raft_state{}.
 heartbeat(?IDENTITY_REQUIRES_MIGRATION(_, FollowerId) = Sender,
@@ -2179,48 +2298,51 @@ compute_handover_candidates(#raft_state{application = App, log_view = View, matc
 
 -spec adjust_config(Action :: {add, peer()} | {remove, peer()} | {add_witness, peer()} | {remove_witness, peer()} | {refresh, undefined},
                     Config :: config(), State :: #raft_state{}) -> {ok, NewConfig :: config()} | {error, Reason :: atom()}.
-adjust_config(Action, Config, #raft_state{name = Name}) ->
-    Node = node(),
-    Membership = config_membership(Config),
-    Witness = config_witnesses(Config),
+adjust_config(Action, Config, #raft_state{self = Self}) ->
+    Membership = get_config_members(Config),
+    Witness = get_config_witnesses(Config),
     case Action of
         % The 'refresh' action is used to commit the current effective configuration to storage in the
         % case of upgrading from adhoc to stored configuration or to materialize changes to the format
         % of stored configurations.
         {refresh, undefined} ->
             {ok, Config};
-        {add, Peer} ->
-            case lists:member(Peer, Membership) of
+        {add, {Name, Node}} ->
+            PeerIdentity = ?IDENTITY_REQUIRES_MIGRATION(Name, Node),
+            case lists:member(PeerIdentity, Membership) of
                 true  -> {error, already_member};
-                false -> {ok, Config#{membership => [Peer | Membership]}}
+                false -> {ok, set_config_members([PeerIdentity | Membership], Config)}
             end;
-        {add_witness, Peer} ->
-            case {lists:member(Peer, Witness), lists:member(Peer, Membership)} of
+        {add_witness, {Name, Node}} ->
+            PeerIdentity = ?IDENTITY_REQUIRES_MIGRATION(Name, Node),
+            case {lists:member(PeerIdentity, Witness), lists:member(PeerIdentity, Membership)} of
                 {true, true}  -> {error, already_witness};
-                {true, _} -> {error, already_member};
-                {false, _} -> {ok, Config#{membership => [Peer | Membership], witness => [Peer | Witness]}}
+                {true, _}     -> {error, already_member};
+                {false, _}    -> {ok, set_config_members([PeerIdentity | Membership], [PeerIdentity | Witness], Config)}
             end;
-        {remove, Peer} ->
-            case {Peer, lists:member(Peer, Membership)} of
-                {{Name, Node}, _} -> {error, cannot_remove_self};
-                {_, false}        -> {error, not_a_member};
-                {_, true}         -> {ok, Config#{membership => lists:delete(Peer, Membership), witness => lists:delete(Peer, Witness)}}
+        {remove, {Name, Node}} ->
+            PeerIdentity = ?IDENTITY_REQUIRES_MIGRATION(Name, Node),
+            case {PeerIdentity, lists:member(PeerIdentity, Membership)} of
+                {Self, _}  -> {error, cannot_remove_self};
+                {_, false} -> {error, not_a_member};
+                {_, true}  -> {ok, set_config_members(lists:delete(PeerIdentity, Membership), lists:delete(PeerIdentity, Witness), Config)}
             end;
-        {remove_witness, Peer} ->
-            case {Peer, lists:member(Peer, Witness)} of
-                {{Name, Node}, _} -> {error, cannot_remove_self};
-                {_, false}        -> {error, not_a_witness};
-                {_, true}         -> {ok, Config#{membership => lists:delete(Peer, Membership), witness => lists:delete(Peer, Witness)}}
+        {remove_witness, {Name, Node}} ->
+            PeerIdentity = ?IDENTITY_REQUIRES_MIGRATION(Name, Node),
+            case {PeerIdentity, lists:member(PeerIdentity, Witness)} of
+                {Self, _}  -> {error, cannot_remove_self};
+                {_, false} -> {error, not_a_witness};
+                {_, true}  -> {ok, set_config_members(lists:delete(PeerIdentity, Membership), lists:delete(PeerIdentity, Witness), Config)}
             end
     end.
 
-%%-----------------------------------------------------------------------------
+%%------------------------------------------------------------------------------
 %% [AppendEntries] Logic for handling heartbeats from leaders (5.3)
-%%-----------------------------------------------------------------------------
+%%------------------------------------------------------------------------------
 %% Attempt to append the log entries declared by a leader in a heartbeat,
 %% apply committed but not yet applied log entries, trim the log, and reset
 %% the election timeout timer as necessary.
-%%-----------------------------------------------------------------------------
+%%------------------------------------------------------------------------------
 
 -spec handle_heartbeat(State :: state(), Event :: gen_statem:event_type(), Leader :: #raft_identity{}, PrevLogIndex :: wa_raft_log:log_index(), PrevLogTerm :: wa_raft_log:log_term(),
                        Entries :: [wa_raft_log:log_entry()], CommitIndex :: wa_raft_log:log_index(), TrimIndex :: wa_raft_log:log_index(), Data :: #raft_state{}) -> gen_statem:event_handler_result(state(), #raft_state{}).
@@ -2251,16 +2373,16 @@ handle_heartbeat(State, Event, Leader, PrevLogIndex, PrevLogTerm, Entries, Commi
             {next_state, disabled, Data0#raft_state{disable_reason = Reason}}
     end.
 
-%%-----------------------------------------------------------------------------
+%%------------------------------------------------------------------------------
 %% [AppendEntries] Logic for log append during heartbeat and handover (5.3)
-%%-----------------------------------------------------------------------------
+%%------------------------------------------------------------------------------
 %% Append the provided range of the log entries to the local log only if the
 %% term of the previous log matches the term stored by the local log,
 %% otherwise, truncate the log if the term does not match or do nothing if
 %% the previous log entry is not available locally. If an unrecoverable error
 %% is encountered, returns a diagnostic that can be used as a reason to
 %% disable the current replica.
-%%-------------------------------------------------------------------
+%%------------------------------------------------------------------------------
 
 -spec append_entries(State :: state(), PrevLogIndex :: wa_raft_log:log_index(), PrevLogTerm :: wa_raft_log:log_term(), Entries :: [wa_raft_log:log_entry()], EntryCount :: non_neg_integer(), Data :: #raft_state{}) ->
     {ok, Accepted :: boolean(), NewLastIndex :: wa_raft_log:log_index(), NewData :: #raft_state{}} | {fatal, Reason :: term()}.
