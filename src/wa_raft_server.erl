@@ -114,7 +114,6 @@
     promote/3,
     promote/4,
     resign/1,
-    refresh_config/1,
     adjust_membership/3,
     adjust_membership/4,
     handover/1,
@@ -414,10 +413,6 @@ promote(Pid, Term, Force, Config) ->
 -spec resign(Pid :: gen_statem:server_ref()) -> ok | wa_raft:error().
 resign(Pid) ->
     gen_statem:call(Pid, ?RESIGN_COMMAND, ?RAFT_RPC_CALL_TIMEOUT()).
-
--spec refresh_config(Name :: gen_statem:server_ref()) -> {ok, Pos :: wa_raft_log:log_pos()} | wa_raft:error().
-refresh_config(Name) ->
-    gen_statem:call(Name, ?ADJUST_MEMBERSHIP_COMMAND(refresh, undefined, undefined), ?RAFT_RPC_CALL_TIMEOUT()).
 
 -spec adjust_membership(
     Name :: gen_statem:server_ref(),
