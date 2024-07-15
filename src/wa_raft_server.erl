@@ -121,8 +121,7 @@
     handover/2,
     handover_candidates/1,
     disable/2,
-    enable/1,
-    cast/3
+    enable/1
 ]).
 
 %%------------------------------------------------------------------------------
@@ -2448,7 +2447,7 @@ reply(Type, Message) ->
 
 -spec send_rpc(Destination :: #raft_identity{}, ProcedureCall :: normalized_procedure(), State :: #raft_state{}) -> term().
 send_rpc(Destination, Procedure, #raft_state{self = Self, current_term = Term} = State) ->
-    ?MODULE:cast(Destination, make_rpc(Self, Term, Procedure), State).
+    cast(Destination, make_rpc(Self, Term, Procedure), State).
 
 -spec broadcast_rpc(ProcedureCall :: normalized_procedure(), State :: #raft_state{}) -> term().
 broadcast_rpc(ProcedureCall, #raft_state{self = Self} = State) ->
