@@ -207,7 +207,10 @@ handle_info(timeout, #state{name = Name} = State) ->
         Requests ->
             % Select a random log catchup request to process.
             ?CATCHUP_REQUEST(Peer, FollowerLastIndex, LeaderTerm, LeaderCommitIndex, Witness) = lists:nth(rand:uniform(length(Requests)), Requests),
-            {noreply, send_logs(Peer, FollowerLastIndex, LeaderTerm, LeaderCommitIndex, Witness, State), ?CONTINUE_TIMEOUT}
+            NewState = send_logs(Peer, FollowerLastIndex, LeaderTerm, LeaderCommitIndex, Witness, State),
+            % erlint-ignore garbage_collect
+            erlang:garbage_collect(),
+            {noreply, NewState, ?CONTINUE_TIMEOUT}
     end;
 handle_info(Info, #state{name = Name} = State) ->
     ?LOG_WARNING("Unexpected info ~0P on ~0p", [Info, 30, Name], #{domain => [whatsapp, wa_raft]}),
