@@ -100,10 +100,10 @@ handle_cast(Request, #state{number = Number} = State) ->
 
 -spec handle_info(Info :: term(), State :: state()) ->
       {noreply, NewState :: state()}
-    | {noreply, NewState :: state(), Timeout :: timeout()}.
+    | {noreply, NewState :: state(), Timeout :: timeout() | hibernate}.
 handle_info(timeout, #state{table = Table, marker = undefined} = State) ->
     case ets:first(Table) of
-        '$end_of_table' -> {noreply, State};                                 % table is empty so wait until there is work
+        '$end_of_table' -> {noreply, State, hibernate};                          % table is empty so wait until there is work
         _FirstKey       -> {noreply, State#state{marker = 0}, ?CONTINUE_TIMEOUT} % 0 compares smaller than any ref
     end;
 handle_info(timeout, #state{number = Number, table = Table, states = States, marker = Marker} = State) ->
