@@ -402,6 +402,7 @@ init(#raft_options{application = App, table = Table, partition = Partition, data
         open |
         {read, Op :: wa_raft_acceptor:command()} |
         snapshot_create |
+        status |
         {snapshot_create, Name :: string()} |
         {snapshot_open, LastAppliedPos :: wa_raft_log:log_pos()} |
         {read_metadata, Key :: metadata()}.
