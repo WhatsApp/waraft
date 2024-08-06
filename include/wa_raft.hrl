@@ -102,6 +102,9 @@
 %% Time in seconds after which a transport that has not made progress should be considered failed
 -define(RAFT_TRANSPORT_IDLE_TIMEOUT(), ?RAFT_CONFIG(transport_idle_timeout_secs, 30)).
 
+%% Maximum number of previous inactive transports to retain info for.
+-define(RAFT_TRANSPORT_INACTIVE_INFO_LIMIT(), ?RAFT_CONFIG(raft_transport_inactive_info_limit, 30)).
+
 %% Size in bytes of individual chunks (messages containing file data) to be sent during transports
 %% using the dist transport provider
 -define(RAFT_DIST_TRANSPORT_CHUNK_SIZE(), ?RAFT_CONFIG(dist_transport_chunk_size, 1 * 1024 * 1024)).
