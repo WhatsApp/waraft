@@ -437,7 +437,7 @@ fold_impl(Log, First, Last, SizeLimit, Func, AccIn) ->
 %% provider to the callback function.
 -spec fold_terms(LogOrView :: log() | view(),
                  First :: log_index(),
-                 Last :: log_index() | infinity,
+                 Last :: log_index(),
                  Func :: fun((Index :: log_index(), Term :: log_term(), Acc) -> Acc),
                  Acc) ->
     {ok, Acc} | wa_raft:error().
@@ -447,7 +447,6 @@ fold_terms(Log, First, Last, Func, Acc) ->
     Provider = provider(Log),
     LogFirst = Provider:first_index(Log),
     LogLast = Provider:last_index(Log),
-    % eqwalizer:fixme - min [T166261957]
     fold_terms_impl(Log, max(First, LogFirst), min(Last, LogLast), Func, Acc).
 
 -spec fold_terms_impl(
