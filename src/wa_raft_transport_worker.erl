@@ -88,7 +88,7 @@ handle_call(Request, From, #state{number = Number} = State) ->
 -spec handle_cast(Request, State :: state()) -> {noreply, NewState :: state(), Timeout :: timeout()}
     when Request :: {send, wa_raft_transport:transport_id(), wa_raft_transport:file_id()}.
 handle_cast({send, ID, FileID}, #state{table = Table} = State) ->
-    ?RAFT_COUNT('raft.transport.send'),
+    ?RAFT_COUNT('raft.transport.file.send'),
     wa_raft_transport:update_file_info(ID, FileID,
         fun (Info) -> Info#{status => sending, start_ts => erlang:system_time(millisecond)} end),
     true = ets:insert_new(Table, {make_ref(), ID, FileID}),

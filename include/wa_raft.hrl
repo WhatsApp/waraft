@@ -72,6 +72,7 @@
 -define(RAFT_COUNT(Metric), ?RAFT_METRICS_MODULE:count(Metric)).
 -define(RAFT_COUNTV(Metric, Value), ?RAFT_METRICS_MODULE:countv(Metric, Value)).
 -define(RAFT_GATHER(Metric, Value), ?RAFT_METRICS_MODULE:gather(Metric, Value)).
+-define(RAFT_GATHER_LATENCY(Metric, Value), ?RAFT_METRICS_MODULE:gather_latency(Metric, Value)).
 
 %%-------------------------------------------------------------------
 %% Global Configuration

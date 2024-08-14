@@ -18,7 +18,8 @@
 -export([
     count/1,
     countv/2,
-    gather/2
+    gather/2,
+    gather_latency/2
 ]).
 
 %% Public Types
@@ -39,6 +40,8 @@
 -callback countv(metric(), value()) -> ok.
 %% Report the measured value of an occurence of some metric.
 -callback gather(metric(), value()) -> ok.
+%% Report the measured latency of an occurence of some metric.
+-callback gather_latency(metric(), value()) -> ok.
 
 %%-------------------------------------------------------------------
 %% Public Types
@@ -71,4 +74,8 @@ countv(_Metric, _Value) ->
 
 -spec gather(metric(), value()) -> ok.
 gather(_Metric, _Value) ->
+    ok.
+
+-spec gather_latency(metric(), value()) -> ok.
+gather_latency(_Metric, _Value) ->
     ok.

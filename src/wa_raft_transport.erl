@@ -529,10 +529,16 @@ handle_call(Request, _From, #state{} = State) ->
 -spec handle_cast(Request, State :: #state{}) -> {noreply, NewState :: #state{}}
     when Request :: {complete, ID :: transport_id(), FileID :: file_id(), Status :: term(), Pid :: pid()}.
 handle_cast({complete, ID, FileID, Status, Pid}, #state{counters = Counters} = State) ->
-    ?RAFT_COUNT('raft.transport.file.complete'),
     NowMillis = erlang:system_time(millisecond),
+    ?RAFT_COUNT({'raft.transport.file.send', Status}),
     Result0 = update_file_info(ID, FileID,
         fun (Info) ->
+            case Info of
+                #{start_ts := StartMillis} ->
+                    ?RAFT_GATHER_LATENCY({'raft.transport.file.send', Status, latency_ms}, NowMillis - StartMillis);
+                _ ->
+                    ok
+            end,
             case Status of
                 ok -> Info#{status => completed, end_ts => NowMillis};
                 _  -> Info#{status => failed, end_ts => NowMillis, error => Status}
@@ -824,8 +830,9 @@ maybe_notify_complete(ID, _Info, #state{}) ->
         [ID], #{domain => [whatsapp, wa_raft]}).
 
 -spec maybe_notify(transport_id(), transport_info()) -> transport_info().
-maybe_notify(ID, #{status := Status, notify := Notify} = Info) when Status =/= requested andalso Status =/= running ->
-    ?RAFT_COUNT('raft.transport.complete'),
+maybe_notify(ID, #{status := Status, notify := Notify, start_ts := Start, end_ts := End} = Info) when Status =/= requested andalso Status =/= running ->
+    ?RAFT_COUNT({'raft.transport', Status}),
+    ?RAFT_GATHER_LATENCY({'raft.transport', Status, latency_ms}, End - Start),
     gen_server:reply(Notify, {ok, ID}),
     maps:remove(notify, Info);
 maybe_notify(_ID, Info) ->
