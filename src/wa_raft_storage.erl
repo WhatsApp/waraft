@@ -39,6 +39,11 @@
     read_metadata/2
 ]).
 
+%% Label API
+-export([
+    label/1
+]).
+
 %% Misc API
 -export([
     status/1
@@ -131,6 +136,11 @@
 %% Issue a read command to get the position of the current storage state.
 -callback storage_position(Handle :: storage_handle()) -> Position :: wa_raft_log:log_pos().
 
+%% Issue a read command to get the label associated with the most
+%% recent command that was applied with a label. See the optional
+%% callback `storage_apply/4` for details.
+-callback storage_label(Handle :: storage_handle()) -> {ok, Label :: wa_raft_label:label()} | error().
+-optional_callbacks([storage_label/1]).
 %%-----------------------------------------------------------------------------
 %% RAFT Storage Provider - Write Commands
 %%-----------------------------------------------------------------------------
@@ -173,6 +183,14 @@
 %% desired consistency guarantee then implementations can raise an error to
 %% cause the apply to be aborted safely.
 -callback storage_apply(Command :: wa_raft_acceptor:command(), Position :: wa_raft_log:log_pos(), Handle :: storage_handle()) -> {Result :: dynamic(), NewHandle :: storage_handle()}.
+
+%% Apply a write command against the storage state, in the same way as the
+%% above `storage_apply/3` callback. The provided label should be maintained
+%% in the storage state so that it is returned by subsequent calls to
+%% `storage_label/1`. If this callback is defined, `storage_label/1` must
+%% also be defined.
+-callback storage_apply(Command :: wa_raft_acceptor:command(), Position :: wa_raft_log:log_pos(), Label :: wa_raft_label:label(), Handle :: storage_handle()) -> {Result :: dynamic(), NewHandle :: storage_handle()}.
+-optional_callbacks([storage_apply/4]).
 
 %% Apply a write command to update metadata stored by the storage provider
 %% on behalf of the RAFT implementation. Subsequent calls to read metadata
@@ -291,7 +309,7 @@ start_link(#raft_options{storage_name = Name} = Options) ->
 status(ServiceRef) ->
     gen_server:call(ServiceRef, status, ?RAFT_STORAGE_CALL_TIMEOUT()).
 
--spec apply_op(ServiceRef :: pid() | atom(), LogRecord :: wa_raft_log:log_record(), EffectiveTerm :: wa_raft_log:log_term() | undefined) -> ok.
+-spec apply_op(ServiceRef :: pid() | atom(), LogRecord :: {wa_raft_log:log_index(), {wa_raft_log:log_term(), {wa_raft_acceptor:key(), wa_raft_label:label() | undefined, wa_raft_acceptor:command()}}}, EffectiveTerm :: wa_raft_log:log_term() | undefined) -> ok.
 apply_op(ServiceRef, LogRecord, ServerTerm) ->
     gen_server:cast(ServiceRef, {apply, LogRecord, ServerTerm}).
 
@@ -330,6 +348,10 @@ delete_snapshot(ServiceRef, Name) ->
 -spec read_metadata(ServiceRef :: pid() | atom(), Key :: metadata()) -> {ok, Version :: wa_raft_log:log_pos(), Value :: dynamic()} | undefined | error().
 read_metadata(ServiceRef, Key) ->
     gen_server:call(ServiceRef, {read_metadata, Key}, ?RAFT_STORAGE_CALL_TIMEOUT()).
+
+-spec label(ServiceRef :: pid() | atom()) -> wa_raft_label:label().
+label(ServiceRef) ->
+    gen_server:call(ServiceRef, label, ?RAFT_STORAGE_CALL_TIMEOUT()).
 
 -ifdef(TEST).
 -spec reset(ServiceRef :: pid() | atom(), Position :: wa_raft_log:log_pos(), Config :: wa_raft_server:config() | undefined) -> ok | error().
@@ -405,7 +427,8 @@ init(#raft_options{application = App, table = Table, partition = Partition, data
         status |
         {snapshot_create, Name :: string()} |
         {snapshot_open, LastAppliedPos :: wa_raft_log:log_pos()} |
-        {read_metadata, Key :: metadata()}.
+        {read_metadata, Key :: metadata()} |
+        label.
 handle_call(open, _From, #state{last_applied = LastApplied} = State) ->
     {reply, {ok, LastApplied}, State};
 
@@ -436,6 +459,11 @@ handle_call({snapshot_open, #raft_log_pos{index = LastIndex, term = LastTerm} = 
 handle_call({read_metadata, Key}, _From, #state{module = Module, handle = Handle} = State) ->
     ?RAFT_COUNT('raft.storage.read_metadata'),
     Result = Module:storage_read_metadata(Handle, Key),
+    {reply, Result, State};
+
+handle_call(label, _From, #state{module = Module, handle = Handle} = State) ->
+    ?RAFT_COUNT('raft.storage.label'),
+    Result = Module:storage_label(Handle),
     {reply, Result, State};
 
 handle_call(status, _From, #state{module = Module, handle = Handle} = State) ->
@@ -474,7 +502,7 @@ handle_cast({read, From, Command}, #state{module = Module, handle = Handle, last
     {noreply, State};
 
 % Apply an op after consensus is made
-handle_cast({apply, {LogIndex, {LogTerm, _}} = LogRecord, EffectiveTerm}, #state{name = Name} = State0) ->
+handle_cast({apply, {LogIndex, {LogTerm, _Op}} = LogRecord, EffectiveTerm}, #state{name = Name} = State0) ->
     ?LOG_DEBUG("[~p] apply ~p:~p", [Name, LogIndex, LogTerm], #{domain => [whatsapp, wa_raft]}),
     State1 = apply_impl(LogRecord, EffectiveTerm, State0),
     {noreply, State1};
@@ -507,7 +535,7 @@ code_change(_OldVsn, State, _Extra) ->
 %%-------------------------------------------------------------------
 
 -spec apply_impl(Record :: wa_raft_log:log_record(), EffectiveTerm :: wa_raft_log:log_term() | undefined, State :: #state{}) -> NewState :: #state{}.
-apply_impl({LogIndex, {LogTerm, {Reference, Command} = Op}}, EffectiveTerm,
+apply_impl({LogIndex, {LogTerm, {Reference, Label, Command} = Op}}, EffectiveTerm,
            #state{name = Name, table = Table, partition = Partition, last_applied = #raft_log_pos{index = LastAppliedIndex}} = State0) ->
     wa_raft_queue:fulfill_apply(Table, Partition),
     StartT = os:timestamp(),
@@ -516,7 +544,7 @@ apply_impl({LogIndex, {LogTerm, {Reference, Command} = Op}}, EffectiveTerm,
             apply_delayed_reads(State0);
         _ when LogIndex =:= LastAppliedIndex + 1 ->
             ?RAFT_COUNT('raft.storage.apply'),
-            {Reply, State1} = execute(Command, #raft_log_pos{index = LogIndex, term = LogTerm}, State0),
+            {Reply, State1} = execute(Command, #raft_log_pos{index = LogIndex, term = LogTerm}, Label, State0),
             LogTerm =:= EffectiveTerm andalso
                 wa_raft_queue:fulfill_commit(Table, Partition, Reference, Reply),
             State2 = State1#state{last_applied = #raft_log_pos{index = LogIndex, term = LogTerm}},
@@ -529,26 +557,22 @@ apply_impl({LogIndex, {LogTerm, {Reference, Command} = Op}}, EffectiveTerm,
             error(out_of_order_apply)
     end.
 
--spec execute(Command :: wa_raft_acceptor:command(), LogPos :: wa_raft_log:log_pos(), State :: #state{}) -> {term() | error(), #state{}}.
-execute(noop, LogPos, #state{module = Module, handle = Handle} = State) ->
+-spec execute(Command :: wa_raft_acceptor:command(), LogPos :: wa_raft_log:log_pos(), Label :: wa_raft_label:label(), State :: #state{}) -> {term() | error(), #state{}}.
+execute(noop, LogPos, undefined, #state{module = Module, handle = Handle} = State) ->
     {Reply, NewHandle} = Module:storage_apply(noop, LogPos, Handle),
     {Reply, State#state{handle = NewHandle}};
-execute({config, Config}, #raft_log_pos{index = Index, term = Term} = Version, #state{name = Name, module = Module, handle = Handle} = State) ->
+execute(noop, LogPos, Label, #state{module = Module, handle = Handle} = State) ->
+    {Reply, NewHandle} = Module:storage_apply(noop, LogPos, Label, Handle),
+    {Reply, State#state{handle = NewHandle}};
+execute({config, Config}, #raft_log_pos{index = Index, term = Term} = Version, _Label, #state{name = Name, module = Module, handle = Handle} = State) ->
     ?LOG_INFO("Storage[~p] applying new configuration ~p at ~p:~p.",
         [Name, Config, Index, Term], #{domain => [whatsapp, wa_raft]}),
     {Module:storage_write_metadata(Handle, config, Version, Config), State};
-execute({execute, Table, _Key, Mod, Fun, Args}, LogPos, #state{partition = Partition, handle = Handle} = State) ->
-    Result = try
-        erlang:apply(Mod, Fun, [Handle, LogPos, Table] ++ Args)
-    catch
-        _T:Error:Stack ->
-            ?RAFT_COUNT('raft.storage.apply.execute.error'),
-            ?LOG_WARNING("Execute ~p:~p ~0P on ~p:~p. error ~p~nStack ~100P", [Mod, Fun, Args, 20, Table, Partition, Error, Stack, 100], #{domain => [whatsapp, wa_raft]}),
-            {error, Error}
-    end,
-    {Result, State};
-execute(Command, LogPos, #state{module = Module, handle = Handle} = State) ->
+execute(Command, LogPos, undefined, #state{module = Module, handle = Handle} = State) ->
     {Reply, NewHandle} = Module:storage_apply(Command, LogPos, Handle),
+    {Reply, State#state{handle = NewHandle}};
+execute(Command, LogPos, Label, #state{module = Module, handle = Handle} = State) ->
+    {Reply, NewHandle} = Module:storage_apply(Command, LogPos, Label, Handle),
     {Reply, State#state{handle = NewHandle}}.
 
 -spec apply_delayed_reads(State :: #state{}) -> NewState :: #state{}.

@@ -84,6 +84,7 @@
     log/0,
     log_name/0,
     log_pos/0,
+    log_op/0,
     log_index/0,
     log_term/0,
     log_entry/0,
@@ -128,7 +129,12 @@
 -type log_index() :: non_neg_integer().
 -type log_term() :: non_neg_integer().
 -type log_pos() :: #raft_log_pos{}.
--type log_entry() :: {log_term(), undefined | wa_raft_acceptor:op() | []}.
+-type log_op() ::
+    undefined
+    | []
+    | {wa_raft_acceptor:key(), wa_raft_acceptor:command()}
+    | {wa_raft_acceptor:key(), wa_raft_label:label(), wa_raft_acceptor:command()}.
+-type log_entry() :: {log_term(), log_op()}.
 -type log_record() :: {log_index(), log_entry()}.
 
 %% A view of a RAFT log.
@@ -571,6 +577,8 @@ submit(#log_view{pending = []} = View, Entry) ->
    {ok, View#log_view{pending = [Entry]}};
 submit(#log_view{pending = [{_, {?READ_OP, noop}} | Tail]} = View, Entry) ->
    {ok, View#log_view{pending = [Entry | Tail]}};
+submit(#log_view{pending = [{_, {?READ_OP, _Label, noop}} | Tail]} = View, Entry) ->
+   {ok, View#log_view{pending = [Entry | Tail]}};
 submit(#log_view{pending = Pending} = View, Entry) ->
    {ok, View#log_view{pending = [Entry | Pending]}}.
 
@@ -714,7 +722,11 @@ update_config_cache(#log_view{} = View, _Index, []) ->
     View;
 update_config_cache(#log_view{config_index = undefined} = View, Index, [{_Term, {_Ref, {config, Config}}} | Entries]) ->
     update_config_cache(View#log_view{config_index = Index, config = Config}, Index + 1, Entries);
+update_config_cache(#log_view{config_index = undefined} = View, Index, [{_Term, {_Ref, _Label, {config, Config}}} | Entries]) ->
+    update_config_cache(View#log_view{config_index = Index, config = Config}, Index + 1, Entries);
 update_config_cache(#log_view{config_index = ConfigIndex} = View, Index, [{_Term, {_Ref, {config, Config}}} | Entries]) when Index > ConfigIndex ->
+    update_config_cache(View#log_view{config_index = Index, config = Config}, Index + 1, Entries);
+update_config_cache(#log_view{config_index = ConfigIndex} = View, Index, [{_Term, {_Ref, _Label, {config, Config}}} | Entries]) when Index > ConfigIndex ->
     update_config_cache(View#log_view{config_index = Index, config = Config}, Index + 1, Entries);
 update_config_cache(#log_view{} = View, Index, [_Entry | Entries]) ->
     update_config_cache(View, Index + 1, Entries).

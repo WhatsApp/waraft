@@ -140,6 +140,7 @@ normalize_spec(Application, #{table := Table, partition := Partition} = Spec) ->
         distribution_module = maps:get(distribution_module, Spec, wa_raft_env:get_env(Application, raft_distribution_module, ?RAFT_DEFAULT_DISTRIBUTION_MODULE)),
         log_name = LogName,
         log_module = maps:get(log_module, Spec, wa_raft_env:get_env(Application, raft_log_module, ?RAFT_DEFAULT_LOG_MODULE)),
+        label_module = maps:get(label_module, Spec, wa_raft_env:get_env(Application, raft_label_module, ?RAFT_DEFAULT_LABEL_MODULE)),
         log_catchup_name = wa_raft_log_catchup:default_name(Table, Partition),
         queue_name = wa_raft_queue:default_name(Table, Partition),
         queue_counters = wa_raft_queue:default_counters(),

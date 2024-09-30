@@ -522,7 +522,8 @@ enable(Server) ->
 
 -spec init(Options :: #raft_options{}) -> gen_statem:init_result(state()).
 init(#raft_options{application = Application, table = Table, partition = Partition, witness = Witness, self = Self, identifier = Identifier, database = DataDir,
-                   distribution_module = DistributionModule, log_name = Log, log_catchup_name = Catchup, server_name = Name, storage_name = Storage} = Options) ->
+                   label_module = LabelModule, distribution_module = DistributionModule, log_name = Log, log_catchup_name = Catchup,
+                   server_name = Name, storage_name = Storage} = Options) ->
     process_flag(trap_exit, true),
 
     ?LOG_NOTICE("Server[~0p] starting with options ~0p", [Name, Options], #{domain => [whatsapp, wa_raft]}),
@@ -541,6 +542,8 @@ init(#raft_options{application = Application, table = Table, partition = Partiti
         partition = Partition,
         data_dir = DataDir,
         log_view = View,
+        label_module = LabelModule,
+        last_label = undefined,
         distribution_module = DistributionModule,
         storage = Storage,
         catchup = Catchup,
@@ -820,21 +823,35 @@ leader(enter, PreviousStateName, #raft_state{name = Name, self = Self, current_t
     % then make sure to set the start of the current term so that it gets replicated
     % immediately.
     LastLogIndex = wa_raft_log:last_index(View0),
-    State3 = case wa_raft_log:get(View0, LastLogIndex) of
+    State5 = case wa_raft_log:get(View0, LastLogIndex) of
         {ok, {CurrentTerm, {_Ref, {config, _NewConfig}}}} ->
-            State2#raft_state{first_current_term_log_index = LastLogIndex};
-        {ok, _} ->
+            State2#raft_state{first_current_term_log_index = LastLogIndex, last_label = undefined};
+        {ok, {CurrentTerm, {_Ref, LastLabel, {config, _NewConfig}}}} ->
+            State2#raft_state{first_current_term_log_index = LastLogIndex, last_label = LastLabel};
+        {ok, LastLogEntry} ->
             % Otherwise, the server should add a new log entry to start the current term.
             % This will flush pending commits, clear out and log mismatches on replicas,
             % and establish a quorum as soon as possible.
-            {ok, NewLastLogIndex, View1} = wa_raft_log:append(View0, [{CurrentTerm, {make_ref(), noop}}]),
-            State2#raft_state{log_view = View1, first_current_term_log_index = NewLastLogIndex}
+            State3 = case LastLogEntry of
+                {_CurrentTerm, {_Ref, LastLabel, _Command}} ->
+                    State2#raft_state{last_label = LastLabel};
+                {_, undefined} ->
+                    % The RAFT log could have been reset (i.e. after snapshot installation).
+                    % In such case load the log label state from storage.
+                    LastLabel = load_label_state(State2),
+                    State2#raft_state{last_label = LastLabel};
+                _ ->
+                    State2#raft_state{last_label = undefined}
+            end,
+            {State4, LogEntry} = get_log_entry(State3, {make_ref(), noop}),
+            {ok, NewLastLogIndex, View1} = wa_raft_log:append(View0, [LogEntry]),
+            State4#raft_state{log_view = View1, first_current_term_log_index = NewLastLogIndex}
     end,
 
     % Perform initial heartbeat and log entry resolution
-    State4 = append_entries_to_followers(State3),
-    State5 = apply_single_node_cluster(State4), % apply immediately for single node cluster
-    {keep_state, State5, ?HEARTBEAT_TIMEOUT(State5)};
+    State6 = append_entries_to_followers(State5),
+    State7 = apply_single_node_cluster(State6), % apply immediately for single node cluster
+    {keep_state, State7, ?HEARTBEAT_TIMEOUT(State7)};
 
 %% [AdvanceTerm] Advance to newer term when requested
 leader(internal, ?ADVANCE_TERM(NewerTerm), #raft_state{name = Name, log_view = View, current_term = CurrentTerm} = State) when NewerTerm > CurrentTerm ->
@@ -1034,20 +1051,21 @@ leader(cast, ?COMMIT_COMMAND({Reference, _Op}), #raft_state{table = Table, parti
     wa_raft_queue:fulfill_incomplete_commit(Table, Partition, Reference, {error, {notify_redirect, Peer}}), % Optimistically redirect to handover peer
     {keep_state, State};
 %% [Commit] Otherwise, add a new commit to the RAFT log
-leader(cast, ?COMMIT_COMMAND(Op), #raft_state{application = App, current_term = CurrentTerm, log_view = View0, next_index = NextIndex} = State0) ->
+leader(cast, ?COMMIT_COMMAND(Op), #raft_state{application = App, log_view = View0, next_index = NextIndex} = State0) ->
     ?RAFT_COUNT('raft.commit'),
-    {ok, View1} = wa_raft_log:submit(View0, {CurrentTerm, Op}),
+    {State1, LogEntry} = get_log_entry(State0, Op),
+    {ok, View1} = wa_raft_log:submit(View0, LogEntry),
     ExpectedLastIndex = wa_raft_log:last_index(View1) + wa_raft_log:pending(View1),
-    State1 = apply_single_node_cluster(State0#raft_state{log_view = View1}), % apply immediately for single node cluster
+    State2 = apply_single_node_cluster(State1#raft_state{log_view = View1}), % apply immediately for single node cluster
 
     MaxNexIndex = maps:fold(fun(_NodeId, V, Acc) -> erlang:max(Acc, V) end, 0, NextIndex),
     case ?RAFT_COMMIT_BATCH_INTERVAL(App) > 0 andalso ExpectedLastIndex - MaxNexIndex < ?RAFT_COMMIT_BATCH_MAX_ENTRIES(App) of
         true ->
             ?RAFT_COUNT('raft.commit.batch.delay'),
-            {keep_state, State1, ?COMMIT_BATCH_TIMEOUT(State1)};
+            {keep_state, State2, ?COMMIT_BATCH_TIMEOUT(State2)};
         false ->
-            State2 = append_entries_to_followers(State1),
-            {keep_state, State2, ?HEARTBEAT_TIMEOUT(State2)}
+            State3 = append_entries_to_followers(State2),
+            {keep_state, State3, ?HEARTBEAT_TIMEOUT(State3)}
     end;
 
 %% [Strong Read] If a handover is in progress, then try to redirect to handover target
@@ -1070,13 +1088,17 @@ leader(cast, ?READ_COMMAND({From, Command}),
             {keep_state, State0};
         _ ->
             ok = wa_raft_queue:submit_read(Table, Partition, ReadIndex + 1, From, Command),
-            {ok, View1} = case ReadIndex < LastLogIndex orelse Pending > 0 of
-                true  -> {ok, View0};
+            State2 = case ReadIndex < LastLogIndex orelse Pending > 0 of
+                true  ->
+                    State0;
                 % TODO(hsun324): Try to reuse the commit code to deal with placeholder ops so we
                 % handle batching and timeout properly instead of relying on a previously set timeout.
-                false -> wa_raft_log:submit(View0, {CurrentTerm, {?READ_OP, noop}})
+                false ->
+                    {State1, LogEntry} = get_log_entry(State0, {?READ_OP, noop}),
+                    {ok, View1} = wa_raft_log:submit(View0, LogEntry),
+                    State1#raft_state{log_view = View1}
             end,
-            {keep_state, State0#raft_state{log_view = View1}}
+            {keep_state, State2}
     end;
 
 %% [Resign] Leader resigns by switching to follower state.
@@ -1128,14 +1150,15 @@ leader(Type, ?ADJUST_MEMBERSHIP_COMMAND(Action, Peer, ExpectedConfigIndex),
                                     % attempt to change the config. We heartbeat immediately to make the change as
                                     % soon as possible.
                                     Op = {make_ref(), {config, NewConfig}},
-                                    {ok, LogIndex, View1} = wa_raft_log:append(View0, [{CurrentTerm, Op}]),
+                                    {State1, LogEntry} = get_log_entry(State0, Op),
+                                    {ok, LogIndex, View1} = wa_raft_log:append(View0, [LogEntry]),
                                     ?LOG_NOTICE("Server[~0p, term ~0p, leader] appended configuration change from ~0p to ~0p at log index ~p.",
                                         [Name, CurrentTerm, Config, NewConfig, LogIndex], #{domain => [whatsapp, wa_raft]}),
-                                    State1 = State0#raft_state{log_view = View1},
-                                    State2 = apply_single_node_cluster(State1),
-                                    State3 = append_entries_to_followers(State2),
+                                    State2 = State1#raft_state{log_view = View1},
+                                    State3 = apply_single_node_cluster(State2),
+                                    State4 = append_entries_to_followers(State3),
                                     reply(Type, {ok, #raft_log_pos{index = LogIndex, term = CurrentTerm}}),
-                                    {keep_state, State3, ?HEARTBEAT_TIMEOUT(State3)}
+                                    {keep_state, State4, ?HEARTBEAT_TIMEOUT(State4)}
                             end
                     end;
                 {ok, _OtherTerm} ->
@@ -1861,7 +1884,7 @@ command(StateName, {call, From}, ?PROMOTE_COMMAND(Term, Force, ConfigAll),
 
             % Advance to the term requested for promotion to
             State1 = advance_term(StateName, Term, undefined, State0),
-            State2 = case Config of
+            State3 = case Config of
                 undefined ->
                     State1;
                 _ ->
@@ -1869,12 +1892,13 @@ command(StateName, {call, From}, ?PROMOTE_COMMAND(Term, Force, ConfigAll),
                     % the new configuration to the log before we can transition to leader; otherwise,
                     % the server will not know who to replicate to as leader.
                     Op = {make_ref(), {config, Config}},
-                    {ok, _, View1} = wa_raft_log:append(View0, [{State1#raft_state.current_term, Op}]),
-                    State1#raft_state{log_view = View1}
+                    {State2, LogEntry} = get_log_entry(State1, Op),
+                    {ok, _, View1} = wa_raft_log:append(View0, [LogEntry]),
+                    State2#raft_state{log_view = View1}
             end,
             case StateName =:= NewStateName of
-                true  -> {repeat_state, State2, {reply, From, ok}};
-                false -> {next_state, NewStateName, State2, {reply, From, ok}}
+                true  -> {repeat_state, State3, {reply, From, ok}};
+                false -> {next_state, NewStateName, State3, {reply, From, ok}}
             end;
         Reason ->
             ?LOG_NOTICE("Server[~0p, term ~0p, ~0p] rejected leader promotion to term ~0p due to ~0p.",
@@ -2028,11 +2052,25 @@ load_config(#raft_state{storage = Storage, table = Table, partition = Partition}
             error({could_not_load_config, Reason})
     end.
 
+-spec load_label_state(State :: #raft_state{}) -> LabelState :: wa_raft_label:label().
+load_label_state(#raft_state{storage = Storage, label_module = LabelModule}) when LabelModule =/= undefined ->
+    case wa_raft_storage:label(Storage) of
+        {ok, Label} ->
+            Label;
+        {error, Reason} ->
+            error({failed_to_load_label_state, Reason})
+    end;
+load_label_state(_State) ->
+    undefined.
+
 %% After an apply is sent to storage, check to see if it is a new configuration
 %% being applied. If it is, then update the cached configuration.
 -spec maybe_update_config(Index :: wa_raft_log:log_index(), Term :: wa_raft_log:log_term(),
-                          Op :: wa_raft_acceptor:op() | [] | undefined, State :: #raft_state{}) -> NewState :: #raft_state{}.
+                          Op :: wa_raft_log:log_op() | [] | undefined, State :: #raft_state{}) -> NewState :: #raft_state{}.
 maybe_update_config(Index, _Term, {_Ref, {config, Config}}, #raft_state{table = Table, partition = Partition} = State) ->
+    wa_raft_info:set_membership(Table, Partition, maps:get(membership, Config, [])),
+    State#raft_state{cached_config = {Index, Config}};
+maybe_update_config(Index, _Term, {_Ref, _Label, {config, Config}}, #raft_state{table = Table, partition = Partition} = State) ->
     wa_raft_info:set_membership(Table, Partition, maps:get(membership, Config, [])),
     State#raft_state{cached_config = {Index, Config}};
 maybe_update_config(_Index, _Term, _Op, State) ->
@@ -2058,6 +2096,21 @@ random_election_timeout(#raft_state{application = App}) ->
         _ ->
             Timeout * ?RAFT_ELECTION_DEFAULT_WEIGHT
     end.
+
+-spec get_log_entry(State0 :: #raft_state{}, Op :: wa_raft_acceptor:op()) -> {State1 :: #raft_state{}, LogEntry :: wa_raft_log:log_entry()}.
+get_log_entry(#raft_state{current_term = CurrentTerm, label_module = undefined} = State0, Op) ->
+    {State0, {CurrentTerm, Op}};
+get_log_entry(#raft_state{current_term = CurrentTerm, last_label = undefined} = State0, {_Ref, noop} = Op) ->
+    {State0, {CurrentTerm, Op}};
+get_log_entry(#raft_state{current_term = CurrentTerm, last_label = LastLabel} = State0, {Ref, noop}) ->
+    {State0, {CurrentTerm, {Ref, LastLabel, noop}}};
+get_log_entry(#raft_state{current_term = CurrentTerm, last_label = undefined} = State0, {_Ref, {config, _Config}} = Op) ->
+    {State0, {CurrentTerm, Op}};
+get_log_entry(#raft_state{current_term = CurrentTerm, last_label = LastLabel} = State0, {Ref, {config, _Config} = Command}) ->
+    {State0, {CurrentTerm, {Ref, LastLabel, Command}}};
+get_log_entry(#raft_state{current_term = CurrentTerm, label_module = LabelModule, last_label = LastLabel} = State0, {Ref, Command}) ->
+    NewLabel = LabelModule:new_label(LastLabel, Command),
+    {State0#raft_state{last_label = NewLabel}, {CurrentTerm, {Ref, NewLabel, Command}}}.
 
 -spec apply_single_node_cluster(State0 :: #raft_state{}) -> State1 :: #raft_state{}.
 apply_single_node_cluster(#raft_state{name = Name, log_view = View0} = State0) ->
@@ -2185,7 +2238,10 @@ apply_op(LogIndex, _Entry, _EffectiveTerm, #raft_state{name = Name, last_applied
     ?LOG_WARNING("Server[~0p, term ~0p] is skipping applying log entry ~0p because log entries up to ~0p are already applied.",
         [Name, CurrentTerm, LogIndex, LastAppliedIndex], #{domain => [whatsapp, wa_raft]}),
     State;
-apply_op(LogIndex, {Term, Op}, EffectiveTerm, #raft_state{storage = Storage} = State0) ->
+apply_op(LogIndex, {Term, {Ref, Command} = Op}, EffectiveTerm, #raft_state{storage = Storage} = State0) ->
+    wa_raft_storage:apply_op(Storage, {LogIndex, {Term, {Ref, undefined, Command}}}, EffectiveTerm),
+    maybe_update_config(LogIndex, Term, Op, State0#raft_state{last_applied = LogIndex, commit_index = LogIndex});
+apply_op(LogIndex, {Term, {_Ref, _Label, _Command} = Op}, EffectiveTerm, #raft_state{storage = Storage} = State0) ->
     wa_raft_storage:apply_op(Storage, {LogIndex, {Term, Op}}, EffectiveTerm),
     maybe_update_config(LogIndex, Term, Op, State0#raft_state{last_applied = LogIndex, commit_index = LogIndex});
 apply_op(LogIndex, undefined, _EffectiveTerm, #raft_state{name = Name, log_view = View, current_term = CurrentTerm}) ->
@@ -2209,7 +2265,13 @@ append_entries_to_followers(#raft_state{name = Name, table = Table, partition = 
             ?RAFT_COUNT('raft.server.sync.skipped'),
             ?LOG_WARNING("Server[~0p, term ~0p, leader] skipped pre-heartbeat sync for ~p log entr(ies).",
                 [Name, CurrentTerm, length(Pending)], #{domain => [whatsapp, wa_raft]}),
-            [wa_raft_queue:fulfill_incomplete_commit(Table, Partition, Reference, {error, commit_stalled}) || {_Term, {Reference, _Command}} <- Pending],
+            lists:foreach(
+                fun({_Term, {Reference, _Command}}) ->
+                    wa_raft_queue:fulfill_incomplete_commit(Table, Partition, Reference, {error, commit_stalled});
+                   ({_Term, {Reference, _Label, _Command}}) ->
+                    wa_raft_queue:fulfill_incomplete_commit(Table, Partition, Reference, {error, commit_stalled})
+                end,
+                Pending),
             State0#raft_state{log_view = View1};
         {error, Error} ->
             ?RAFT_COUNT({'raft.server.sync', Error}),

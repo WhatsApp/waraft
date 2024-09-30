@@ -14,8 +14,10 @@
 -export([
     storage_open/3,
     storage_close/1,
+    storage_label/1,
     storage_position/1,
     storage_apply/3,
+    storage_apply/4,
     storage_write_metadata/4,
     storage_read/3,
     storage_read_metadata/2,
@@ -30,6 +32,8 @@
 
 %% Tag used in keys for metadata stored on the behalf of RAFT
 -define(METADATA_TAG, '$metadata').
+%% Tag used for label metadata stored on behalf of RAFT.
+-define(LABEL_TAG, '$label').
 %% Tag used for recording the current storage position
 -define(POSITION_TAG, '$position').
 
@@ -53,6 +57,18 @@ storage_close(#state{storage = Storage}) ->
 -spec storage_position(#state{}) -> wa_raft_log:log_pos().
 storage_position(#state{storage = Storage}) ->
     ets:lookup_element(Storage, ?POSITION_TAG, 2, #raft_log_pos{}).
+
+-spec storage_label(#state{}) -> {ok, Label :: wa_raft_label:label()}.
+storage_label(#state{storage = Storage}) ->
+    case ets:lookup(Storage, ?LABEL_TAG) of
+        [{_, Label}] -> {ok, Label};
+        []           -> {ok, undefined}
+    end.
+
+-spec storage_apply(Command :: wa_raft_acceptor:command(), Position :: wa_raft_log:log_pos(), Label :: wa_raft_label:label(), Storage :: #state{}) -> {ok, #state{}}.
+storage_apply(Command, Position, Label, #state{storage = Storage} = State) ->
+    true = ets:insert(Storage, {?LABEL_TAG, Label}),
+    storage_apply(Command, Position, State).
 
 -spec storage_apply(Command :: wa_raft_acceptor:command(), Position :: wa_raft_log:log_pos(), Storage :: #state{}) -> {ok, #state{}}.
 storage_apply(noop, Position, #state{storage = Storage} = State) ->

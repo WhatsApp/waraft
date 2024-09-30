@@ -31,6 +31,8 @@
         distribution_module => module(),
         % Log module
         log_module => module(),
+        % Log label module
+        label_module => module(),
         % Storage module
         storage_module => module(),
         % Transport module

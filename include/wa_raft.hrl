@@ -37,6 +37,8 @@
 -define(RAFT_DEFAULT_STORAGE_MODULE, wa_raft_storage_ets).
 %% Default module for handling outgoing transports
 -define(RAFT_DEFAULT_TRANSPORT_MODULE, wa_raft_dist_transport).
+%% Default module for log labeling
+-define(RAFT_DEFAULT_LABEL_MODULE, undefined).
 
 %% RAFT election max weight
 -define(RAFT_ELECTION_MAX_WEIGHT, 10).
@@ -326,6 +328,9 @@
     % Distribution options
     distribution_module :: module(),
 
+    % Label options
+    label_module :: undefined | module(),
+
     % Log options
     log_name :: atom(),
     log_module :: module(),
@@ -379,6 +384,8 @@
     log_view :: wa_raft_log:view(),
     %% Module for distribution
     distribution_module :: module(),
+    %% Module for log labeling
+    label_module :: module() | undefined,
     %% Storage service name
     storage :: atom(),
     %% Catchup service name
@@ -392,6 +399,9 @@
     %% currently cached RAFT configuration and its index
     %%  * at least the most recently applied RAFT configuration
     cached_config :: undefined | {wa_raft_log:log_index(), wa_raft_server:config()},
+    % Log label from the last log entry submitted (pending) / appended (persisted)
+    % to RAFT log (the field is only relevant in leader state).
+    last_label :: undefined | term(),
     % Timestamp of last heartbeat from leader
     leader_heartbeat_ts :: undefined | integer(),
 
