@@ -530,7 +530,7 @@ handle_call(Request, _From, #state{} = State) ->
     when Request :: {complete, ID :: transport_id(), FileID :: file_id(), Status :: term(), Pid :: pid()}.
 handle_cast({complete, ID, FileID, Status, Pid}, #state{counters = Counters} = State) ->
     NowMillis = erlang:system_time(millisecond),
-    ?RAFT_COUNT({'raft.transport.file.send', Status}),
+    ?RAFT_COUNT({'raft.transport.file.send', normalize_status(Status)}),
     Result0 = update_file_info(ID, FileID,
         fun (Info) ->
             case Info of
@@ -852,3 +852,15 @@ scan_transport(_ID, Info) ->
 -spec schedule_scan() -> reference().
 schedule_scan() ->
     erlang:send_after(?RAFT_TRANSPORT_SCAN_INTERVAL_SECS * 1000, self(), scan).
+
+-spec normalize_status(term()) -> atom().
+normalize_status(Status) when is_atom(Status) ->
+    Status;
+normalize_status({_Error, Reason}) when is_atom(Reason) ->
+    Reason;
+normalize_status({_Error, Reason}) when is_tuple(Reason) ->
+    normalize_status(element(1, Reason));
+normalize_status({Error, _Reason}) when is_atom(Error) ->
+    Error;
+normalize_status(_) ->
+    unknown.
