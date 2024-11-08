@@ -2559,8 +2559,9 @@ append_entries(State, PrevLogIndex, PrevLogTerm, Entries, EntryCount, #raft_stat
             % If the log entry is not found, then ignore and notify the leader of what log entry
             % is required by this follower in the reply.
             ?RAFT_COUNT({raft, State, 'heartbeat.skip.missing_previous_log_entry'}),
-            ?LOG_WARNING("Server[~0p, term ~0p, ~0p] skips appending ~0p log entries in range ~0p to ~0p because previous log entry at ~0p is not available in local log covering ~0p to ~0p.",
-                [Name, CurrentTerm, State, EntryCount, PrevLogIndex + 1, PrevLogIndex + EntryCount, PrevLogIndex, wa_raft_log:first_index(View), wa_raft_log:last_index(View)], #{domain => [whatsapp, wa_raft]}),
+            EntryCount =/= 0 andalso
+                ?LOG_WARNING("Server[~0p, term ~0p, ~0p] skips appending ~0p log entries in range ~0p to ~0p because previous log entry at ~0p is not available in local log covering ~0p to ~0p.",
+                    [Name, CurrentTerm, State, EntryCount, PrevLogIndex + 1, PrevLogIndex + EntryCount, PrevLogIndex, wa_raft_log:first_index(View), wa_raft_log:last_index(View)], #{domain => [whatsapp, wa_raft]}),
             {ok, false, wa_raft_log:last_index(View), Data};
         {error, Reason} ->
             ?RAFT_COUNT({raft, State, 'heartbeat.skip.failed_to_read_previous_log_entry'}),
