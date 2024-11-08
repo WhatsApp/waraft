@@ -34,8 +34,7 @@
 %% Transport API
 -export([
     cancel/2,
-    complete/3,
-    complete/4
+    complete/3
 ]).
 
 %% ETS API
@@ -48,11 +47,16 @@
     update_file_info/3
 ]).
 
-%% Internal API
+%% Internal API - Configuration
 -export([
     default_directory/1,
     registered_directory/2,
     registered_module/2
+]).
+
+%% Internal API - Transport Workers
+-export([
+    pop_file/1
 ]).
 
 %% gen_server callbacks
@@ -104,8 +108,8 @@
     end_ts => Millis :: integer(),
 
     total_files := non_neg_integer(),
-    next_file => non_neg_integer(),
     completed_files := non_neg_integer(),
+    queue => ets:table(),
 
     error => term()
 }.
@@ -134,6 +138,7 @@
 
     start_ts => Millis :: integer(),
     end_ts => Millis :: integer(),
+    retries => non_neg_integer(),
 
     total_bytes := non_neg_integer(),
     completed_bytes := non_neg_integer(),
@@ -141,6 +146,8 @@
     meta => map(),
     error => Reason :: term()
 }.
+
+%%% ------------------------------------------------------------------------
 
 -record(state, {
     counters :: counters:counters_ref()
@@ -235,13 +242,9 @@ transfer_snapshot(Peer, Table, Partition, LogPos, Root, Timeout) ->
 cancel(ID, Reason) ->
     gen_server:call(?MODULE, {cancel, ID, Reason}).
 
--spec complete(ID :: transport_id(), FileID :: file_id(), Status :: term()) -> ok | invalid.
+-spec complete(ID :: transport_id(), FileID :: file_id(), Status :: term()) -> ok.
 complete(ID, FileID, Status) ->
-    complete(ID, FileID, Status, undefined).
-
--spec complete(ID :: transport_id(), FileID :: file_id(), Status :: term(), Pid :: pid() | undefined) -> ok | invalid.
-complete(ID, FileID, Status, Pid) ->
-    gen_server:cast(?MODULE, {complete, ID, FileID, Status, Pid}).
+    gen_server:cast(?MODULE, {complete, ID, FileID, Status}).
 
 %%% ------------------------------------------------------------------------
 %%%  ETS table helper functions
@@ -305,9 +308,11 @@ update_and_get_transport_info(ID, Fun, Counters) ->
 -spec delete_transport_info(ID :: transport_id()) -> ok | not_found.
 delete_transport_info(ID) ->
     case transport_info(ID) of
-        {ok, #{total_files := TotalFiles}} ->
+        {ok, #{total_files := TotalFiles} = Info} ->
             lists:foreach(fun (FileID) -> delete_file_info(ID, FileID) end, lists:seq(1, TotalFiles)),
             ets:delete(?TRANSPORT_TABLE, ID),
+            Queue = maps:get(queue, Info, undefined),
+            Queue =/= undefined andalso catch ets:delete(Queue),
             ok;
         not_found ->
             not_found
@@ -365,7 +370,7 @@ delete_file_info(ID, FileID) ->
     ok.
 
 %%-------------------------------------------------------------------
-%% Internal API
+%% Internal API - Configuration
 %%-------------------------------------------------------------------
 
 %% Get the default directory for incoming transports associated with the
@@ -390,6 +395,33 @@ registered_module(Table, Partition) ->
     case wa_raft_part_sup:options(Table, Partition) of
         undefined -> ?RAFT_DEFAULT_TRANSPORT_MODULE;
         Options   -> Options#raft_options.transport_module
+    end.
+
+%%-------------------------------------------------------------------
+%% Internal API - Transport Workers
+%%-------------------------------------------------------------------
+
+-spec pop_file(ID :: transport_id()) -> {ok, FileID :: file_id()} | empty | not_found.
+pop_file(ID) ->
+    case transport_info(ID) of
+        {ok, #{queue := Queue}} -> try_pop_file(Queue);
+        _Other                  -> not_found
+    end.
+
+-spec try_pop_file(Queue :: ets:table()) -> {ok, FileID :: file_id()} | empty | not_found.
+try_pop_file(Queue) ->
+    try ets:first(Queue) of
+        '$end_of_table' ->
+            empty;
+        FileID ->
+            try ets:select_delete(Queue, [{{FileID}, [], [true]}]) of
+                0 -> try_pop_file(Queue);
+                1 -> {ok, FileID}
+            catch
+                error:badarg -> not_found
+            end
+    catch
+        error:badarg -> not_found
     end.
 
 %%% ------------------------------------------------------------------------
@@ -439,7 +471,7 @@ handle_call({transport, ID, Peer, Module, Meta, Files}, From, #state{counters = 
                 % Force the receiving directory to always exist
                 catch filelib:ensure_dir([RootDir, $/]),
 
-                % Initialize info in ETS about transport and contained files.
+                % Setup overall transport info
                 set_transport_info(ID, #{
                     type => receiver,
                     status => running,
@@ -452,6 +484,8 @@ handle_call({transport, ID, Peer, Module, Meta, Files}, From, #state{counters = 
                     total_files => TotalFiles,
                     completed_files => 0
                 }, Counters),
+
+                % Setup file info for each file
                 [
                     begin
                         FileAtomics = atomics:new(?RAFT_TRANSPORT_FILE_ATOMICS_COUNT, []),
@@ -466,6 +500,7 @@ handle_call({transport, ID, Peer, Module, Meta, Files}, From, #state{counters = 
                     end || {FileID, RelativePath, Size} <- Files
                 ],
 
+                % If the transport is empty, then immediately complete it
                 TotalFiles =:= 0 andalso
                     update_and_get_transport_info(
                         ID,
@@ -527,8 +562,8 @@ handle_call(Request, _From, #state{} = State) ->
     {noreply, State}.
 
 -spec handle_cast(Request, State :: #state{}) -> {noreply, NewState :: #state{}}
-    when Request :: {complete, ID :: transport_id(), FileID :: file_id(), Status :: term(), Pid :: pid()}.
-handle_cast({complete, ID, FileID, Status, Pid}, #state{counters = Counters} = State) ->
+    when Request :: {complete, ID :: transport_id(), FileID :: file_id(), Status :: term()}.
+handle_cast({complete, ID, FileID, Status}, #state{counters = Counters} = State) ->
     NowMillis = erlang:system_time(millisecond),
     ?RAFT_COUNT({'raft.transport.file.send', normalize_status(Status)}),
     Result0 = update_file_info(ID, FileID,
@@ -551,7 +586,7 @@ handle_cast({complete, ID, FileID, Status, Pid}, #state{counters = Counters} = S
         update_and_get_transport_info(
             ID,
             fun
-                (#{status := running, type := Type, completed_files := CompletedFiles, total_files := TotalFiles} = Info0) ->
+                (#{status := running, completed_files := CompletedFiles, total_files := TotalFiles} = Info0) ->
                     Info1 = Info0#{completed_files => CompletedFiles + 1},
                     Info2 = case CompletedFiles + 1 of
                         TotalFiles -> Info1#{status => completed, end_ts => NowMillis};
@@ -565,11 +600,7 @@ handle_cast({complete, ID, FileID, Status, Pid}, #state{counters = Counters} = S
                         ok              -> Info3;
                         {error, Reason} -> Info3#{status => failed, error => {notify_failed, Reason}}
                     end,
-                    Info5 = case Type of
-                        sender -> maybe_submit_one(ID, Info4, Pid);
-                        _      -> Info4
-                    end,
-                    maybe_notify(ID, Info5);
+                    maybe_notify(ID, Info4);
                 (Info) ->
                     Info
             end,
@@ -598,6 +629,7 @@ handle_info(scan, #state{counters = Counters} = State) ->
         ExcessTransportIDs = lists:sublist(lists:sort(InactiveTransports), ExcessTransports),
         lists:foreach(fun delete_transport_info/1, ExcessTransportIDs)
     end,
+
     schedule_scan(),
     {noreply, State};
 handle_info(Info, State) ->
@@ -631,8 +663,9 @@ handle_transport_start(From, Peer, Meta, Root, Counters) ->
         Module = transport_module(Meta),
         TotalFiles = length(Files),
         NowMillis = erlang:system_time(millisecond),
+        Queue = ets:new(?MODULE, [ordered_set, public]),
 
-        % Initialize info in ETS about transport and contained files.
+        % Setup overall transport info
         set_transport_info(ID, #{
             type => sender,
             status => requested,
@@ -643,8 +676,11 @@ handle_transport_start(From, Peer, Meta, Root, Counters) ->
             root => Root,
             start_ts => NowMillis,
             total_files => TotalFiles,
-            completed_files => 0
+            completed_files => 0,
+            queue => Queue
         }, Counters),
+
+        % Setup file info for each file
         [
             begin
                 FileAtomics = atomics:new(?RAFT_TRANSPORT_FILE_ATOMICS_COUNT, []),
@@ -664,6 +700,10 @@ handle_transport_start(From, Peer, Meta, Root, Counters) ->
         FileData = [{FileID, Filename, Size} || {FileID, Filename, _, _, Size} <- Files],
         case gen_server:call({?MODULE, Peer}, {transport, ID, node(), Module, Meta, FileData}) of
             ok ->
+                % Add all files to the queue
+                ets:insert(Queue, [{FileID} || {FileID, _, _, _, _} <- Files]),
+
+                % Start workers
                 update_and_get_transport_info(
                     ID,
                     fun (Info0) ->
@@ -676,10 +716,9 @@ handle_transport_start(From, Peer, Meta, Root, Counters) ->
                                 Info2 = Info1#{status => completed, end_ts => NowMillis},
                                 maybe_notify(ID, Info2);
                             _ ->
-                                Info2 = Info1#{status => running, next_file => 1},
                                 Sup = wa_raft_transport_sup:get_or_start(Peer),
-                                Workers = [Pid || {_Id, Pid, _Type, _Modules} <- supervisor:which_children(Sup), is_pid(Pid)],
-                                lists:foldl(fun (Pid, InfoN) -> maybe_submit_one(ID, InfoN, Pid) end, Info2, Workers)
+                                [gen_server:cast(Pid, {notify, ID}) || {_Id, Pid, _Type, _Modules} <- supervisor:which_children(Sup), is_pid(Pid)],
+                                Info1#{status => running}
                         end
                     end,
                     Counters
@@ -795,16 +834,6 @@ collect_files_impl(Root, [Filename | Queue], Fun, Acc0) ->
 -spec join_names(string(), string()) -> list().
 join_names("", Name) -> Name;
 join_names(Dir, Name) -> [Dir, $/, Name].
-
--spec maybe_submit_one(transport_id(), transport_info(), pid()) -> transport_info().
-maybe_submit_one(ID, #{status := running, next_file := NextFileID, total_files := LastFileID} = Info, Pid) when is_pid(Pid) ->
-    gen_server:cast(Pid, {send, ID, NextFileID}),
-    case NextFileID of
-        LastFileID -> maps:remove(next_file, Info);
-        _          -> Info#{next_file => NextFileID + 1}
-    end;
-maybe_submit_one(_ID, Info, _Pid) ->
-    Info.
 
 -spec maybe_notify_complete(transport_id(), transport_info(), #state{}) -> ok | {error, term()}.
 maybe_notify_complete(_ID, #{type := sender}, _State) ->

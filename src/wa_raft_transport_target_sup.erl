@@ -34,7 +34,7 @@
 
 -spec name(node()) -> atom().
 name(Name) ->
-    list_to_atom("raft_transport_target_sup_" ++ atom_to_list(Name)).
+    binary_to_atom(<<"raft_transport_target_sup_", (atom_to_binary(Name))/binary>>).
 
 %%% ------------------------------------------------------------------------
 %%%  OTP supervision callbacks

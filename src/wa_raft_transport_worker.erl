@@ -35,12 +35,19 @@
 -record(state, {
     node :: node(),
     number :: non_neg_integer(),
-    table :: ets:tid(),
-
-    states = #{} :: #{module() => state()},
-    marker :: undefined | 0 | reference()
+    jobs = queue:new() :: queue:queue(job()),
+    states = #{} :: #{module() => state()}
 }).
 -type state() :: #state{}.
+
+-record(transport, {
+    id :: wa_raft_transport:transport_id()
+}).
+-record(file, {
+    id :: wa_raft_transport:transport_id(),
+    file :: wa_raft_transport:file_id()
+}).
+-type job() :: #transport{} | #file{}.
 
 %%% ------------------------------------------------------------------------
 %%%  Internal API
@@ -74,9 +81,7 @@ start_link(Node, Number) ->
 
 -spec init(Args :: {node(), non_neg_integer()}) -> {ok, State :: state(), Timeout :: timeout()}.
 init({Node, Number}) ->
-    Table = ets:new(?MODULE, [ordered_set, public]),
-    % eqwalizer:fixme - better ets:new
-    {ok, #state{node = Node, number = Number, table = Table}, ?CONTINUE_TIMEOUT}.
+    {ok, #state{node = Node, number = Number}, ?CONTINUE_TIMEOUT}.
 
 -spec handle_call(Request :: term(), From :: {Pid :: pid(), Tag :: term()}, State :: state()) ->
     {noreply, NewState :: state(), Timeout :: timeout()}.
@@ -86,13 +91,9 @@ handle_call(Request, From, #state{number = Number} = State) ->
     {noreply, State, ?CONTINUE_TIMEOUT}.
 
 -spec handle_cast(Request, State :: state()) -> {noreply, NewState :: state(), Timeout :: timeout()}
-    when Request :: {send, wa_raft_transport:transport_id(), wa_raft_transport:file_id()}.
-handle_cast({send, ID, FileID}, #state{table = Table} = State) ->
-    ?RAFT_COUNT('raft.transport.file.send'),
-    wa_raft_transport:update_file_info(ID, FileID,
-        fun (Info) -> Info#{status => sending, start_ts => erlang:system_time(millisecond)} end),
-    true = ets:insert_new(Table, {make_ref(), ID, FileID}),
-    {noreply, State, ?CONTINUE_TIMEOUT};
+    when Request :: {notify, wa_raft_transport:transport_id()}.
+handle_cast({notify, ID}, #state{jobs = Jobs} = State) ->
+    {noreply, State#state{jobs = queue:in(#transport{id = ID}, Jobs)}, ?CONTINUE_TIMEOUT};
 handle_cast(Request, #state{number = Number} = State) ->
     ?LOG_WARNING("[~p] received unrecognized cast ~p",
         [Number, Request], #{domain => [whatsapp, wa_raft]}),
@@ -101,17 +102,22 @@ handle_cast(Request, #state{number = Number} = State) ->
 -spec handle_info(Info :: term(), State :: state()) ->
       {noreply, NewState :: state()}
     | {noreply, NewState :: state(), Timeout :: timeout() | hibernate}.
-handle_info(timeout, #state{table = Table, marker = undefined} = State) ->
-    case ets:first(Table) of
-        '$end_of_table' -> {noreply, State, hibernate};                          % table is empty so wait until there is work
-        _FirstKey       -> {noreply, State#state{marker = 0}, ?CONTINUE_TIMEOUT} % 0 compares smaller than any ref
-    end;
-handle_info(timeout, #state{number = Number, table = Table, states = States, marker = Marker} = State) ->
-    case ets:next(Table, Marker) of
-        '$end_of_table' ->
-            {noreply, State#state{marker = undefined}, ?CONTINUE_TIMEOUT};
-        NextKey ->
-            [{NextKey, ID, FileID}] = ets:lookup(Table, NextKey),
+handle_info(timeout, #state{number = Number, jobs = Jobs, states = States} = State) ->
+    case queue:out(Jobs) of
+        {empty, NewJobs} ->
+            {noreply, State#state{jobs = NewJobs}, ?CONTINUE_TIMEOUT};
+        {{value, #transport{id = ID}}, NewJobs} ->
+            case wa_raft_transport:pop_file(ID) of
+                {ok, FileID} ->
+                    ?RAFT_COUNT('raft.transport.file.send'),
+                    wa_raft_transport:update_file_info(ID, FileID,
+                        fun (Info) -> Info#{status => sending, start_ts => erlang:system_time(millisecond)} end),
+                    NewJob = #file{id = ID, file = FileID},
+                    {noreply, State#state{jobs = queue:in(NewJob, NewJobs)}, ?CONTINUE_TIMEOUT};
+                _Other ->
+                    {noreply, State#state{jobs = NewJobs}, ?CONTINUE_TIMEOUT}
+            end;
+        {{value, #file{id = ID, file = FileID} = Job}, NewJobs} ->
             {Result, NewState} = case wa_raft_transport:transport_info(ID) of
                 {ok, #{module := Module}} ->
                     try get_module_state(Module, State) of
@@ -129,8 +135,8 @@ handle_info(timeout, #state{number = Number, table = Table, states = States, mar
                                         [Number, Module, ID, FileID, T, E, S], #{domain => [whatsapp, wa_raft]}),
                                     {{T, E}, State}
                             end;
-                        {stop, Reason} ->
-                            {{stop, Reason}, State}
+                        Other ->
+                            {Other, State}
                     catch
                         T:E:S ->
                             ?LOG_WARNING("[~p] module ~p failed to get/init module state due to ~p ~p: ~p",
@@ -142,11 +148,13 @@ handle_info(timeout, #state{number = Number, table = Table, states = States, mar
                         [Number, ID], #{domain => [whatsapp, wa_raft]}),
                     {{stop, invalid_transport}, State}
             end,
-            Result =/= continue andalso begin
-                ets:delete(Table, NextKey),
-                wa_raft_transport:complete(ID, FileID, Result, self())
-            end,
-            {noreply, NewState#state{marker = NextKey}, ?CONTINUE_TIMEOUT}
+            case Result =:= continue of
+                true ->
+                    {noreply, NewState#state{jobs = queue:in(Job, NewJobs)}, ?CONTINUE_TIMEOUT};
+                false ->
+                    wa_raft_transport:complete(ID, FileID, Result),
+                    {noreply, NewState#state{jobs = queue:in(#transport{id = ID}, NewJobs)}, ?CONTINUE_TIMEOUT}
+            end
     end;
 handle_info(Info, #state{number = Number} = State) ->
     ?LOG_WARNING("[~p] received unrecognized info ~p",
