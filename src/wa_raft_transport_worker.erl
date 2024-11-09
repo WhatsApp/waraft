@@ -105,7 +105,7 @@ handle_cast(Request, #state{number = Number} = State) ->
 handle_info(timeout, #state{number = Number, jobs = Jobs, states = States} = State) ->
     case queue:out(Jobs) of
         {empty, NewJobs} ->
-            {noreply, State#state{jobs = NewJobs}, ?CONTINUE_TIMEOUT};
+            {noreply, State#state{jobs = NewJobs}, hibernate};
         {{value, #transport{id = ID}}, NewJobs} ->
             case wa_raft_transport:pop_file(ID) of
                 {ok, FileID} ->
