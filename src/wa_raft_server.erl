@@ -775,9 +775,13 @@ stalled({call, From}, ?SNAPSHOT_AVAILABLE_COMMAND(Root, #raft_log_pos{index = Sn
                     State2 = load_config(State1),
                     ?LOG_NOTICE("Server[~0p, term ~0p, stalled] switching to follower after installing snapshot at ~p:~p.",
                         [Name, CurrentTerm, SnapshotIndex, SnapshotTerm], #{domain => [whatsapp, wa_raft]}),
+                    State3 = case SnapshotTerm > CurrentTerm of
+                        true -> advance_term(?FUNCTION_NAME, SnapshotTerm, undefined, State2);
+                        false -> State2
+                    end,
                     % At this point, we assume that we received some cluster membership configuration from
                     % our peer so it is safe to transition to an operational state.
-                    {next_state, follower, State2, {reply, From, ok}};
+                    {next_state, follower, State3, [{reply, From, ok}]};
                 {error, Reason} ->
                     ?LOG_WARNING("Server[~0p, term ~0p, stalled] failed to rename available snapshot ~p to ~p due to ~p",
                         [Name, CurrentTerm, Root, Path, Reason], #{domain => [whatsapp, wa_raft]}),
