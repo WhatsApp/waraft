@@ -8,7 +8,7 @@
 -module(wa_raft_label).
 -compile(warn_missing_spec_all).
 
--type label() :: term().
+-type label() :: dynamic().
 
 -export_type([label/0]).
 
