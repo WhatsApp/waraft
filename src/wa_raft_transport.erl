@@ -698,7 +698,7 @@ handle_transport_start(From, Peer, Meta, Root, Counters) ->
 
         % Notify peer node of incoming transport
         FileData = [{FileID, Filename, Size} || {FileID, Filename, _, _, Size} <- Files],
-        case gen_server:call({?MODULE, Peer}, {transport, ID, node(), Module, Meta, FileData}) of
+        case gen_server:call({?MODULE, Peer}, {transport, ID, node(), Module, Meta, FileData}, ?RAFT_RPC_CALL_TIMEOUT()) of
             ok ->
                 % Add all files to the queue
                 ets:insert(Queue, [{FileID} || {FileID, _, _, _, _} <- Files]),

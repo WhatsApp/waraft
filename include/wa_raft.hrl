@@ -88,7 +88,7 @@
 -define(RAFT_METRICS_MODULE(), ?RAFT_CONFIG(raft_metrics_module)).
 
 %% Default Call timeout for all cross node gen_server:call
--define(RAFT_RPC_CALL_TIMEOUT(), ?RAFT_CONFIG(raft_rpc_call_timeout, 30000)).
+-define(RAFT_RPC_CALL_TIMEOUT(), ?RAFT_CONFIG(raft_rpc_call_timeout, 10000)).
 %% Default call timeout for storage related operation (we need bigger default since storage can be slower)
 -define(RAFT_STORAGE_CALL_TIMEOUT(), ?RAFT_CONFIG(raft_storage_call_timeout, 60000)).
 
