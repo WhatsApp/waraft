@@ -325,7 +325,7 @@ append(#log_view{last = Last} = View, Entries) ->
 %% all log entries after the mismatching log will be replaced with the new log
 %% entries provided.
 -spec append(View :: view(), Start :: log_index(), Entries :: [log_entry()]) ->
-    {ok, LastIndex :: log_index(), NewView :: view()} | wa_raft:error().
+    {ok, MatchIndex :: log_index(), NewView :: view()} | wa_raft:error().
 append(View, Start, _Entries) when Start =< 0 ->
     ?LOG_ERROR("[~p] rejecting append starting at invalid start index ~p", [log_name(View), Start], #{domain => [whatsapp, wa_raft]}),
     {error, invalid_start_index};
@@ -336,8 +336,9 @@ append(#log_view{log = Log, last = Last} = View0, Start, Entries) ->
         ok ->
             ?RAFT_COUNT('raft.log.append.ok'),
             View1 = update_config_cache(View0, Start, Entries),
-            NewLast = max(Last, Start + length(Entries) - 1),
-            {ok, NewLast, View1#log_view{last = NewLast}};
+            NewMatch = Start + length(Entries) - 1,
+            NewLast = max(Last, NewMatch),
+            {ok, NewMatch, View1#log_view{last = NewLast}};
         {mismatch, Index} ->
             ?RAFT_COUNT('raft.log.append.mismatch'),
             case truncate(View0, Index) of
@@ -347,8 +348,9 @@ append(#log_view{log = Log, last = Last} = View0, Start, Entries) ->
                         ok ->
                             ?RAFT_COUNT('raft.log.append.ok'),
                             View2 = update_config_cache(View1, Start, NewEntries),
-                            NewLast = max(Index - 1, Start + length(Entries) - 1),
-                            {ok, NewLast, View2#log_view{last = NewLast}};
+                            NewMatch = Start + length(Entries) - 1,
+                            NewLast = max(Index - 1, NewMatch),
+                            {ok, NewMatch, View2#log_view{last = NewLast}};
                         {error, Reason} ->
                             ?RAFT_COUNT('raft.log.append.error'),
                             {error, Reason}
