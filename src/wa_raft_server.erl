@@ -767,21 +767,27 @@ stalled({call, From}, ?SNAPSHOT_AVAILABLE_COMMAND(Root, #raft_log_pos{index = Sn
             catch filelib:ensure_dir(Path),
             case prim_file:rename(Root, Path) of
                 ok ->
-                    ?LOG_NOTICE("Server[~0p, term ~0p, stalled] applying snapshot ~p:~p",
-                        [Name, CurrentTerm, SnapshotIndex, SnapshotTerm], #{domain => [whatsapp, wa_raft]}),
-                    ok = wa_raft_storage:open_snapshot(Storage, SnapshotPos),
-                    {ok, View1} = wa_raft_log:reset(View0, SnapshotPos),
-                    State1 = State0#raft_state{log_view = View1, last_applied = SnapshotIndex, commit_index = SnapshotIndex},
-                    State2 = load_config(State1),
-                    ?LOG_NOTICE("Server[~0p, term ~0p, stalled] switching to follower after installing snapshot at ~p:~p.",
-                        [Name, CurrentTerm, SnapshotIndex, SnapshotTerm], #{domain => [whatsapp, wa_raft]}),
-                    State3 = case SnapshotTerm > CurrentTerm of
-                        true -> advance_term(?FUNCTION_NAME, SnapshotTerm, undefined, State2);
-                        false -> State2
-                    end,
-                    % At this point, we assume that we received some cluster membership configuration from
-                    % our peer so it is safe to transition to an operational state.
-                    {next_state, follower, State3, [{reply, From, ok}]};
+                    try
+                        ?LOG_NOTICE("Server[~0p, term ~0p, stalled] applying snapshot ~p:~p",
+                            [Name, CurrentTerm, SnapshotIndex, SnapshotTerm], #{domain => [whatsapp, wa_raft]}),
+                        ok = wa_raft_storage:open_snapshot(Storage, SnapshotPos),
+                        {ok, View1} = wa_raft_log:reset(View0, SnapshotPos),
+                        State1 = State0#raft_state{log_view = View1, last_applied = SnapshotIndex, commit_index = SnapshotIndex},
+                        State2 = load_config(State1),
+                        ?LOG_NOTICE("Server[~0p, term ~0p, stalled] switching to follower after installing snapshot at ~p:~p.",
+                            [Name, CurrentTerm, SnapshotIndex, SnapshotTerm], #{domain => [whatsapp, wa_raft]}),
+                        State3 = case SnapshotTerm > CurrentTerm of
+                            true -> advance_term(?FUNCTION_NAME, SnapshotTerm, undefined, State2);
+                            false -> State2
+                        end,
+                        % At this point, we assume that we received some cluster membership configuration from
+                        % our peer so it is safe to transition to an operational state.
+                        {next_state, follower, State3, [{reply, From, ok}]}
+                    after
+                        % It is assumed that the loading of the snapshot will move the snapshot away or
+                        % otherwise disassociate the storage state from the snapshot path.
+                        catch file:del_dir_r(Path)
+                    end;
                 {error, Reason} ->
                     ?LOG_WARNING("Server[~0p, term ~0p, stalled] failed to rename available snapshot ~p to ~p due to ~p",
                         [Name, CurrentTerm, Root, Path, Reason], #{domain => [whatsapp, wa_raft]}),
