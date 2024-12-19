@@ -28,7 +28,7 @@
 %% API
 -export([
     open/1,
-    open_snapshot/2,
+    open_snapshot/3,
     create_snapshot/1,
     create_snapshot/2,
     delete_snapshot/2
@@ -329,9 +329,9 @@ cancel(ServiceRef) ->
 open(ServiceRef) ->
     gen_server:call(ServiceRef, open, ?RAFT_RPC_CALL_TIMEOUT()).
 
--spec open_snapshot(ServiceRef :: pid() | atom(), LastAppliedPos :: wa_raft_log:log_pos()) -> ok | error().
-open_snapshot(ServiceRef, LastAppliedPos) ->
-    gen_server:call(ServiceRef, {snapshot_open, LastAppliedPos}, ?RAFT_STORAGE_CALL_TIMEOUT()).
+-spec open_snapshot(ServiceRef :: pid() | atom(), SnapshotPath :: file:filename(), LastAppliedPos :: wa_raft_log:log_pos()) -> ok | error().
+open_snapshot(ServiceRef, SnapshotPath, LastAppliedPos) ->
+    gen_server:call(ServiceRef, {snapshot_open, SnapshotPath, LastAppliedPos}, ?RAFT_STORAGE_CALL_TIMEOUT()).
 
 -spec create_snapshot(ServiceRef :: pid() | atom()) -> {ok, Pos :: wa_raft_log:log_pos()} | error().
 create_snapshot(ServiceRef) ->
@@ -426,7 +426,7 @@ init(#raft_options{application = App, table = Table, partition = Partition, data
         snapshot_create |
         status |
         {snapshot_create, Name :: string()} |
-        {snapshot_open, LastAppliedPos :: wa_raft_log:log_pos()} |
+        {snapshot_open, Path :: file:filename(), LastAppliedPos :: wa_raft_log:log_pos()} |
         {read_metadata, Key :: metadata()} |
         label.
 handle_call(open, _From, #state{last_applied = LastApplied} = State) ->
@@ -448,9 +448,8 @@ handle_call({snapshot_create, Name}, _From, State) ->
     Result = create_snapshot_impl(Name, State),
     {reply, Result, State};
 
-handle_call({snapshot_open, #raft_log_pos{index = LastIndex, term = LastTerm} = LogPos}, _From, #state{name = Name, root_dir = RootDir, module = Module, handle = Handle, last_applied = LastApplied} = State) ->
+handle_call({snapshot_open, SnapshotPath, LogPos}, _From, #state{name = Name, module = Module, handle = Handle, last_applied = LastApplied} = State) ->
     ?LOG_NOTICE("Storage[~0p] replacing storage at ~0p with snapshot at ~0p.", [Name, LastApplied, LogPos], #{domain => [whatsapp, wa_raft]}),
-    SnapshotPath = filename:join(RootDir, ?SNAPSHOT_NAME(LastIndex, LastTerm)),
     case Module:storage_open_snapshot(SnapshotPath, LogPos, Handle) of
         {ok, NewHandle} -> {reply, ok, State#state{last_applied = LogPos, handle = NewHandle}};
         {error, Reason} -> {reply, {error, Reason}, State}
