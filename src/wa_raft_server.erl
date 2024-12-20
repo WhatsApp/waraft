@@ -784,10 +784,6 @@ stalled({call, From}, ?SNAPSHOT_AVAILABLE_COMMAND(Root, #raft_log_pos{index = Sn
                     ?LOG_WARNING("Server[~0p, term ~0p, stalled] failed to load available snapshot ~p due to ~p",
                                  [Name, CurrentTerm, Root, Reason], #{domain => [whatsapp, wa_raft]}),
                     {keep_state_and_data, {reply, From, {error, Reason}}}
-            after
-                % It is assumed that the loading of the snapshot will move the snapshot away or
-                % otherwise disassociate the storage state from the snapshot path.
-                catch file:del_dir_r(Root)
             end;
         false ->
             ?LOG_NOTICE("Server[~0p, term ~0p, stalled] ignoring available snapshot ~p:~p with index not past ours (~p)",
