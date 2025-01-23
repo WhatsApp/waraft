@@ -15,6 +15,7 @@
 %% OTP Supervision
 -export([
     child_spec/1,
+    child_spec/2,
     start_link/2
 ]).
 
@@ -57,6 +58,17 @@ child_spec(Application) ->
     #{
         id => ?MODULE,
         start => {?MODULE, start_link, [Application]},
+        restart => permanent,
+        shutdown => infinity,
+        type => supervisor,
+        modules => [?MODULE]
+    }.
+
+-spec child_spec(Application :: atom(), Spec :: wa_raft:args()) -> supervisor:child_spec().
+child_spec(Application, Spec) ->
+    #{
+        id => ?MODULE,
+        start => {?MODULE, start_link, [Application, Spec]},
         restart => permanent,
         shutdown => infinity,
         type => supervisor,
