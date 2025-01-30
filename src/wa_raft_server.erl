@@ -2445,7 +2445,7 @@ handle_heartbeat(State, Event, Leader, PrevLogIndex, PrevLogTerm, Entries, Commi
     case append_entries(State, PrevLogIndex, PrevLogTerm, Entries, EntryCount, Data0) of
         {ok, Accepted, NewMatchIndex, Data1} ->
             send_rpc(Leader, ?APPEND_ENTRIES_RESPONSE(PrevLogIndex, Accepted, NewMatchIndex), Data1),
-            reply(Event, ?LEGACY_APPEND_ENTRIES_RESPONSE_RPC(CurrentTerm, node(), PrevLogIndex, Accepted, NewMatchIndex)),
+            reply_rpc(Event, ?LEGACY_APPEND_ENTRIES_RESPONSE_RPC(CurrentTerm, node(), PrevLogIndex, Accepted, NewMatchIndex), Data1),
 
             LocalTrimIndex = case ?RAFT_LOG_ROTATION_BY_TRIM_INDEX(App) of
                 true  -> TrimIndex;
@@ -2524,7 +2524,7 @@ append_entries(State, PrevLogIndex, PrevLogTerm, Entries, EntryCount, #raft_stat
 %% RAFT Server - State Machine Implementation - Helpers
 %%------------------------------------------------------------------------------
 
-%% Generic reply function that operates based on event type.
+%% Generic reply function for non-RPC requests that operates based on event type.
 -spec reply(Type :: enter | gen_statem:event_type(), Message :: term()) -> ok | wa_raft:error().
 reply(cast, _Message) ->
     ok;
@@ -2533,6 +2533,13 @@ reply({call, From}, Message) ->
 reply(Type, Message) ->
     ?LOG_WARNING("Attempted to reply to non-reply event type ~p with message ~0P.",
         [Type, Message, 100], #{domain => [whatsapp, wa_raft]}),
+    ok.
+
+%% Generic reply function for RPC requests that operates based on event type.
+-spec reply_rpc(Type :: gen_statem:event_type(), Reply :: term(), Data :: #raft_state{}) -> term().
+reply_rpc({call, From}, Reply, #raft_state{identifier = Identifier, distribution_module = DistributionModule}) ->
+    DistributionModule:reply(From, Identifier, Reply);
+reply_rpc(_Other, _Reply, _Data) ->
     ok.
 
 -spec send_rpc(Destination :: #raft_identity{}, ProcedureCall :: normalized_procedure(), State :: #raft_state{}) -> term().
