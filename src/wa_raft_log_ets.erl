@@ -164,10 +164,7 @@ append_impl(Log, Start, [{Term, _Entry} | Entries], First, Last) when Start =< L
         _          -> {mismatch, Start}
     end;
 append_impl(#raft_log{name = Name}, Start, [_|_] = Entries, _First, Last) when Start =:= Last + 1 ->
-    true = ets:insert(Name,
-        lists:zip(
-            lists:seq(Start, Start + length(Entries) - 1),
-            Entries)),
+    true = ets:insert(Name, lists:enumerate(Start, Entries)),
     ok;
 append_impl(_Log, _Start, [_|_], _First, _Last) ->
     {error, invalid_start_index}.
