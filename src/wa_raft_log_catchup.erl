@@ -271,7 +271,7 @@ send_logs_impl(#raft_identity{node = PeerNode} = Peer, NextLogIndex, LeaderTerm,
             {ok, E} = wa_raft_log:get(Log, NextLogIndex, LogBatchEntries, LogBatchBytes),
             E;
         true ->
-            {ok, T} = wa_raft_log:get_terms(Log, NextLogIndex, LogBatchEntries),
+            {ok, T} = wa_raft_log:get_terms(Log, NextLogIndex, min(LogBatchEntries, max(0, LeaderCommitIndex - NextLogIndex + 1))),
             [{Term, []} || Term <- T]
     end,
 

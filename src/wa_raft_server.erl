@@ -2348,7 +2348,7 @@ heartbeat(?IDENTITY_REQUIRES_MIGRATION(_, FollowerId) = Sender,
             Entries =
                 case lists:member({Name, FollowerId}, Witnesses) of
                     true ->
-                        MaxWitnessLogEntries = ?RAFT_HEARTBEAT_MAX_ENTRIES_TO_WITNESS(App),
+                        MaxWitnessLogEntries = min(?RAFT_HEARTBEAT_MAX_ENTRIES_TO_WITNESS(App), max(0, CommitIndex - FollowerNextIndex + 1)),
                         {ok, Terms} = wa_raft_log:get_terms(View, FollowerNextIndex, MaxWitnessLogEntries),
                         [{Term, []} || Term <- Terms];
                     _ ->
