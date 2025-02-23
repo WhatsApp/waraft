@@ -2153,7 +2153,7 @@ apply_log(#raft_state{application = App, name = Name, table = Table, partition =
     case wa_raft_queue:apply_queue_full(Table, Partition) of
         false ->
             % Apply a limited number of log entries (both count and total byte size limited)
-            LimitedIndex = erlang:min(CommitIndex, LastApplied + ?RAFT_MAX_CONSECUTIVE_APPLY_ENTRIES(App)),
+            LimitedIndex = min(CommitIndex, LastApplied + ?RAFT_MAX_CONSECUTIVE_APPLY_ENTRIES(App)),
             LimitBytes = ?RAFT_MAX_CONSECUTIVE_APPLY_BYTES(App),
             {ok, {_, #raft_state{log_view = View1} = State1}} = wa_raft_log:fold(View, LastApplied + 1, LimitedIndex, LimitBytes,
                 fun (Index, Entry, {Index, State}) ->
@@ -2348,7 +2348,7 @@ heartbeat(?IDENTITY_REQUIRES_MIGRATION(_, FollowerId) = Sender,
             Entries =
                 case lists:member({Name, FollowerId}, Witnesses) of
                     true ->
-                        MaxWitnessLogEntries = min(?RAFT_HEARTBEAT_MAX_ENTRIES_TO_WITNESS(App), max(0, CommitIndex - FollowerNextIndex + 1)),
+                        MaxWitnessLogEntries = min(?RAFT_HEARTBEAT_MAX_ENTRIES_TO_WITNESS(App), CommitIndex - FollowerNextIndex + 1),
                         {ok, Terms} = wa_raft_log:get_terms(View, FollowerNextIndex, MaxWitnessLogEntries),
                         [{Term, []} || Term <- Terms];
                     _ ->
