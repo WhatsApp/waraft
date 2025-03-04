@@ -2494,7 +2494,7 @@ append_entries(State, PrevLogIndex, PrevLogTerm, Entries, EntryCount, #raft_stat
             ?RAFT_COUNT({raft, State, 'heartbeat.skip.log_term_mismatch'}),
             ?LOG_WARNING("Server[~0p, term ~0p, ~0p] rejects appending ~0p log entries in range ~0p to ~0p as previous log entry ~0p has term ~0p locally when leader ~0p expects it to have term ~0p.",
                 [Name, CurrentTerm, State, EntryCount, PrevLogIndex + 1, PrevLogIndex + EntryCount, PrevLogIndex, LocalPrevLogTerm, LeaderId, PrevLogTerm], #{domain => [whatsapp, wa_raft]}),
-            case PrevLogIndex < LastApplied of
+            case PrevLogIndex =< LastApplied of
                 true ->
                     % We cannot validly delete log entries that have already been applied because doing
                     % so means that we are erasing log entries that have already been committed. If we try
