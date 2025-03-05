@@ -34,11 +34,6 @@
     delete_snapshot/2
 ]).
 
-%% Cluster state API
--export([
-    read_metadata/2
-]).
-
 %% Label API
 -export([
     label/1
@@ -202,15 +197,6 @@
 -callback storage_apply(Command :: wa_raft_acceptor:command(), Position :: wa_raft_log:log_pos(), Label :: wa_raft_label:label(), Handle :: storage_handle()) -> {Result :: dynamic(), NewHandle :: storage_handle()}.
 -optional_callbacks([storage_apply/4]).
 
-%% Apply a write command to update metadata stored by the storage provider
-%% on behalf of the RAFT implementation. Subsequent calls to read metadata
-%% with the same key should return the updated version and value.
-%% If the command could not be applied in a manner so as to preserve the
-%% desired consistency guarantee then implementations can raise an error to
-%% cause the apply to be aborted safely.
--callback storage_write_metadata(Handle :: storage_handle(), Key :: metadata(), Version :: wa_raft_log:log_pos(), Value :: term()) -> ok | error().
--optional_callbacks([storage_write_metadata/4]).
-
 %% Apply a write command to update the raft config stored by the storage provider
 %% on behalf of the RAFT implementation. Subsequent calls to read the config
 %% should return the updated version and value.
@@ -233,9 +219,8 @@
 %% of other read commands already inserted) would not affect the result
 %% returned by any other command or the results of any future commands.
 %%
-%% Implicitly, use of the `storage_position/1` and `storage_read_metadata/2`
-%% callbacks are non-synchronized access of the storage state and should be
-%% considered to be read commands.
+%% Implicitly, use of the `storage_position/1` callback is non-synchronized
+%% access of the storage state and should be considered to be read commands.
 %%
 %% Not exhaustively, the RAFT implementation uses read commands to access
 %% metadata stored by in the storage state on behalf of the RAFT implementation
@@ -245,11 +230,6 @@
 %% Apply a read command against the storage state, returning the result of
 %% the read command.
 -callback storage_read(Command :: wa_raft_acceptor:command(), Position :: wa_raft_log:log_pos(), Handle :: storage_handle()) -> Result :: dynamic().
-
-%% Apply a read command against the storage state to read the most recently
-%% written value of the metadata with the provided key, if such a value exists.
--callback storage_read_metadata(Handle :: storage_handle(), Key :: metadata()) -> {ok, Version :: wa_raft_log:log_pos(), Value :: term()} | undefined | error().
--optional_callbacks([storage_read_metadata/2]).
 
 %%-----------------------------------------------------------------------------
 %% RAFT Storage Provider - Snapshots
@@ -365,10 +345,6 @@ create_snapshot(ServiceRef, Name) ->
 delete_snapshot(ServiceRef, Name) ->
     gen_server:cast(ServiceRef, {snapshot_delete, Name}).
 
--spec read_metadata(ServiceRef :: pid() | atom(), Key :: metadata()) -> {ok, Version :: wa_raft_log:log_pos(), Value :: dynamic()} | undefined | error().
-read_metadata(ServiceRef, Key) ->
-    gen_server:call(ServiceRef, {read_metadata, Key}, ?RAFT_STORAGE_CALL_TIMEOUT()).
-
 -spec label(ServiceRef :: pid() | atom()) -> {ok, Label :: wa_raft_label:label()} | wa_raft_storage:error().
 label(ServiceRef) ->
     gen_server:call(ServiceRef, label, ?RAFT_STORAGE_CALL_TIMEOUT()).
@@ -451,7 +427,6 @@ init(#raft_options{application = App, table = Table, partition = Partition, data
         status |
         {snapshot_create, Name :: string()} |
         {snapshot_open, Path :: file:filename(), LastAppliedPos :: wa_raft_log:log_pos()} |
-        {read_metadata, Key :: metadata()} |
         label |
         config.
 handle_call(open, _From, #state{last_applied = LastApplied} = State) ->
@@ -479,11 +454,6 @@ handle_call({snapshot_open, SnapshotPath, LogPos}, _From, #state{name = Name, mo
         {ok, NewHandle} -> {reply, ok, State#state{last_applied = LogPos, handle = NewHandle}};
         {error, Reason} -> {reply, {error, Reason}, State}
     end;
-
-handle_call({read_metadata, Key}, _From, #state{module = Module, handle = Handle} = State) ->
-    ?RAFT_COUNT('raft.storage.read_metadata'),
-    Result = Module:storage_read_metadata(Handle, Key),
-    {reply, Result, State};
 
 handle_call(config, _From, #state{module = Module, handle = Handle} = State) ->
     ?RAFT_COUNT('raft.storage.config'),

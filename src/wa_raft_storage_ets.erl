@@ -20,9 +20,7 @@
     storage_apply/3,
     storage_apply/4,
     storage_apply_config/3,
-    storage_write_metadata/4,
     storage_read/3,
-    storage_read_metadata/2,
     storage_create_snapshot/2,
     storage_open_snapshot/3
 ]).
@@ -100,11 +98,6 @@ storage_apply_config(Config, LogPos, #state{storage = Storage} = State) ->
     true = ets:insert(Storage, [{{?METADATA_TAG, config}, {LogPos, Config}}, {?POSITION_TAG, LogPos}]),
     {ok, State}.
 
--spec storage_write_metadata(#state{}, wa_raft_storage:metadata(), wa_raft_log:log_pos(), term()) -> ok.
-storage_write_metadata(#state{storage = Storage}, Key, Version, Value) ->
-    true = ets:insert(Storage, [{{?METADATA_TAG, Key}, {Version, Value}}, {?POSITION_TAG, Version}]),
-    ok.
-
 -spec storage_read(Command :: wa_raft_acceptor:command(), Position :: wa_raft_log:log_pos(), State :: #state{}) -> ok | {ok, Value :: dynamic()} | not_found.
 storage_read(noop, _Position, #state{}) ->
     ok;
@@ -112,13 +105,6 @@ storage_read({read, _Table, Key}, _Position, #state{storage = Storage}) ->
     case ets:lookup(Storage, Key) of
         [{_, Value}] -> {ok, Value};
         []           -> not_found
-    end.
-
--spec storage_read_metadata(#state{}, wa_raft_storage:metadata()) -> {ok, wa_raft_log:log_pos(), term()} | undefined.
-storage_read_metadata(#state{storage = Storage}, Key) ->
-    case ets:lookup(Storage, {?METADATA_TAG, Key}) of
-        [{_, {Version, Value}}] -> {ok, Version, Value};
-        []                      -> undefined
     end.
 
 -spec storage_create_snapshot(file:filename(), #state{}) -> ok | wa_raft_storage:error().
