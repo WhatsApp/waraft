@@ -382,7 +382,7 @@ config(ServiceRef) ->
 reset(ServiceRef, Position, Config) ->
     sys:replace_state(ServiceRef, fun (#state{module = Module, handle = Handle} = State) ->
         Config =/= undefined andalso
-            Module:storage_write_metadata(Handle, config, Position, Config),
+            Module:storage_apply_config(Config, Position, Handle),
         State#state{last_applied = Position}
     end, ?RAFT_STORAGE_CALL_TIMEOUT()),
     ok.
@@ -596,7 +596,8 @@ execute(noop, LogPos, Label, #state{module = Module, handle = Handle} = State) -
 execute({config, Config}, #raft_log_pos{index = Index, term = Term} = Version, _Label, #state{name = Name, module = Module, handle = Handle} = State) ->
     ?LOG_INFO("Storage[~p] applying new configuration ~p at ~p:~p.",
         [Name, Config, Index, Term], #{domain => [whatsapp, wa_raft]}),
-    {Module:storage_write_metadata(Handle, config, Version, Config), State};
+    {Reply, NewHandle} = Module:storage_apply_config(Config, Version, Handle),
+    {Reply, State#state{handle = NewHandle}};
 execute(Command, LogPos, undefined, #state{module = Module, handle = Handle} = State) ->
     {Reply, NewHandle} = Module:storage_apply(Command, LogPos, Handle),
     {Reply, State#state{handle = NewHandle}};

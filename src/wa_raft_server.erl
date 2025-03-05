@@ -1075,7 +1075,7 @@ leader(Type, ?ADJUST_MEMBERSHIP_COMMAND(Action, Peer, ExpectedConfigIndex),
             case wa_raft_log:term(View0, LastApplied) of
                 {ok, CurrentTerm} ->
                     % Ensure that this leader has no other pending config not yet applied.
-                    StorageConfigIndex = case wa_raft_storage:read_metadata(Storage, config) of
+                    StorageConfigIndex = case wa_raft_storage:config(Storage) of
                         {ok, #raft_log_pos{index = SI}, _} -> SI;
                         undefined                          -> 0
                     end,
@@ -1994,7 +1994,7 @@ config_index(#raft_state{cached_config = undefined} = State) ->
 %% the RAFT server expects is in storage.
 -spec load_config(State :: #raft_state{}) -> NewState :: #raft_state{}.
 load_config(#raft_state{storage = Storage, table = Table, partition = Partition} = State) ->
-    case wa_raft_storage:read_metadata(Storage, config) of
+    case wa_raft_storage:config(Storage) of
         {ok, #raft_log_pos{index = ConfigIndex}, Config} ->
             wa_raft_info:set_membership(Table, Partition, maps:get(membership, Config, [])),
             State#raft_state{cached_config = {ConfigIndex, maybe_upgrade_config(Config)}};
