@@ -16,8 +16,10 @@
     storage_close/1,
     storage_label/1,
     storage_position/1,
+    storage_config/1,
     storage_apply/3,
     storage_apply/4,
+    storage_apply_config/3,
     storage_write_metadata/4,
     storage_read/3,
     storage_read_metadata/2,
@@ -65,6 +67,13 @@ storage_label(#state{storage = Storage}) ->
         []           -> {ok, undefined}
     end.
 
+-spec storage_config(#state{}) -> {ok, wa_raft_log:log_pos(), wa_raft_server:config()} | undefined.
+storage_config(#state{storage = Storage}) ->
+    case ets:lookup(Storage, {?METADATA_TAG, config}) of
+        [{_, {Version, Value}}] -> {ok, Version, Value};
+        []                      -> undefined
+    end.
+
 -spec storage_apply(Command :: wa_raft_acceptor:command(), Position :: wa_raft_log:log_pos(), Label :: wa_raft_label:label(), Storage :: #state{}) -> {ok, #state{}}.
 storage_apply(Command, Position, Label, #state{storage = Storage} = State) ->
     true = ets:insert(Storage, {?LABEL_TAG, Label}),
@@ -80,6 +89,15 @@ storage_apply({write, _Table, Key, Value}, Position, #state{storage = Storage} =
 storage_apply({delete, _Table, Key}, Position, #state{storage = Storage} = State) ->
     true = ets:delete(Storage, Key),
     true = ets:insert(Storage, {?POSITION_TAG, Position}),
+    {ok, State}.
+
+-spec storage_apply_config(
+    Config :: wa_raft_server:config(),
+    LogPos :: wa_raft_log:log_pos(),
+    State :: #state{}
+) -> {ok | wa_raft_storage:error(), #state{}}.
+storage_apply_config(Config, LogPos, #state{storage = Storage} = State) ->
+    true = ets:insert(Storage, [{{?METADATA_TAG, config}, {LogPos, Config}}, {?POSITION_TAG, LogPos}]),
     {ok, State}.
 
 -spec storage_write_metadata(#state{}, wa_raft_storage:metadata(), wa_raft_log:log_pos(), term()) -> ok.

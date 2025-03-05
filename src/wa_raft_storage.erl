@@ -44,6 +44,11 @@
     label/1
 ]).
 
+%% Config API
+-export([
+    config/1
+]).
+
 %% Misc API
 -export([
     status/1
@@ -141,6 +146,11 @@
 %% callback `storage_apply/4` for details.
 -callback storage_label(Handle :: storage_handle()) -> {ok, Label :: wa_raft_label:label()} | error().
 -optional_callbacks([storage_label/1]).
+
+
+%% Issue a read command to get the config of the current storage state.
+-callback storage_config(Handle :: storage_handle()) -> {ok, Version :: wa_raft_log:log_pos(), Config :: wa_raft_server:config()} | undefined.
+
 %%-----------------------------------------------------------------------------
 %% RAFT Storage Provider - Write Commands
 %%-----------------------------------------------------------------------------
@@ -199,6 +209,15 @@
 %% desired consistency guarantee then implementations can raise an error to
 %% cause the apply to be aborted safely.
 -callback storage_write_metadata(Handle :: storage_handle(), Key :: metadata(), Version :: wa_raft_log:log_pos(), Value :: term()) -> ok | error().
+-optional_callbacks([storage_write_metadata/4]).
+
+%% Apply a write command to update the raft config stored by the storage provider
+%% on behalf of the RAFT implementation. Subsequent calls to read the config
+%% should return the updated version and value.
+%% If the command could not be applied in a manner so as to preserve the
+%% desired consistency guarantee then implementations can raise an error to be
+%% aborted safely.
+-callback storage_apply_config(Config :: wa_raft_server:config(), Position :: wa_raft_log:log_pos(), Handle :: storage_handle()) -> {Result :: ok | error(), NewHandle :: storage_handle()}.
 
 %%-----------------------------------------------------------------------------
 %% RAFT Storage Provider - Read Commands
@@ -230,6 +249,7 @@
 %% Apply a read command against the storage state to read the most recently
 %% written value of the metadata with the provided key, if such a value exists.
 -callback storage_read_metadata(Handle :: storage_handle(), Key :: metadata()) -> {ok, Version :: wa_raft_log:log_pos(), Value :: term()} | undefined | error().
+-optional_callbacks([storage_read_metadata/2]).
 
 %%-----------------------------------------------------------------------------
 %% RAFT Storage Provider - Snapshots
@@ -349,9 +369,13 @@ delete_snapshot(ServiceRef, Name) ->
 read_metadata(ServiceRef, Key) ->
     gen_server:call(ServiceRef, {read_metadata, Key}, ?RAFT_STORAGE_CALL_TIMEOUT()).
 
--spec label(ServiceRef :: pid() | atom()) -> wa_raft_label:label().
+-spec label(ServiceRef :: pid() | atom()) -> {ok, Label :: wa_raft_label:label()} | wa_raft_storage:error().
 label(ServiceRef) ->
     gen_server:call(ServiceRef, label, ?RAFT_STORAGE_CALL_TIMEOUT()).
+
+-spec config(ServiceRef :: pid() | atom()) -> {ok, wa_raft_log:log_pos(), wa_raft_server:config()} | undefined | wa_raft_storage:error().
+config(ServiceRef) ->
+    gen_server:call(ServiceRef, config, ?RAFT_STORAGE_CALL_TIMEOUT()).
 
 -ifdef(TEST).
 -spec reset(ServiceRef :: pid() | atom(), Position :: wa_raft_log:log_pos(), Config :: wa_raft_server:config() | undefined) -> ok | error().
@@ -428,7 +452,8 @@ init(#raft_options{application = App, table = Table, partition = Partition, data
         {snapshot_create, Name :: string()} |
         {snapshot_open, Path :: file:filename(), LastAppliedPos :: wa_raft_log:log_pos()} |
         {read_metadata, Key :: metadata()} |
-        label.
+        label |
+        config.
 handle_call(open, _From, #state{last_applied = LastApplied} = State) ->
     {reply, {ok, LastApplied}, State};
 
@@ -458,6 +483,11 @@ handle_call({snapshot_open, SnapshotPath, LogPos}, _From, #state{name = Name, mo
 handle_call({read_metadata, Key}, _From, #state{module = Module, handle = Handle} = State) ->
     ?RAFT_COUNT('raft.storage.read_metadata'),
     Result = Module:storage_read_metadata(Handle, Key),
+    {reply, Result, State};
+
+handle_call(config, _From, #state{module = Module, handle = Handle} = State) ->
+    ?RAFT_COUNT('raft.storage.config'),
+    Result = Module:storage_config(Handle),
     {reply, Result, State};
 
 handle_call(label, _From, #state{module = Module, handle = Handle} = State) ->
