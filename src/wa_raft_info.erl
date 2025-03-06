@@ -46,9 +46,10 @@
 -spec get(term(), Default) -> Default.
 get(Key, Default) ->
     try
-        ets:lookup_element(?MODULE, Key, 2)
-    catch error:badarg ->
-        Default
+        ets:lookup_element(?MODULE, Key, 2, Default)
+    catch
+        error:badarg ->
+            Default
     end.
 
 -spec get_leader(wa_raft:table(), wa_raft:partition()) -> node() | undefined.
