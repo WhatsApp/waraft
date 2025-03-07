@@ -13,7 +13,7 @@ WARaft is a Raft library in Erlang by WhatsApp. It provides an Erlang implementa
 
 The following code snippet gives a quick glance about how WARaft works. It creates a single-node WARaft cluster and writes and reads a record.
 
-```
+```erlang
 % Setup the WARaft application and the host application
 rr(wa_raft_server).
 application:ensure_all_started(wa_raft).
@@ -38,7 +38,7 @@ wa_raft_acceptor:read(raft_acceptor_test_1, {read, test, key}).
 
 A typical output would look like the following:
 
-```
+```erlang
 1> % Setup the WARaft application and the host application
    rr(wa_raft_server).
 [raft_application,raft_identifier,raft_identity,raft_log,
