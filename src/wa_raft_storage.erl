@@ -31,6 +31,7 @@
     open_snapshot/3,
     create_snapshot/1,
     create_snapshot/2,
+    make_empty_snapshot/5,
     delete_snapshot/2
 ]).
 
@@ -257,6 +258,20 @@
 -callback storage_open_snapshot(Path :: file:filename(), ExpectedPosition :: wa_raft_log:log_pos(), Handle :: storage_handle()) -> {ok, NewHandle :: storage_handle()} | error().
 
 %%-----------------------------------------------------------------------------
+%% RAFT Storage Provider - Bootstrapping
+%%-----------------------------------------------------------------------------
+
+%% Create a new snapshot at the provided path that contains some directory
+%% tree that when subsequently loaded using `storage_open_snapshot` results in
+%% a storage state with the provided last applied position and for which
+%% subsequent calls to `storage_config` returns the provided position as the
+%% version and the config as the value. Extra data may be used by implementors
+%% to provide extra state via arguments to external APIs that use this
+%% endpoint, such as the partition bootstrapping API.
+-callback storage_make_empty_snapshot(Name :: atom(), Identifier :: #raft_identifier{}, Path :: file:filename(), Position :: wa_raft_log:log_pos(), Config :: wa_raft_server:config(), Data :: dynamic()) -> ok | error().
+-optional_callback([storage_make_empty_snapshot/6]).
+
+%%-----------------------------------------------------------------------------
 %% RAFT Storage - Types
 %%-----------------------------------------------------------------------------
 
@@ -277,6 +292,7 @@
     name :: atom(),
     table :: wa_raft:table(),
     partition :: wa_raft:partition(),
+    identifier :: #raft_identifier{},
     root_dir :: file:filename(),
     module :: module(),
     handle :: storage_handle(),
@@ -341,6 +357,10 @@ create_snapshot(ServiceRef) ->
 create_snapshot(ServiceRef, Name) ->
     gen_server:call(ServiceRef, {snapshot_create, Name}, ?RAFT_STORAGE_CALL_TIMEOUT()).
 
+-spec make_empty_snapshot(ServiceRef :: pid() | atom(), Path :: file:filename(), Position :: wa_raft_log:log_pos(), Config :: wa_raft_server:config(), Data :: term()) -> ok | error().
+make_empty_snapshot(ServiceRef, Path, Position, Config, Data) ->
+    gen_server:call(ServiceRef, {make_empty_snapshot, Path, Position, Config, Data}).
+
 -spec delete_snapshot(ServiceRef :: pid() | atom(), Name :: string()) -> ok.
 delete_snapshot(ServiceRef, Name) ->
     gen_server:cast(ServiceRef, {snapshot_delete, Name}).
@@ -388,13 +408,13 @@ registered_name(Table, Partition) ->
 %%-------------------------------------------------------------------
 
 -spec init(Options :: #raft_options{}) -> {ok, #state{}}.
-init(#raft_options{application = App, table = Table, partition = Partition, database = RootDir, storage_name = Name, storage_module = Module}) ->
+init(#raft_options{table = Table, partition = Partition, identifier = Identifier, database = RootDir, storage_name = Name, storage_module = Module}) ->
     process_flag(trap_exit, true),
 
     ?LOG_NOTICE("Storage[~0p] starting for partition ~0p/~0p at ~0p using ~0p",
         [Name, Table, Partition, RootDir, Module], #{domain => [whatsapp, wa_raft]}),
 
-    Handle = Module:storage_open(Name, #raft_identifier{application = App, table = Table, partition = Partition}, RootDir),
+    Handle = Module:storage_open(Name, Identifier, RootDir),
     LastApplied = Module:storage_position(Handle),
 
     ?LOG_NOTICE("Storage[~0p] opened at position ~0p.",
@@ -404,6 +424,7 @@ init(#raft_options{application = App, table = Table, partition = Partition, data
         name = Name,
         table = Table,
         partition = Partition,
+        identifier = Identifier,
         root_dir = RootDir,
         module = Module,
         handle = Handle,
@@ -427,6 +448,7 @@ init(#raft_options{application = App, table = Table, partition = Partition, data
         status |
         {snapshot_create, Name :: string()} |
         {snapshot_open, Path :: file:filename(), LastAppliedPos :: wa_raft_log:log_pos()} |
+        {make_empty_snapshot, Path :: file:filename(), Position :: wa_raft_log:log_pos(), Config :: wa_raft_server:config(), Data :: term()} |
         label |
         config.
 handle_call(open, _From, #state{last_applied = LastApplied} = State) ->
@@ -453,6 +475,14 @@ handle_call({snapshot_open, SnapshotPath, LogPos}, _From, #state{name = Name, mo
     case Module:storage_open_snapshot(SnapshotPath, LogPos, Handle) of
         {ok, NewHandle} -> {reply, ok, State#state{last_applied = LogPos, handle = NewHandle}};
         {error, Reason} -> {reply, {error, Reason}, State}
+    end;
+
+handle_call({make_empty_snapshot, Path, Position, Config, Data}, _From, #state{name = Name, identifier = Identifier, module = Module} = State) ->
+    ?LOG_NOTICE("Storage[~0p] making bootstrap snapshot ~0p at ~0p with config ~0p and data ~0P.",
+        [Name, Path, Position, Config, Data, 30], #{domain => [whatsapp, wa_raft]}),
+    case erlang:function_exported(Module, storage_make_empty_snapshot, 6) of
+        true -> {reply, Module:storage_make_empty_snapshot(Name, Identifier, Path, Position, Config, Data), State};
+        false -> {reply, {error, not_supported}, State}
     end;
 
 handle_call(config, _From, #state{module = Module, handle = Handle} = State) ->

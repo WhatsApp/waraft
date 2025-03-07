@@ -90,3 +90,5 @@
 
 -define(ENABLE_COMMAND,                                         ?RAFT_COMMAND(enable, undefined)).
 -define(DISABLE_COMMAND(Reason),                                ?RAFT_COMMAND(disable, Reason)).
+
+-define(BOOTSTRAP_COMMAND(Position, Config, Data),              ?RAFT_COMMAND(bootstrap, {Position, Config, Data})).

@@ -22,10 +22,14 @@
     storage_apply_config/3,
     storage_read/3,
     storage_create_snapshot/2,
-    storage_open_snapshot/3
+    storage_open_snapshot/3,
+    storage_make_empty_snapshot/6
 ]).
 
 -include("wa_raft.hrl").
+
+%% Options used for the ETS table
+-define(OPTIONS, [set, public, {read_concurrency, true}, {write_concurrency, true}]).
 
 %% Filename used for the actual ETS table file in a snapshot
 -define(SNAPSHOT_FILENAME, "data").
@@ -46,7 +50,7 @@
 
 -spec storage_open(atom(), #raft_identifier{}, file:filename()) -> #state{}.
 storage_open(Name, #raft_identifier{table = Table, partition = Partition}, _RootDir) ->
-    Storage = ets:new(Name, [set, public, {read_concurrency, true}, {write_concurrency, true}]),
+    Storage = ets:new(Name, ?OPTIONS),
     #state{name = Name, table = Table, partition = Partition, storage = Storage}.
 
 -spec storage_close(#state{}) -> ok.
@@ -130,3 +134,10 @@ storage_open_snapshot(SnapshotPath, SnapshotPosition, #state{storage = Storage} 
         {error, Reason} ->
             {error, Reason}
     end.
+
+-spec storage_make_empty_snapshot(atom(), #raft_identifier{}, file:filename(), wa_raft_log:log_pos(), wa_raft_server:config(), dynamic()) -> ok | wa_raft_storage:error().
+storage_make_empty_snapshot(Name, #raft_identifier{table = Table, partition = Partition}, SnapshotPath, SnapshotPosition, Config, _Data) ->
+    Storage = ets:new(Name, ?OPTIONS),
+    State = #state{name = Name, table = Table, partition = Partition, storage = Storage},
+    storage_apply_config(Config, SnapshotPosition, State),
+    storage_create_snapshot(SnapshotPath, State).

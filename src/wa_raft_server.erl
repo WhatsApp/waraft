@@ -96,7 +96,8 @@
     handover/2,
     handover_candidates/1,
     disable/2,
-    enable/1
+    enable/1,
+    bootstrap/4
 ]).
 
 %%------------------------------------------------------------------------------
@@ -221,7 +222,7 @@
 -type rpc_named() :: ?RAFT_NAMED_RPC(atom(), wa_raft_log:log_term(), atom(), node(), undefined | tuple()).
 
 -type command() :: commit_command() | read_command() | status_command() | promote_command() | resign_command() | adjust_membership_command() | snapshot_available_command() |
-                   handover_candidates_command() | handover_command() | enable_command() | disable_command().
+                   handover_candidates_command() | handover_command() | enable_command() | disable_command() | bootstrap_command().
 -type commit_command()              :: ?COMMIT_COMMAND(wa_raft_acceptor:op()).
 -type read_command()                :: ?READ_COMMAND(wa_raft_acceptor:read_op()).
 -type status_command()              :: ?STATUS_COMMAND.
@@ -233,6 +234,7 @@
 -type handover_command()            :: ?HANDOVER_COMMAND(node()).
 -type enable_command()              :: ?ENABLE_COMMAND.
 -type disable_command()             :: ?DISABLE_COMMAND(term()).
+-type bootstrap_command()           :: ?BOOTSTRAP_COMMAND(wa_raft_log:log_pos(), config(), dynamic()).
 
 -type internal_event() :: advance_term_event() | force_election_event().
 -type advance_term_event() :: ?ADVANCE_TERM(wa_raft_log:log_term()).
@@ -516,6 +518,10 @@ disable(Server, Reason) ->
 enable(Server) ->
     gen_statem:call(Server, ?ENABLE_COMMAND, ?RAFT_RPC_CALL_TIMEOUT()).
 
+-spec bootstrap(Server :: gen_statem:server_ref(), Position :: wa_raft_log:log_pos(), Config :: config(), Data :: dynamic()) -> ok | wa_raft:error().
+bootstrap(Server, Position, Config, Data) ->
+    gen_statem:call(Server, ?BOOTSTRAP_COMMAND(Position, Config, Data), ?RAFT_STORAGE_CALL_TIMEOUT()).
+
 %%------------------------------------------------------------------------------
 %% RAFT Server - State Machine Implementation - General Callbacks
 %%------------------------------------------------------------------------------
@@ -757,6 +763,52 @@ stalled(_Type, ?REMOTE(Sender, ?APPEND_ENTRIES(PrevLogIndex, _PrevLogTerm, _Entr
     NewState = State#raft_state{leader_heartbeat_ts = erlang:monotonic_time(millisecond)},
     send_rpc(Sender, ?APPEND_ENTRIES_RESPONSE(PrevLogIndex, false, 0), NewState),
     {keep_state, NewState};
+
+stalled({call, From}, ?BOOTSTRAP_COMMAND(#raft_log_pos{index = Index, term = Term} = Position, Config, Data),
+        #raft_state{name = Name, self = Self, data_dir = PartitionPath, log_view = View, storage = Storage, current_term = CurrentTerm, last_applied = LastApplied} = State0) ->
+    case Index > LastApplied andalso Term > 0 of
+        true ->
+            ?LOG_NOTICE("Server[~0p, term ~0p, stalled] attempting bootstrap at ~0p:~0p with config ~0p and data ~0P.",
+                [Name, CurrentTerm, Index, Term, Config, Data, 30], #{domain => [whatsapp, wa_raft]}),
+            Path = filename:join(PartitionPath, io_lib:format("snapshot.~0p.~0p.bootstrap.tmp", [Index, Term])),
+            try
+                ok = wa_raft_storage:make_empty_snapshot(Storage, Path, Position, Config, Data),
+                ok = wa_raft_storage:open_snapshot(Storage, Path, Position),
+                {ok, NewView} = wa_raft_log:reset(View, Position),
+                State1 = State0#raft_state{log_view = NewView, last_applied = Index, commit_index = Index},
+                State2 = load_config(State1),
+                case Term > CurrentTerm of
+                    true ->
+                        case is_single_member(Self, config(State2)) of
+                            true ->
+                                State3 = advance_term(?FUNCTION_NAME, Term, node(), State2),
+                                ?LOG_NOTICE("Server[~0p, term ~0p, stalled] switching to leader as sole member after successful bootstrap.",
+                                    [Name, State3#raft_state.current_term], #{domain => [whatsapp, wa_raft]}),
+                                {next_state, leader, State3, {reply, From, ok}};
+                            false ->
+                                State3 = advance_term(?FUNCTION_NAME, Term, undefined, State2),
+                                ?LOG_NOTICE("Server[~0p, term ~0p, stalled] switching to follower after successful bootstrap.",
+                                    [Name, State3#raft_state.current_term], #{domain => [whatsapp, wa_raft]}),
+                                {next_state, follower, State3, {reply, From, ok}}
+                        end;
+                    false ->
+                        ?LOG_NOTICE("Server[~0p, term ~0p, stalled] switching to follower after successful bootstrap.",
+                            [Name, CurrentTerm], #{domain => [whatsapp, wa_raft]}),
+                        {next_state, follower, State2, {reply, From, ok}}
+                end
+            catch
+                _:Reason ->
+                    ?LOG_WARNING("Server[~0p, term ~0p, stalled] failed to bootstrap due to ~0p.",
+                        [Name, CurrentTerm, Reason], #{domain => [whatsapp, wa_raft]}),
+                    {keep_state_and_data, {reply, From, {error, Reason}}}
+            after
+                catch file:del_dir_r(Path)
+            end;
+        false ->
+            ?LOG_NOTICE("Server[~0p, term ~0p, stalled] at ~0p rejecting request to bootstrap at invalid position ~0p:~0p.",
+                [Name, CurrentTerm, LastApplied, Index, Term], #{domain => [whatsapp, wa_raft]}),
+            {keep_state_and_data, {reply, From, {error, rejected}}}
+    end;
 
 stalled({call, From}, ?SNAPSHOT_AVAILABLE_COMMAND(Root, #raft_log_pos{index = SnapshotIndex, term = SnapshotTerm} = SnapshotPos),
         #raft_state{name = Name, log_view = View0, storage = Storage,
@@ -1027,15 +1079,15 @@ leader(cast, ?READ_COMMAND({From, _Command}), #raft_state{table = Table, partiti
     {keep_state, State};
 %% [Strong Read] Leader is eligible to serve strong reads.
 leader(cast, ?READ_COMMAND({From, Command}),
-       #raft_state{name = Name, table = Table, partition = Partition, log_view = View0, storage = Storage,
+       #raft_state{name = Name, self = Self, table = Table, partition = Partition, log_view = View0, storage = Storage,
                    current_term = CurrentTerm, commit_index = CommitIndex, last_applied = LastApplied, first_current_term_log_index = FirstLogIndex} = State0) ->
     ?LOG_DEBUG("Server[~0p, term ~0p, leader] receives strong read request", [Name, CurrentTerm]),
     LastLogIndex = wa_raft_log:last_index(View0),
     Pending = wa_raft_log:pending(View0),
     ReadIndex = max(CommitIndex, FirstLogIndex),
-    case config_membership(config(State0)) of
+    case is_single_member(Self, config(State0)) of
         % If we are a single node cluster and we are fully-applied, then immediately dispatch.
-        [{Name, Node}] when Node =:= node(), Pending =:= 0, ReadIndex =:= LastApplied ->
+        true when Pending =:= 0, ReadIndex =:= LastApplied ->
             wa_raft_storage:read(Storage, From, Command),
             {keep_state, State0};
         _ ->
@@ -1934,6 +1986,18 @@ member(Peer, #{membership := Membership}, _Default) ->
 member(_Peer, _Config, Default) ->
     Default.
 
+%% Returns true only if the membership of the current configuration contains exactly
+%% the provided peer and that the provided peer is not specified as a witness.
+-spec is_single_member(Peer :: #raft_identity{} | peer(), Config :: config()) -> IsSingleMember :: boolean().
+is_single_member(#raft_identity{name = Name, node = Node}, Config) ->
+    is_single_member({Name, Node}, Config);
+is_single_member(Peer, #{membership := Membership, witness := Witnesses}) ->
+    Membership =:= [Peer] andalso not lists:member(Peer, Witnesses);
+is_single_member(Peer, #{membership := Membership}) ->
+    Membership =:= [Peer];
+is_single_member(_Peer, #{}) ->
+    false.
+
 %% Get the non-empty membership list from the provided config. Raises an error
 %% if the membership list is missing or empty.
 -spec config_membership(Config :: config()) -> Membership :: membership().
@@ -2065,17 +2129,17 @@ get_log_entry(#raft_state{current_term = CurrentTerm, label_module = LabelModule
     {State0#raft_state{last_label = NewLabel}, {CurrentTerm, {Ref, NewLabel, Command}}}.
 
 -spec apply_single_node_cluster(State0 :: #raft_state{}) -> State1 :: #raft_state{}.
-apply_single_node_cluster(#raft_state{name = Name, log_view = View0} = State0) ->
+apply_single_node_cluster(#raft_state{self = Self, log_view = View} = State) ->
     % TODO(hsun324) T112326686: Review after RAFT RPC id changes.
-    case config_membership(config(State0)) of
-        [{Name, Node}] when Node =:= node() ->
-            View1 = case wa_raft_log:sync(View0) of
+    case is_single_member(Self, config(State)) of
+        true ->
+            NewView = case wa_raft_log:sync(View) of
                 {ok, L} -> L;
-                _       -> View0
+                _       -> View
             end,
-            maybe_apply(State0#raft_state{log_view = View1});
-        _ ->
-            State0
+            maybe_apply(State#raft_state{log_view = NewView});
+        false ->
+            State
     end.
 
 %% Leader - check quorum and apply logs if necessary
