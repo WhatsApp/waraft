@@ -88,6 +88,7 @@
     snapshot_available/3,
     adjust_membership/3,
     adjust_membership/4,
+    promote/1,
     promote/2,
     promote/3,
     promote/4,
@@ -226,7 +227,7 @@
 -type commit_command()              :: ?COMMIT_COMMAND(wa_raft_acceptor:op()).
 -type read_command()                :: ?READ_COMMAND(wa_raft_acceptor:read_op()).
 -type status_command()              :: ?STATUS_COMMAND.
--type promote_command()             :: ?PROMOTE_COMMAND(wa_raft_log:log_term(), boolean(), config() | undefined).
+-type promote_command()             :: ?PROMOTE_COMMAND() | ?PROMOTE_COMMAND(wa_raft_log:log_term(), boolean(), config() | undefined).
 -type resign_command()              :: ?RESIGN_COMMAND.
 -type adjust_membership_command()   :: ?ADJUST_MEMBERSHIP_COMMAND(membership_action(), peer() | undefined, wa_raft_log:log_index() | undefined).
 -type snapshot_available_command()  :: ?SNAPSHOT_AVAILABLE_COMMAND(string(), wa_raft_log:log_pos()).
@@ -465,6 +466,10 @@ adjust_membership(Server, Action, Peer) ->
 ) -> {ok, Pos :: wa_raft_log:log_pos()} | wa_raft:error().
 adjust_membership(Server, Action, Peer, ConfigIndex) ->
     gen_statem:call(Server, ?ADJUST_MEMBERSHIP_COMMAND(Action, Peer, ConfigIndex), ?RAFT_RPC_CALL_TIMEOUT()).
+
+-spec promote(Server :: gen_statem:server_ref()) -> ok.
+promote(Server) ->
+    gen_statem:call(Server, ?PROMOTE_COMMAND(), ?RAFT_RPC_CALL_TIMEOUT()).
 
 -spec promote(
     Server :: gen_statem:server_ref(),
@@ -1035,14 +1040,14 @@ leader(state_timeout = Type, Event, #raft_state{name = Name, current_term = Curr
 
 %% [Timeout] Periodic heartbeat to followers
 leader(state_timeout, _, #raft_state{application = App, name = Name, log_view = View, current_term = CurrentTerm} = State0) ->
-    case ?RAFT_LEADER_ELIGIBLE(App) andalso ?RAFT_ELECTION_WEIGHT(App) =/= 0 of
+    case ?RAFT_LEADER_ELIGIBLE(App) of
         true ->
             State1 = append_entries_to_followers(State0),
             State2 = apply_single_node_cluster(State1),
             check_leader_lagging(State2),
             {keep_state, State1, ?HEARTBEAT_TIMEOUT(State2)};
         false ->
-            ?LOG_NOTICE("Server[~0p, term ~0p, leader] resigns from leadership because this node is ineligible or election weight is zero.",
+            ?LOG_NOTICE("Server[~0p, term ~0p, leader] resigns from leadership because this node is ineligible.",
                 [Name, CurrentTerm], #{domain => [whatsapp, wa_raft]}),
             %% Drop any pending log entries queued in the log view before resigning
             {ok, _Pending, NewView} = wa_raft_log:cancel(View),
@@ -1376,7 +1381,7 @@ follower(_Type, ?REMOTE(?IDENTITY_REQUIRES_MIGRATION(_, LeaderId) = Sender, ?HAN
     ?RAFT_COUNT('wa_raft.follower.handover'),
     ?LOG_NOTICE("Server[~0p, term ~0p, follower] evaluating handover RPC from ~p.",
         [Name, CurrentTerm, Sender], #{domain => [whatsapp, wa_raft]}),
-    case ?RAFT_LEADER_ELIGIBLE(App) andalso ?RAFT_ELECTION_WEIGHT(App) =/= 0 of
+    case ?RAFT_LEADER_ELIGIBLE(App) of
         true ->
             case append_entries(?FUNCTION_NAME, PrevLogIndex, PrevLogTerm, LogEntries, length(LogEntries), State0) of
                 {ok, true, _NewLastIndex, State1} ->
@@ -1397,7 +1402,7 @@ follower(_Type, ?REMOTE(?IDENTITY_REQUIRES_MIGRATION(_, LeaderId) = Sender, ?HAN
                     {next_state, disabled, State0#raft_state{disable_reason = Reason}}
             end;
         false ->
-            ?LOG_NOTICE("Server[~0p, term ~0p, follower] not considering handover RPC due to being inelgibile or having zero election weight.",
+            ?LOG_NOTICE("Server[~0p, term ~0p, follower] not considering handover RPC due to being inelgibile for leadership.",
                 [Name, CurrentTerm], #{domain => [whatsapp, wa_raft]}),
             send_rpc(Sender, ?HANDOVER_FAILED(Ref), State0),
             {keep_state, State0}
@@ -1620,6 +1625,10 @@ disabled(_Type, ?REMOTE(_Sender, ?REQUEST_VOTE(_ElectionType, _LastLogIndex, _La
     %% Ignore any RequestVote RPC calls because a disabled node should be invisible to the cluster.
     keep_state_and_data;
 
+disabled({call, From}, ?PROMOTE_COMMAND(), #raft_state{name = Name, current_term = CurrentTerm}) ->
+    ?LOG_WARNING("Server[~0p, term ~0p, disabled] cannot promote to candidate.", [Name, CurrentTerm], #{domain => [whatsapp, wa_raft]}),
+    {keep_state_and_data, {reply, From, {error, rejected}}};
+
 disabled({call, From}, ?PROMOTE_COMMAND(_Term, _Force, _Config), #raft_state{name = Name, current_term = CurrentTerm}) ->
     ?LOG_WARNING("Server[~0p, term ~0p, disabled] cannot be promoted.", [Name, CurrentTerm], #{domain => [whatsapp, wa_raft]}),
     {keep_state_and_data, {reply, From, {error, disabled}}};
@@ -1825,6 +1834,27 @@ command(StateName, {call, From}, ?STATUS_COMMAND, State) ->
         {witness, State#raft_state.witness}
     ],
     {keep_state_and_data, {reply, From, Status}};
+
+%% [Promote] Promote full replica nodes to candidate which will advance to next term.
+command(
+    StateName,
+    {call, From},
+    ?PROMOTE_COMMAND(),
+    #raft_state{application = App, name = Name, current_term = CurrentTerm} = State
+) when StateName =/= stalled, StateName =/= witness, StateName =/= disabled ->
+    case ?RAFT_LEADER_ELIGIBLE(App) of
+        true ->
+            ?LOG_NOTICE("Server[~0p, term ~0p, ~0p] is switching to candidate after promotion request.",
+                [Name, CurrentTerm, StateName], #{domain => [whatsapp, wa_raft]}),
+            case StateName of
+                candidate -> {repeat_state, State, {reply, From, ok}};
+                _Other    -> {next_state, candidate, State, {reply, From, ok}}
+            end;
+        false ->
+            ?LOG_ERROR("Server[~0p, term ~0p, ~0p] cannot be promoted as candidate while ineligible.",
+                [Name, CurrentTerm, StateName], #{domain => [whatsapp, wa_raft]}),
+            {keep_state_and_data, {reply, From, {error, ineligible}}}
+    end;
 
 %% [Promote] Non-disabled nodes check if eligible to promote and then promote to leader.
 command(StateName, {call, From}, ?PROMOTE_COMMAND(Term, Force, ConfigAll),
