@@ -358,14 +358,7 @@ status(ServerRef, Key) when is_atom(Key) ->
 status(ServerRef, Keys) when is_list(Keys) ->
     case status(ServerRef) of
         [_|_] = Status ->
-            FilterFun =
-                fun({Key, Value}) ->
-                    case lists:member(Key, Keys) of
-                        true -> {true, Value};
-                        false -> false
-                    end
-                end,
-            lists:filtermap(FilterFun, Status);
+            [proplists:get_value(Key, Status, undefined) || Key <- Keys];
         _ ->
             lists:duplicate(length(Keys), undefined)
     end.
