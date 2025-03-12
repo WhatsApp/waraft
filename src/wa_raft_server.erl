@@ -510,7 +510,7 @@ handover_candidates(Server) ->
 
 -spec disable(Server :: gen_statem:server_ref(), Reason :: term()) -> ok | {error, ErrorReason :: atom()}.
 disable(Server, Reason) ->
-    gen_statem:cast(Server, ?DISABLE_COMMAND(Reason)).
+    gen_statem:call(Server, ?DISABLE_COMMAND(Reason), ?RAFT_RPC_CALL_TIMEOUT()).
 
 -spec enable(Server :: gen_statem:server_ref()) -> ok | {error, ErrorReason :: atom()}.
 enable(Server) ->
@@ -1980,7 +1980,7 @@ command(StateName, {call, From}, ?ENABLE_COMMAND, #raft_state{name = Name, curre
         [Name, CurrentTerm, StateName, From], #{domain => [whatsapp, wa_raft]}),
     {keep_state_and_data, {reply, From, {error, already_enabled}}};
 %% [Disable] All nodes should disable by setting RAFT state disable_reason.
-command(StateName, cast, ?DISABLE_COMMAND(Reason), #raft_state{name = Name, self = ?IDENTITY_REQUIRES_MIGRATION(_, NodeId), current_term = CurrentTerm, leader_id = LeaderId} = State0) ->
+command(StateName, {call, From}, ?DISABLE_COMMAND(Reason), #raft_state{name = Name, self = ?IDENTITY_REQUIRES_MIGRATION(_, NodeId), current_term = CurrentTerm, leader_id = LeaderId} = State0) ->
     ?LOG_NOTICE("Server[~0p, term ~0p, ~0p] disabling due to reason ~p.",
         [Name, CurrentTerm, StateName, Reason], #{domain => [whatsapp, wa_raft]}),
     State1 = State0#raft_state{disable_reason = Reason},
@@ -1989,7 +1989,7 @@ command(StateName, cast, ?DISABLE_COMMAND(Reason), #raft_state{name = Name, self
         false -> State1
     end,
     wa_raft_durable_state:store(State2),
-    {next_state, disabled, State2};
+    {next_state, disabled, State2, {reply, From, ok}};
 %% [Fallback] Drop unknown command calls.
 command(StateName, Type, Event, #raft_state{name = Name, current_term = CurrentTerm}) ->
     ?LOG_NOTICE("Server[~0p, term ~0p, ~0p] dropping unhandled command ~p event ~p",
