@@ -227,7 +227,7 @@
 -type commit_command()              :: ?COMMIT_COMMAND(wa_raft_acceptor:op()).
 -type read_command()                :: ?READ_COMMAND(wa_raft_acceptor:read_op()).
 -type status_command()              :: ?STATUS_COMMAND.
--type promote_command()             :: ?PROMOTE_COMMAND() | ?PROMOTE_COMMAND(wa_raft_log:log_term(), boolean(), config() | undefined).
+-type promote_command()             :: ?PROMOTE_COMMAND() | ?PROMOTE_COMMAND(wa_raft_log:log_term() | next, boolean(), config() | undefined).
 -type resign_command()              :: ?RESIGN_COMMAND.
 -type adjust_membership_command()   :: ?ADJUST_MEMBERSHIP_COMMAND(membership_action(), peer() | undefined, wa_raft_log:log_index() | undefined).
 -type snapshot_available_command()  :: ?SNAPSHOT_AVAILABLE_COMMAND(string(), wa_raft_log:log_pos()).
@@ -466,14 +466,14 @@ promote(Server) ->
 
 -spec promote(
     Server :: gen_statem:server_ref(),
-    Term :: wa_raft_log:log_term()
+    Term :: wa_raft_log:log_term() | next
 ) -> ok | wa_raft:error().
 promote(Server, Term) ->
     promote(Server, Term, false).
 
 -spec promote(
     Server :: gen_statem:server_ref(),
-    Term :: wa_raft_log:log_term(),
+    Term :: wa_raft_log:log_term() | next,
     Force :: boolean()
 ) -> ok | wa_raft:error().
 promote(Server, Term, Force) ->
@@ -481,7 +481,7 @@ promote(Server, Term, Force) ->
 
 -spec promote(
     Server :: gen_statem:server_ref(),
-    Term :: wa_raft_log:log_term(),
+    Term :: wa_raft_log:log_term() | next,
     Force :: boolean(),
     Config :: config() | config_all() | undefined
 ) -> ok | wa_raft:error().
@@ -1850,9 +1850,13 @@ command(
     end;
 
 %% [Promote] Non-disabled nodes check if eligible to promote and then promote to leader.
-command(StateName, {call, From}, ?PROMOTE_COMMAND(Term, Force, ConfigAll),
+command(StateName, {call, From}, ?PROMOTE_COMMAND(RawTerm, Force, ConfigAll),
         #raft_state{application = App, name = Name, log_view = View0, current_term = CurrentTerm, leader_heartbeat_ts = HeartbeatTs} = State0) when StateName =/= disabled ->
     ElectionWeight = ?RAFT_ELECTION_WEIGHT(App),
+    Term = case RawTerm of
+        next -> CurrentTerm + 1;
+        _ when is_integer(RawTerm) -> RawTerm
+    end,
     Config = case ConfigAll of
         undefined -> undefined;
         _         -> maybe_upgrade_config(ConfigAll)
