@@ -35,8 +35,9 @@
     delete_snapshot/2
 ]).
 
-%% Label API
+%% State API
 -export([
+    position/1,
     label/1
 ]).
 
@@ -365,6 +366,10 @@ make_empty_snapshot(ServiceRef, Path, Position, Config, Data) ->
 delete_snapshot(ServiceRef, Name) ->
     gen_server:cast(ServiceRef, {snapshot_delete, Name}).
 
+-spec position(ServiceRef :: pid() | atom()) -> Position :: wa_raft_log:log_pos().
+position(ServiceRef) ->
+    gen_server:call(ServiceRef, position, ?RAFT_STORAGE_CALL_TIMEOUT()).
+
 -spec label(ServiceRef :: pid() | atom()) -> {ok, Label :: wa_raft_label:label()} | wa_raft_storage:error().
 label(ServiceRef) ->
     gen_server:call(ServiceRef, label, ?RAFT_STORAGE_CALL_TIMEOUT()).
@@ -449,6 +454,7 @@ init(#raft_options{table = Table, partition = Partition, identifier = Identifier
         {snapshot_create, Name :: string()} |
         {snapshot_open, Path :: file:filename(), LastAppliedPos :: wa_raft_log:log_pos()} |
         {make_empty_snapshot, Path :: file:filename(), Position :: wa_raft_log:log_pos(), Config :: wa_raft_server:config(), Data :: term()} |
+        position |
         label |
         config.
 handle_call(open, _From, #state{last_applied = LastApplied} = State) ->
@@ -488,6 +494,11 @@ handle_call({make_empty_snapshot, Path, Position, Config, Data}, _From, #state{n
 handle_call(config, _From, #state{module = Module, handle = Handle} = State) ->
     ?RAFT_COUNT('raft.storage.config'),
     Result = Module:storage_config(Handle),
+    {reply, Result, State};
+
+handle_call(position, _From, #state{module = Module, handle = Handle} = State) ->
+    ?RAFT_COUNT('raft.storage.position'),
+    Result = Module:storage_position(Handle),
     {reply, Result, State};
 
 handle_call(label, _From, #state{module = Module, handle = Handle} = State) ->

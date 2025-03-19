@@ -808,7 +808,7 @@ stalled({call, From}, ?BOOTSTRAP_COMMAND(#raft_log_pos{index = Index, term = Ter
             {keep_state_and_data, {reply, From, {error, rejected}}}
     end;
 
-stalled({call, From}, ?SNAPSHOT_AVAILABLE_COMMAND(Root, #raft_log_pos{index = SnapshotIndex, term = SnapshotTerm} = SnapshotPos),
+stalled(Type, ?SNAPSHOT_AVAILABLE_COMMAND(Root, #raft_log_pos{index = SnapshotIndex, term = SnapshotTerm} = SnapshotPos),
         #raft_state{name = Name, log_view = View0, storage = Storage,
                     current_term = CurrentTerm, last_applied = LastApplied} = State0) ->
     case SnapshotIndex > LastApplied orelse LastApplied =:= 0 of
@@ -828,17 +828,20 @@ stalled({call, From}, ?SNAPSHOT_AVAILABLE_COMMAND(Root, #raft_log_pos{index = Sn
                 end,
                 % At this point, we assume that we received some cluster membership configuration from
                 % our peer so it is safe to transition to an operational state.
-                {next_state, follower, State3, [{reply, From, ok}]}
+                reply(Type, ok),
+                {next_state, follower, State3}
             catch
                 _:Reason ->
                     ?LOG_WARNING("Server[~0p, term ~0p, stalled] failed to load available snapshot ~p due to ~p",
                                  [Name, CurrentTerm, Root, Reason], #{domain => [whatsapp, wa_raft]}),
-                    {keep_state_and_data, {reply, From, {error, Reason}}}
+                    reply(Type, {error, Reason}),
+                    keep_state_and_data
             end;
         false ->
             ?LOG_NOTICE("Server[~0p, term ~0p, stalled] ignoring available snapshot ~p:~p with index not past ours (~p)",
                 [Name, CurrentTerm, SnapshotIndex, SnapshotTerm, LastApplied], #{domain => [whatsapp, wa_raft]}),
-            {keep_state_and_data, {reply, From, {error, rejected}}}
+            reply(Type, {error, rejected}),
+            keep_state_and_data
     end;
 
 stalled(Type, ?RAFT_COMMAND(_COMMAND, _Payload) = Event, State) ->
@@ -946,8 +949,8 @@ leader(cast, ?REMOTE(?IDENTITY_REQUIRES_MIGRATION(_, FollowerId) = Sender, ?APPE
         heartbeat_response_ts = HeartbeatResponse0,
         first_current_term_log_index = TermStartIndex} = State0) ->
     StartT = os:timestamp(),
-    ?LOG_DEBUG("Server[~0p, term ~0p, leader] append ok on ~p. Follower end index ~p. Leader commitIndex ~p",
-        [Name, CurrentTerm, Sender, FollowerEndIndex, CommitIndex0], #{domain => [whatsapp, wa_raft]}),
+    ?LOG_DEBUG("Server[~0p, term ~0p, leader] at commit index ~0p completed append to ~0p whose log now matches up to ~0p.",
+        [Name, CurrentTerm, CommitIndex0, Sender, FollowerEndIndex], #{domain => [whatsapp, wa_raft]}),
     HeartbeatResponse1 = HeartbeatResponse0#{FollowerId => erlang:monotonic_time(millisecond)},
     State1 = State0#raft_state{heartbeat_response_ts = HeartbeatResponse1},
 
@@ -967,10 +970,10 @@ leader(cast, ?REMOTE(?IDENTITY_REQUIRES_MIGRATION(_, FollowerId) = Sender, ?APPE
 
 %% and failures.
 leader(cast, ?REMOTE(?IDENTITY_REQUIRES_MIGRATION(_, FollowerId) = Sender, ?APPEND_ENTRIES_RESPONSE(_PrevLogIndex, false, FollowerEndIndex)),
-       #raft_state{name = Name, current_term = CurrentTerm, next_index = NextIndex0} = State0) ->
+       #raft_state{name = Name, current_term = CurrentTerm, commit_index = CommitIndex, next_index = NextIndex0} = State0) ->
     ?RAFT_COUNT('raft.leader.append.failure'),
-    ?LOG_DEBUG("Server[~0p, term ~0p, leader] append failure for follower ~p. Follower reports log matches up to ~0p.",
-        [Name, CurrentTerm, Sender, FollowerEndIndex], #{domain => [whatsapp, wa_raft]}),
+    ?LOG_DEBUG("Server[~0p, term ~0p, leader] at commit index ~0p failed append to ~0p whose log now ends at ~0p.",
+        [Name, CurrentTerm, CommitIndex, Sender, FollowerEndIndex], #{domain => [whatsapp, wa_raft]}),
 
     select_follower_replication_mode(FollowerEndIndex, State0) =:= snapshot andalso
         request_snapshot_for_follower(FollowerId, State0),
@@ -1175,10 +1178,6 @@ leader(Type, ?ADJUST_MEMBERSHIP_COMMAND(Action, Peer, ExpectedConfigIndex),
             reply(Type, {error, invalid}),
             {keep_state, State0}
     end;
-
-%% [Snapshot Available] It does not make sense for a leader to install a new snapshot.
-leader({call, From}, ?SNAPSHOT_AVAILABLE_COMMAND(_Root, _Position), _State) ->
-    {keep_state_and_data, {reply, From, {error, rejected}}};
 
 %% [Handover Candidates] Return list of handover candidates (peers that are not lagging too much)
 leader({call, From}, ?HANDOVER_CANDIDATES_COMMAND, State) ->
@@ -1709,20 +1708,22 @@ witness(_Type, ?REMOTE(Sender, ?HANDOVER_FAILED(_Ref)),
         [Name, CurrentTerm, Sender], #{domain => [whatsapp, wa_raft]}),
     keep_state_and_data;
 
-witness({call, From}, ?SNAPSHOT_AVAILABLE_COMMAND(_, #raft_log_pos{index = SnapshotIndex, term = SnapshotTerm} = SnapshotPos),
+witness(Type, ?SNAPSHOT_AVAILABLE_COMMAND(_, #raft_log_pos{index = SnapshotIndex, term = SnapshotTerm} = SnapshotPos),
         #raft_state{log_view = View0, name = Name, current_term = CurrentTerm, last_applied = LastApplied} = State0) ->
     case SnapshotIndex > LastApplied orelse LastApplied =:= 0 of
         true ->
             ?LOG_NOTICE("Server[~0p, term ~0p, witness] accepting snapshot ~p:~p but not loading",
                 [Name, CurrentTerm, SnapshotIndex, SnapshotTerm], #{domain => [whatsapp, wa_raft]}),
             {ok, View1} = wa_raft_log:reset(View0, SnapshotPos),
-            State1 = State0#raft_state{log_view = View1, last_applied = SnapshotIndex, commit_index = SnapshotIndex},
+            State1 = State0#raft_state{ log_view = View1, last_applied = SnapshotIndex, commit_index = SnapshotIndex},
             State2 = load_config(State1),
-            {next_state, witness, State2, {reply, From, ok}};
+            reply(Type, ok),
+            {next_state, witness, State2};
         false ->
             ?LOG_NOTICE("Server[~0p, term ~0p, witness] ignoring available snapshot ~p:~p with index not past ours (~p)",
                 [Name, CurrentTerm, SnapshotIndex, SnapshotTerm, LastApplied], #{domain => [whatsapp, wa_raft]}),
-            {keep_state_and_data, {reply, From, {error, rejected}}}
+            reply(Type, {error, rejected}),
+            keep_state_and_data
     end;
 
 %% [RequestVote] A witness with an unallocated vote should decide if the requesting candidate is eligible to receive
@@ -1948,7 +1949,7 @@ command(StateName, Type, ?ADJUST_MEMBERSHIP_COMMAND(Action, Peer, ConfigIndex), 
     reply(Type, {error, not_leader}),
     {keep_state, State};
 %% [Snapshot Available] Follower and candidate nodes might switch to stalled to install snapshot.
-command(StateName, {call, From} = Type, ?SNAPSHOT_AVAILABLE_COMMAND(_Root, #raft_log_pos{index = SnapshotIndex}) = Event,
+command(StateName, Type, ?SNAPSHOT_AVAILABLE_COMMAND(_Root, #raft_log_pos{index = SnapshotIndex}) = Event,
         #raft_state{name = Name, current_term = CurrentTerm, last_applied = LastAppliedIndex} = State)
             when StateName =:= follower orelse StateName =:= candidate ->
     case SnapshotIndex > LastAppliedIndex of
@@ -1959,8 +1960,14 @@ command(StateName, {call, From} = Type, ?SNAPSHOT_AVAILABLE_COMMAND(_Root, #raft
         false ->
             ?LOG_NOTICE("Server[~0p, term ~0p, ~0p] ignoring snapshot with index ~p compared to currently applied index ~p",
                 [Name, CurrentTerm, StateName, SnapshotIndex, LastAppliedIndex], #{domain => [whatsapp, wa_raft]}),
-            {keep_state_and_data, {reply, From, {error, rejected}}}
+            reply(Type, {error, rejected}),
+            keep_state_and_data
     end;
+%% [Snapshot Available] Leader and disabled nodes should not install snapshots.
+command(StateName, Type, ?SNAPSHOT_AVAILABLE_COMMAND(_Root, _Position), _State) when StateName =:= leader; StateName =:= disabled ->
+    reply(Type, {error, rejected}),
+    keep_state_and_data;
+
 %% [Handover Candidates] Non-leader nodes cannot serve handovers.
 command(StateName, {call, From}, ?HANDOVER_CANDIDATES_COMMAND,
         #raft_state{name = Name, current_term = CurrentTerm}) when StateName =/= leader ->
@@ -2756,17 +2763,10 @@ select_follower_replication_mode(FollowerLastIndex, #raft_state{application = Ap
 %% transports have been started then no transport is created. This function
 %% always performs this request asynchronously.
 -spec request_snapshot_for_follower(node(), #raft_state{}) -> term().
-request_snapshot_for_follower(FollowerId, #raft_state{application = App, name = Name, table = Table, partition = Partition, data_dir = DataDir, log_view = View} = State) ->
+request_snapshot_for_follower(FollowerId, #raft_state{application = App, name = Name, table = Table, partition = Partition} = State) ->
     case lists:member({Name, FollowerId}, config_witnesses(config(State))) of
-        true  ->
-            % If node is a witness, we can bypass the transport process since we don't have to
-            % send the full log.  Thus, we can run snapshot_available() here directly
-            LastLogIndex = wa_raft_log:last_index(View),
-            {ok, LastLogTerm} = wa_raft_log:term(View, LastLogIndex),
-            LastLogPos = #raft_log_pos{index = LastLogIndex, term = LastLogTerm},
-            wa_raft_server:snapshot_available({Name, FollowerId}, DataDir, LastLogPos);
-        false ->
-            wa_raft_snapshot_catchup:request_snapshot_transport(App, FollowerId, Table, Partition)
+        true  -> wa_raft_snapshot_catchup:witness_replica(App, Name, FollowerId, Table, Partition);
+        false -> wa_raft_snapshot_catchup:full_replica(App, Name, FollowerId, Table, Partition)
     end.
 
 -spec request_bulk_logs_for_follower(#raft_identity{}, wa_raft_log:log_index(), #raft_state{}) -> ok.
