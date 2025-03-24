@@ -961,7 +961,7 @@ leader(cast, ?REMOTE(?IDENTITY_REQUIRES_MIGRATION(_, FollowerId) = Sender, ?APPE
 
     MatchIndex1 = MatchIndex0#{FollowerId => FollowerEndIndex},
     OldNextIndex = maps:get(FollowerId, NextIndex0, TermStartIndex),
-    NextIndex1 = maps:put(FollowerId, erlang:max(OldNextIndex, FollowerEndIndex + 1), NextIndex0),
+    NextIndex1 = NextIndex0#{FollowerId => erlang:max(OldNextIndex, FollowerEndIndex + 1)},
 
     State2 = State1#raft_state{match_index = MatchIndex1, next_index = NextIndex1},
     State3 = maybe_apply(State2),
@@ -983,7 +983,7 @@ leader(cast, ?REMOTE(?IDENTITY_REQUIRES_MIGRATION(_, FollowerId) = Sender, ?APPE
     % applied a snapshot since the last successful heartbeat. In such case, we need
     % to fast-forward the follower's next index so that we resume replication at the
     % point after the snapshot.
-    NextIndex1 = maps:put(FollowerId, FollowerEndIndex + 1, NextIndex0),
+    NextIndex1 = NextIndex0#{FollowerId => FollowerEndIndex + 1},
     State1 = State0#raft_state{next_index = NextIndex1},
     State2 = maybe_apply(State1),
     {keep_state, maybe_heartbeat(State2), ?HEARTBEAT_TIMEOUT(State2)};
@@ -1537,7 +1537,7 @@ candidate(cast, ?REMOTE(?IDENTITY_REQUIRES_MIGRATION(_, NodeId), ?VOTE(true)),
 %% [Vote RPC] Candidate receives a negative vote (Candidate cannot become leader here. Losing
 %%            an election does not need to convert candidate to follower.) (5.2)
 candidate(cast, ?REMOTE(?IDENTITY_REQUIRES_MIGRATION(_, NodeId), ?VOTE(false)), #raft_state{votes = Votes} = State) ->
-    {keep_state, State#raft_state{votes = maps:put(NodeId, false, Votes)}};
+    {keep_state, State#raft_state{votes = Votes#{NodeId => false}}};
 
 %% [Handover RPC] Switch to follower because current term now has a leader (5.2, 5.3)
 candidate(Type, ?REMOTE(_Sender, ?HANDOVER(_Ref, _PrevLogIndex, _PrevLogTerm, _LogEntries)) = Event,
@@ -2483,7 +2483,7 @@ heartbeat(?IDENTITY_REQUIRES_MIGRATION(_, FollowerId) = Sender,
                     ok ->
                         % pipelining - move NextIndex after sending out logs. If a packet is lost, follower's AppendEntriesResponse
                         % will return send back its correct index
-                        maps:put(FollowerId, PrevLogIndex + length(Entries) + 1, NextIndex0);
+                        NextIndex0#{FollowerId => PrevLogIndex + length(Entries) + 1};
                     _ ->
                         NextIndex0
                 end,
