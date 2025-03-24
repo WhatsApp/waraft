@@ -959,7 +959,7 @@ leader(cast, ?REMOTE(?IDENTITY_REQUIRES_MIGRATION(_, FollowerId) = Sender, ?APPE
         _         -> cancel_bulk_logs_for_follower(Sender, State1)
     end,
 
-    MatchIndex1 = maps:put(FollowerId, FollowerEndIndex, MatchIndex0),
+    MatchIndex1 = MatchIndex0#{FollowerId => FollowerEndIndex},
     OldNextIndex = maps:get(FollowerId, NextIndex0, TermStartIndex),
     NextIndex1 = maps:put(FollowerId, erlang:max(OldNextIndex, FollowerEndIndex + 1), NextIndex0),
 
