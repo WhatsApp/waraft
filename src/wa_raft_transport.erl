@@ -83,8 +83,6 @@
 
 -define(RAFT_TRANSPORT_SCAN_INTERVAL_SECS, 30).
 
--define(RAFT_TRANSPORT_MAX_CONCURRENT_ACTIVE_RECEIVES, 10).
-
 %% Number of counters
 -define(RAFT_TRANSPORT_COUNTERS, 1).
 
@@ -451,12 +449,13 @@ handle_call({start_wait, Peer, Meta, Root}, From, #state{counters = Counters} = 
     end;
 handle_call({transport, ID, Peer, Module, Meta, Files}, From, #state{counters = Counters} = State) ->
     try
+        MaxIncomingSnapshotTransfers = ?RAFT_MAX_CONCURRENT_INCOMING_SNAPSHOT_TRANSFERS(),
         case {transport_info(ID), counters:get(Counters, ?RAFT_TRANSPORT_COUNTER_ACTIVE_RECEIVES)} of
             {{ok, _Info}, _} ->
                 ?LOG_WARNING("wa_raft_transport got duplicate transport receive start for ~p from ~p",
                     [ID, From], #{domain => [whatsapp, wa_raft]}),
                 {reply, duplicate, State};
-            {not_found, NumActiveReceives} when NumActiveReceives >= ?RAFT_TRANSPORT_MAX_CONCURRENT_ACTIVE_RECEIVES ->
+            {not_found, NumActiveReceives} when NumActiveReceives >= MaxIncomingSnapshotTransfers ->
                 {reply, {error, receiver_overloaded}, State};
             {not_found, _} ->
                 ?RAFT_COUNT('raft.transport.receive'),
