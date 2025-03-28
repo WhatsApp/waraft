@@ -354,7 +354,7 @@ open_snapshot(ServiceRef, SnapshotPath, LastAppliedPos) ->
 create_snapshot(ServiceRef) ->
     gen_server:call(ServiceRef, snapshot_create, ?RAFT_STORAGE_CALL_TIMEOUT()).
 
--spec create_snapshot(ServiceRef :: pid() | atom(), Name :: string()) -> ok | error().
+-spec create_snapshot(ServiceRef :: pid() | atom(), Name :: string()) -> {ok, Pos :: wa_raft_log:log_pos()} | error().
 create_snapshot(ServiceRef, Name) ->
     gen_server:call(ServiceRef, {snapshot_create, Name}, ?RAFT_STORAGE_CALL_TIMEOUT()).
 
@@ -463,18 +463,17 @@ handle_call(open, _From, #state{last_applied = LastApplied} = State) ->
 handle_call({read, Command}, _From, #state{module = Module, handle = Handle, last_applied = Position} = State) ->
     {reply, Module:storage_read(Command, Position, Handle), State};
 
-handle_call(snapshot_create, _From, #state{last_applied = #raft_log_pos{index = LastIndex, term = LastTerm}} = State) ->
+handle_call(snapshot_create, From, #state{last_applied = #raft_log_pos{index = LastIndex, term = LastTerm}} = State) ->
     Name = ?SNAPSHOT_NAME(LastIndex, LastTerm),
+    handle_call({snapshot_create, Name}, From, State);
+
+handle_call({snapshot_create, Name}, _From, #state{last_applied = #raft_log_pos{index = LastIndex, term = LastTerm}} = State) ->
     case create_snapshot_impl(Name, State) of
         ok ->
             {reply, {ok, #raft_log_pos{index = LastIndex, term = LastTerm}}, State};
         {error, _} = Error ->
             {reply, Error, State}
     end;
-
-handle_call({snapshot_create, Name}, _From, State) ->
-    Result = create_snapshot_impl(Name, State),
-    {reply, Result, State};
 
 handle_call({snapshot_open, SnapshotPath, LogPos}, _From, #state{name = Name, module = Module, handle = Handle, last_applied = LastApplied} = State) ->
     ?LOG_NOTICE("Storage[~0p] replacing storage at ~0p with snapshot at ~0p.", [Name, LastApplied, LogPos], #{domain => [whatsapp, wa_raft]}),
