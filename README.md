@@ -27,9 +27,9 @@ supervisor:start_child(kernel_sup, Spec).
 wa_raft_server:status(raft_server_test_1).
 % Make a cluster configuration with the current node as the only member
 Config = wa_raft_server:make_config([#raft_identity{name = raft_server_test_1, node = node()}]).
-% Bootstrap the RAFT server by force-promoting it
-wa_raft_server:promote(raft_server_test_1, 1, true, Config).
-% Check that now the RAFT server is the leader
+% Bootstrap the RAFT server to get it started
+wa_raft_server:bootstrap(raft_server_test_1, #raft_log_pos{index = 1, term = 1}, Config, #{}).
+% Wait for the RAFT server to become the leader
 wa_raft_server:status(raft_server_test_1).
 % Read and write against a key
 wa_raft_acceptor:commit(raft_acceptor_test_1, {make_ref(), {write, test, key, 1000}}).
@@ -58,7 +58,7 @@ ok
 5> % Here we add WARaft to the kernel's supervisor, but you should place WARaft's
    % child spec underneath your application's supervisor in a real deployment.
    supervisor:start_child(kernel_sup, Spec).
-{ok,<0.103.0>}
+{ok,<0.101.0>}
 6> % Check that the RAFT server started successfully
    wa_raft_server:status(raft_server_test_1).
 [{state,stalled},
@@ -79,17 +79,18 @@ ok
  {votes,#{}},
  {inflight_applies,0},
  {disable_reason,undefined},
- {config,#{version => 1}},
+ {config,#{version => 1,membership => [],witness => []}},
  {config_index,0},
  {witness,false}]
 7> % Make a cluster configuration with the current node as the only member
    Config = wa_raft_server:make_config([#raft_identity{name = raft_server_test_1, node = node()}]).
 #{version => 1,
-  membership => [{raft_server_test_1,nonode@nohost}]}
-8> % Bootstrap the RAFT server by force-promoting it
-   wa_raft_server:promote(raft_server_test_1, 1, true, Config).
+  membership => [{raft_server_test_1,nonode@nohost}],
+  witness => []}
+8> % Bootstrap the RAFT server to get it started
+   wa_raft_server:bootstrap(raft_server_test_1, #raft_log_pos{index = 1, term = 1}, Config, #{}).
 ok
-9> % Check that now the RAFT server is the leader
+9> % Wait for the RAFT server to become the leader
    wa_raft_server:status(raft_server_test_1).
 [{state,leader},
  {id,nonode@nohost},
@@ -97,20 +98,21 @@ ok
  {partition,1},
  {data_dir,"./test.1"},
  {current_term,1},
- {voted_for,undefined},
- {commit_index,1},
- {last_applied,1},
+ {voted_for,nonode@nohost},
+ {commit_index,2},
+ {last_applied,2},
  {leader_id,nonode@nohost},
  {next_index,#{}},
  {match_index,#{}},
  {log_module,wa_raft_log_ets},
- {log_first,0},
- {log_last,1},
+ {log_first,1},
+ {log_last,2},
  {votes,#{}},
  {inflight_applies,0},
  {disable_reason,undefined},
  {config,#{version => 1,
-           membership => [{raft_server_test_1,nonode@nohost}]}},
+           membership => [{raft_server_test_1,nonode@nohost}],
+           witness => []}},
  {config_index,1},
  {witness,false}]
 10> % Read and write against a key
