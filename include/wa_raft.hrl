@@ -411,8 +411,8 @@
     current_term = 0 :: non_neg_integer(),
     %% The peer that got my vote in the current term
     voted_for :: undefined | node(),
-    %% The set of votes that this candidate has received from the cluster so far in the current term
-    votes = #{} :: #{node() => boolean()},
+    %% The affirmative votes this replica received from the cluster in the current term
+    votes = #{} :: #{node() => true},
     %% The leader of the current RAFT term if known
     leader_id :: undefined | node(),
 

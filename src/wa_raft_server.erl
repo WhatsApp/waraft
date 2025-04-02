@@ -972,10 +972,8 @@ leader(cast, ?REMOTE(?IDENTITY_REQUIRES_MIGRATION(_, FollowerId) = Sender, ?APPE
     State2 = maybe_apply(State1),
     {keep_state, maybe_heartbeat(State2), ?HEARTBEAT_TIMEOUT(State2)};
 
-%% [RequestVote RPC] We are already leader for the current term, so always decline votes (5.1, 5.2)
-leader(_Type, ?REMOTE(Sender, ?REQUEST_VOTE(_ElectionType, _LastLogIndex, _LastLogTerm)),
-       #raft_state{} = State) ->
-    send_rpc(Sender, ?VOTE(false), State),
+%% [RequestVote RPC] Ignore any vote requests as leadership is aleady established (5.1, 5.2)
+leader(_Type, ?REMOTE(_, ?REQUEST_VOTE(_, _, _)), _State) ->
     keep_state_and_data;
 
 %% [Vote RPC] We are already leader, so we don't need to consider any more votes (5.1)
@@ -1295,51 +1293,9 @@ follower(Type, ?REMOTE(Leader, ?APPEND_ENTRIES(PrevLogIndex, PrevLogTerm, Entrie
 follower(_Type, ?REMOTE(_, ?APPEND_ENTRIES_RESPONSE(_, _, _)), _State) ->
     keep_state_and_data;
 
-%% [Follower] Handle RequestVote RPCs (5.2)
-%% [RequestVote] A follower with an unallocated vote should decide if the requesting candidate is eligible to receive
-%%               its vote for the current term and affirm or reject accordingly.
-follower(_Type, ?REMOTE(?IDENTITY_REQUIRES_MIGRATION(_, CandidateId) = Candidate, ?REQUEST_VOTE(_ElectionType, CandidateIndex, CandidateTerm)),
-         #raft_state{name = Name, log_view = View, current_term = CurrentTerm, voted_for = undefined} = State) ->
-    Index = wa_raft_log:last_index(View),
-    {ok, Term} = wa_raft_log:term(View, Index),
-    % Followers should only vote for candidates whose logs are at least as up-to-date as the local log.
-    % Logs are ordered in up-to-dateness by the lexicographic order of the {Term, Index} pair of their latest entry. (5.4.1)
-    case {CandidateTerm, CandidateIndex} >= {Term, Index} of
-        true ->
-            ?LOG_NOTICE("Server[~0p, term ~0p, follower] decides to vote for candidate ~0p with up-to-date log at ~0p:~0p versus local log at ~0p:~0p.",
-                [Name, CurrentTerm, Candidate, CandidateIndex, CandidateTerm, Index, Term], #{domain => [whatsapp, wa_raft]}),
-            NewState = State#raft_state{voted_for = CandidateId},
-            % Persist the vote to stable storage before responding to the vote request. (Fig. 2)
-            wa_raft_durable_state:store(NewState),
-            send_rpc(Candidate, ?VOTE(true), State),
-            {keep_state, NewState};
-        false ->
-            ?LOG_NOTICE("Server[~0p, term ~0p, follower] refuses to vote for candidate ~0p with outdated log at ~0p:~0p versus local log at ~0p:~0p.",
-                [Name, CurrentTerm, Candidate, CandidateIndex, CandidateTerm, Index, Term], #{domain => [whatsapp, wa_raft]}),
-            send_rpc(Candidate, ?VOTE(false), State),
-            keep_state_and_data
-    end;
-%% [RequestVote] A follower should affirm any vote requests for the candidate it already voted for in the current term.
-follower(_Type, ?REMOTE(?IDENTITY_REQUIRES_MIGRATION(_, CandidateId) = Candidate, ?REQUEST_VOTE(_ElectionType, _CandidateIndex, _CandidateTerm)),
-         #raft_state{name = Name, current_term = CurrentTerm, voted_for = CandidateId} = State) ->
-    ?LOG_NOTICE("Server[~0p, term ~0p, follower] repeating prior vote for candidate ~0p.",
-        [Name, CurrentTerm, Candidate], #{domain => [whatsapp, wa_raft]}),
-    send_rpc(Candidate, ?VOTE(true), State),
-    keep_state_and_data;
-%% [RequestVote] A follower should reject any vote requests for the candidate it did not vote for in the current term.
-follower(_Type, ?REMOTE(Candidate, ?REQUEST_VOTE(_ElectionType, _CandidateIndex, _CandidateTerm)),
-         #raft_state{name = Name, current_term = CurrentTerm, voted_for = VotedFor} = State) ->
-    ?LOG_NOTICE("Server[~0p, term ~0p, follower] refusing to vote for candidate ~0p after previously voting for candidate ~0p in the current term.",
-        [Name, CurrentTerm, Candidate, VotedFor], #{domain => [whatsapp, wa_raft]}),
-    send_rpc(Candidate, ?VOTE(false), State),
-    keep_state_and_data;
-
-%% [Follower] Handle responses to RequestVote RPCs (5.2)
-%% [Vote] A follower should ignore any votes before it never initiated or has already lost the election for the current term.
-follower(_Type, ?REMOTE(Sender, ?VOTE(Voted)), #raft_state{name = Name, current_term = CurrentTerm}) ->
-    ?LOG_WARNING("Server[~0p, term ~0p, follower] got extra vote ~p from ~p.",
-        [Name, CurrentTerm, Voted, Sender], #{domain => [whatsapp, wa_raft]}),
-    keep_state_and_data;
+%% [RequestVote RPC] Handle incoming vote requests (5.2)
+follower(_Type, ?REMOTE(Candidate, ?REQUEST_VOTE(_, CandidateIndex, CandidateTerm)), State) ->
+    request_vote_impl(?FUNCTION_NAME, Candidate, CandidateIndex, CandidateTerm, State);
 
 %% [Handover][Handover RPC] The leader is requesting this follower to take over leadership in a new term
 follower(_Type, ?REMOTE(?IDENTITY_REQUIRES_MIGRATION(_, LeaderId) = Sender, ?HANDOVER(Ref, PrevLogIndex, PrevLogTerm, LogEntries)),
@@ -1475,9 +1431,8 @@ candidate(Type, ?REMOTE(Sender, ?APPEND_ENTRIES(_PrevLogIndex, _PrevLogTerm, _En
         [Name, CurrentTerm, Sender], #{domain => [whatsapp, wa_raft]}),
     {next_state, follower, State, {next_event, Type, Event}};
 
-%% [RequestVote RPC] Candidate has always voted for itself, so vote false on anyone else (5.2)
-candidate(_Type, ?REMOTE(Sender, ?REQUEST_VOTE(_ElectionType, _LastLogIndex, _LastLogTerm)), State) ->
-    send_rpc(Sender, ?VOTE(false), State),
+%% [RequestVote RPC] Candidates should ignore incoming vote requests as they always vote for themselves (5.2)
+candidate(_Type, ?REMOTE(_, ?REQUEST_VOTE(_, _, _)), _State) ->
     keep_state_and_data;
 
 %% [Vote RPC] Candidate receives an affirmative vote (5.2)
@@ -1501,10 +1456,9 @@ candidate(cast, ?REMOTE(?IDENTITY_REQUIRES_MIGRATION(_, NodeId), ?VOTE(true)),
             {keep_state, State1}
     end;
 
-%% [Vote RPC] Candidate receives a negative vote (Candidate cannot become leader here. Losing
-%%            an election does not need to convert candidate to follower.) (5.2)
-candidate(cast, ?REMOTE(?IDENTITY_REQUIRES_MIGRATION(_, NodeId), ?VOTE(false)), #raft_state{votes = Votes} = State) ->
-    {keep_state, State#raft_state{votes = Votes#{NodeId => false}}};
+%% [Vote RPC] Candidates should ignore negative votes (5.2)
+candidate(cast, ?REMOTE(_, ?VOTE(_)), _State) ->
+    keep_state_and_data;
 
 %% [Handover][Handover RPC] Switch to follower because current term now has a leader (5.2, 5.3)
 candidate(Type, ?REMOTE(_Sender, ?HANDOVER(_Ref, _PrevLogIndex, _PrevLogTerm, _LogEntries)) = Event,
@@ -1678,45 +1632,9 @@ witness(Type, ?SNAPSHOT_AVAILABLE_COMMAND(_, #raft_log_pos{index = SnapshotIndex
             keep_state_and_data
     end;
 
-%% [RequestVote RPC] A witness with an unallocated vote should decide if the requesting candidate is eligible to receive
-%%                   its vote for the current term and affirm or reject accordingly.
-witness(_Type, ?REMOTE(?IDENTITY_REQUIRES_MIGRATION(_, CandidateId) = Candidate, ?REQUEST_VOTE(_ElectionType, CandidateIndex, CandidateTerm)),
-         #raft_state{name = Name, log_view = View, current_term = CurrentTerm, voted_for = undefined} = State) ->
-    Index = wa_raft_log:last_index(View),
-    {ok, Term} = wa_raft_log:term(View, Index),
-    % Witnesses should only vote for candidates whose logs are at least as up-to-date as the local log.
-    % Logs are ordered in up-to-dateness by the lexicographic order of the {Term, Index} pair of their latest entry. (5.4.1)
-    case {CandidateTerm, CandidateIndex} >= {Term, Index} of
-        true ->
-            ?LOG_NOTICE("Server[~0p, term ~0p, witness] decides to vote for candidate ~0p with up-to-date log at ~0p:~0p versus local log at ~0p:~0p.",
-                [Name, CurrentTerm, Candidate, CandidateIndex, CandidateTerm, Index, Term], #{domain => [whatsapp, wa_raft]}),
-            NewState = State#raft_state{voted_for = CandidateId},
-            % Persist the vote to stable storage before responding to the vote request. (Fig. 2)
-            wa_raft_durable_state:store(NewState),
-            send_rpc(Candidate, ?VOTE(true), State),
-            {keep_state, NewState};
-        false ->
-            ?LOG_NOTICE("Server[~0p, term ~0p, witness] refuses to vote for candidate ~0p with outdated log at ~0p:~0p versus local log at ~0p:~0p.",
-                [Name, CurrentTerm, Candidate, CandidateIndex, CandidateTerm, Index, Term], #{domain => [whatsapp, wa_raft]}),
-            send_rpc(Candidate, ?VOTE(false), State),
-            keep_state_and_data
-    end;
-
-%% [RequestVote RPC] A witness should affirm any vote requests for the candidate it already voted for in the current term.
-witness(_Type, ?REMOTE(?IDENTITY_REQUIRES_MIGRATION(_, CandidateId) = Candidate, ?REQUEST_VOTE(_ElectionType, _CandidateIndex, _CandidateTerm)),
-         #raft_state{name = Name, current_term = CurrentTerm, voted_for = CandidateId} = State) ->
-    ?LOG_NOTICE("Server[~0p, term ~0p, witness] repeating prior vote for candidate ~0p.",
-        [Name, CurrentTerm, Candidate], #{domain => [whatsapp, wa_raft]}),
-    send_rpc(Candidate, ?VOTE(true), State),
-    keep_state_and_data;
-
-%% [RequestVote RPC] A witness should reject any vote requests for the candidate it did not vote for in the current term.
-witness(_Type, ?REMOTE(Candidate, ?REQUEST_VOTE(_ElectionType, _CandidateIndex, _CandidateTerm)),
-         #raft_state{name = Name, current_term = CurrentTerm, voted_for = VotedFor} = State) ->
-    ?LOG_NOTICE("Server[~0p, term ~0p, witness] refusing to vote for candidate ~0p after previously voting for candidate ~0p in the current term.",
-        [Name, CurrentTerm, Candidate, VotedFor], #{domain => [whatsapp, wa_raft]}),
-    send_rpc(Candidate, ?VOTE(false), State),
-    keep_state_and_data;
+%% [RequestVote RPC] Handle incoming vote requests (5.2)
+witness(_Type, ?REMOTE(Candidate, ?REQUEST_VOTE(_, CandidateIndex, CandidateTerm)), State) ->
+    request_vote_impl(?FUNCTION_NAME, Candidate, CandidateIndex, CandidateTerm, State);
 
 %% [Vote RPC] Witnesses should not act upon any incoming votes as they cannot become leader
 witness(_Type, ?REMOTE(_, ?VOTE(_)), _State) ->
@@ -2492,14 +2410,23 @@ adjust_config(Action, Config, #raft_state{self = Self}) ->
 
 
 %%------------------------------------------------------------------------------
-%% RAFT Server - State Machine Implementation - Follower Methods
+%% RAFT Server - State Machine Implementation - Heartbeat
 %%------------------------------------------------------------------------------
 
 %% Attempt to append the log entries declared by a leader in a heartbeat,
 %% apply committed but not yet applied log entries, trim the log, and reset
 %% the election timeout timer as necessary.
--spec handle_heartbeat(State :: state(), Event :: gen_statem:event_type(), Leader :: #raft_identity{}, PrevLogIndex :: wa_raft_log:log_index(), PrevLogTerm :: wa_raft_log:log_term(),
-                       Entries :: [wa_raft_log:log_entry()], CommitIndex :: wa_raft_log:log_index(), TrimIndex :: wa_raft_log:log_index(), Data :: #raft_state{}) -> gen_statem:event_handler_result(state(), #raft_state{}).
+-spec handle_heartbeat(
+    State :: state(),
+    Event :: gen_statem:event_type(),
+    Leader :: #raft_identity{},
+    PrevLogIndex :: wa_raft_log:log_index(),
+    PrevLogTerm :: wa_raft_log:log_term(),
+    Entries :: [wa_raft_log:log_entry()],
+    CommitIndex :: wa_raft_log:log_index(),
+    TrimIndex :: wa_raft_log:log_index(),
+    Data :: #raft_state{}
+) -> gen_statem:event_handler_result(state(), #raft_state{}).
 handle_heartbeat(State, Event, Leader, PrevLogIndex, PrevLogTerm, Entries, CommitIndex, TrimIndex, #raft_state{application = App, name = Name, current_term = CurrentTerm, log_view = View} = Data0) ->
     EntryCount = length(Entries),
 
@@ -2533,8 +2460,14 @@ handle_heartbeat(State, Event, Leader, PrevLogIndex, PrevLogTerm, Entries, Commi
 %% the previous log entry is not available locally. If an unrecoverable error
 %% is encountered, returns a diagnostic that can be used as a reason to
 %% disable the current replica.
--spec append_entries(State :: state(), PrevLogIndex :: wa_raft_log:log_index(), PrevLogTerm :: wa_raft_log:log_term(), Entries :: [wa_raft_log:log_entry()], EntryCount :: non_neg_integer(), Data :: #raft_state{}) ->
-    {ok, Accepted :: boolean(), NewMatchIndex :: wa_raft_log:log_index(), NewData :: #raft_state{}} | {fatal, Reason :: term()}.
+-spec append_entries(
+    State :: state(),
+    PrevLogIndex :: wa_raft_log:log_index(),
+    PrevLogTerm :: wa_raft_log:log_term(),
+    Entries :: [wa_raft_log:log_entry()],
+    EntryCount :: non_neg_integer(),
+    Data :: #raft_state{}
+) -> {ok, Accepted :: boolean(), NewMatchIndex :: wa_raft_log:log_index(), NewData :: #raft_state{}} | {fatal, Reason :: term()}.
 append_entries(State, PrevLogIndex, PrevLogTerm, Entries, EntryCount, #raft_state{name = Name, log_view = View, last_applied = LastApplied, current_term = CurrentTerm, leader_id = LeaderId} = Data) ->
     % Inspect the locally stored term associated with the previous log entry to discern if
     % appending the provided range of log entries is allowed.
@@ -2584,6 +2517,58 @@ append_entries(State, PrevLogIndex, PrevLogTerm, Entries, EntryCount, #raft_stat
                 [Name, CurrentTerm, State, EntryCount, PrevLogIndex + 1, PrevLogIndex + EntryCount, PrevLogIndex, Reason, 30], #{domain => [whatsapp, wa_raft]}),
             {ok, false, wa_raft_log:last_index(View), Data}
     end.
+
+%%------------------------------------------------------------------------------
+%% RAFT Server - State Machine Implementation - Vote Requests
+%%------------------------------------------------------------------------------
+
+%% [RequestVote RPC]
+-spec request_vote_impl(
+    State :: state(),
+    Candidate :: #raft_identity{},
+    CandidateIndex :: wa_raft_log:log_index(),
+    CandidateTerm :: wa_raft_log:log_term(),
+    Data :: #raft_state{}
+) -> gen_statem:event_handler_result(state(), #raft_state{}).
+%% A replica with an available vote in the current term should allocate its vote
+%% if the candidate's log is at least as up-to-date as the local log. (5.4.1)
+request_vote_impl(
+    State,
+    ?IDENTITY_REQUIRES_MIGRATION(_, CandidateId) = Candidate,
+    CandidateIndex,
+    CandidateTerm,
+    #raft_state{name = Name, log_view = View, current_term = CurrentTerm, voted_for = VotedFor} = Data
+) when VotedFor =:= undefined; VotedFor =:= CandidateId ->
+    Index = wa_raft_log:last_index(View),
+    {ok, Term} = wa_raft_log:term(View, Index),
+    case {CandidateTerm, CandidateIndex} >= {Term, Index} of
+        true ->
+            ?LOG_NOTICE("Server[~0p, term ~0p, ~0p] decides to vote for candidate ~0p with up-to-date log at ~0p:~0p versus local log at ~0p:~0p.",
+                [Name, CurrentTerm, State, Candidate, CandidateIndex, CandidateTerm, Index, Term], #{domain => [whatsapp, wa_raft]}),
+            case VotedFor of
+                undefined ->
+                    % If this vote request causes the current replica to allocate its vote, then
+                    % persist the vote before responding. (Fig. 2)
+                    NewData = Data#raft_state{voted_for = CandidateId},
+                    wa_raft_durable_state:store(NewData),
+                    send_rpc(Candidate, ?VOTE(true), NewData),
+                    {keep_state, NewData};
+                CandidateId ->
+                    % Otherwise, the vote allocation did not change, so just send the response.
+                    send_rpc(Candidate, ?VOTE(true), Data),
+                    keep_state_and_data
+            end;
+        false ->
+            ?LOG_NOTICE("Server[~0p, term ~0p, ~0p] refuses to vote for candidate ~0p with outdated log at ~0p:~0p versus local log at ~0p:~0p.",
+                [Name, CurrentTerm, State, Candidate, CandidateIndex, CandidateTerm, Index, Term], #{domain => [whatsapp, wa_raft]}),
+            keep_state_and_data
+    end;
+%% A replica that was already allocated its vote to a specific candidate in the
+%% current term should ignore vote requests from other candidates. (5.4.1)
+request_vote_impl(State, Candidate, _, _,  #raft_state{name = Name, current_term = CurrentTerm, voted_for = VotedFor}) ->
+    ?LOG_NOTICE("Server[~0p, term ~0p, ~0p] refusing to vote for candidate ~0p after previously voting for candidate ~0p in the current term.",
+        [Name, CurrentTerm, State, Candidate, VotedFor], #{domain => [whatsapp, wa_raft]}),
+    keep_state_and_data.
 
 %%------------------------------------------------------------------------------
 %% RAFT Server - State Machine Implementation - Helpers
