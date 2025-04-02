@@ -129,7 +129,6 @@
 -type log_pos() :: #raft_log_pos{}.
 -type log_op() ::
     undefined
-    | []
     | {wa_raft_acceptor:key(), wa_raft_acceptor:command()}
     | {wa_raft_acceptor:key(), wa_raft_label:label(), wa_raft_acceptor:command()}.
 -type log_entry() :: {log_term(), log_op()}.

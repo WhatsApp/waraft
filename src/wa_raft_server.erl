@@ -1994,7 +1994,7 @@ load_label_state(_State) ->
 %% After an apply is sent to storage, check to see if it is a new configuration
 %% being applied. If it is, then update the cached configuration.
 -spec maybe_update_config(Index :: wa_raft_log:log_index(), Term :: wa_raft_log:log_term(),
-                          Op :: wa_raft_log:log_op() | [] | undefined, State :: #raft_state{}) -> NewState :: #raft_state{}.
+                          Op :: wa_raft_log:log_op() | undefined, State :: #raft_state{}) -> NewState :: #raft_state{}.
 maybe_update_config(Index, _Term, {_Ref, {config, Config}}, #raft_state{table = Table, partition = Partition} = State) ->
     wa_raft_info:set_membership(Table, Partition, maps:get(membership, Config, [])),
     State#raft_state{cached_config = {Index, Config}};
