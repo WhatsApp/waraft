@@ -41,7 +41,7 @@
 
 %% API
 -export([
-    start_catchup_request/6,
+    start_catchup_request/5,
     cancel_catchup_request/2,
     is_catching_up/2
 ]).
@@ -81,7 +81,7 @@
 
 %% An entry in the catchup request ETS table representing a request to
 %% trigger log catchup for a particular peer.
--define(CATCHUP_REQUEST(Peer, FollowerLastIndex, LeaderTerm, LeaderCommitIndex, Witness), {Peer, FollowerLastIndex, LeaderTerm, LeaderCommitIndex, Witness}).
+-define(CATCHUP_REQUEST(Peer, FollowerLastIndex, LeaderTerm, LeaderCommitIndex), {Peer, FollowerLastIndex, LeaderTerm, LeaderCommitIndex}).
 
 %% An entry in the catchup ETS table that indicates an in-progress log
 %% catchup to the specified node.
@@ -116,9 +116,9 @@ start_link(#raft_options{log_catchup_name = Name} = Options) ->
 
 %% Submit a request to trigger log catchup for a particular follower starting at the index provided.
 -spec start_catchup_request(Catchup :: atom(), Peer :: #raft_identity{}, FollowerLastIndex :: wa_raft_log:log_index(),
-                            LeaderTerm :: wa_raft_log:log_term(), LeaderCommitIndex :: wa_raft_log:log_index(), Witness :: boolean()) -> ok.
-start_catchup_request(Catchup, Peer, FollowerLastIndex, LeaderTerm, LeaderCommitIndex, Witness) ->
-    ets:insert(Catchup, ?CATCHUP_REQUEST(Peer, FollowerLastIndex, LeaderTerm, LeaderCommitIndex, Witness)),
+                            LeaderTerm :: wa_raft_log:log_term(), LeaderCommitIndex :: wa_raft_log:log_index()) -> ok.
+start_catchup_request(Catchup, Peer, FollowerLastIndex, LeaderTerm, LeaderCommitIndex) ->
+    ets:insert(Catchup, ?CATCHUP_REQUEST(Peer, FollowerLastIndex, LeaderTerm, LeaderCommitIndex)),
     ok.
 
 %% Cancel a request to trigger log catchup for a particular follower.
@@ -206,8 +206,8 @@ handle_info(timeout, #state{name = Name} = State) ->
             {noreply, State, ?IDLE_TIMEOUT};
         Requests ->
             % Select a random log catchup request to process.
-            ?CATCHUP_REQUEST(Peer, FollowerLastIndex, LeaderTerm, LeaderCommitIndex, Witness) = lists:nth(rand:uniform(length(Requests)), Requests),
-            NewState = send_logs(Peer, FollowerLastIndex, LeaderTerm, LeaderCommitIndex, Witness, State),
+            ?CATCHUP_REQUEST(Peer, FollowerLastIndex, LeaderTerm, LeaderCommitIndex) = lists:nth(rand:uniform(length(Requests)), Requests),
+            NewState = send_logs(Peer, FollowerLastIndex, LeaderTerm, LeaderCommitIndex, State),
             % erlint-ignore garbage_collect
             erlang:garbage_collect(),
             {noreply, NewState, ?CONTINUE_TIMEOUT}
@@ -224,8 +224,8 @@ terminate(_Reason, #state{name = Name}) ->
 %% Private functions - Send logs to follower
 %%
 
--spec send_logs(#raft_identity{}, wa_raft_log:log_index(), wa_raft_log:log_term(), wa_raft_log:log_index(), boolean(), #state{}) -> #state{}.
-send_logs(Peer, NextLogIndex, LeaderTerm, LeaderCommitIndex, Witness, #state{name = Name, lockouts = Lockouts} = State) ->
+-spec send_logs(#raft_identity{}, wa_raft_log:log_index(), wa_raft_log:log_term(), wa_raft_log:log_index(), #state{}) -> #state{}.
+send_logs(Peer, NextLogIndex, LeaderTerm, LeaderCommitIndex, #state{name = Name, lockouts = Lockouts} = State) ->
     StartMillis = erlang:system_time(millisecond),
     LockoutMillis = maps:get(Peer, Lockouts, 0),
     NewState = case LockoutMillis =< StartMillis of
@@ -235,7 +235,7 @@ send_logs(Peer, NextLogIndex, LeaderTerm, LeaderCommitIndex, Witness, #state{nam
                 true ->
                     counters:add(Counters, ?COUNTER_CONCURRENT_CATCHUP, 1),
                     ets:insert(?MODULE, ?CATCHUP_RECORD(Name, Peer)),
-                    try send_logs_impl(Peer, NextLogIndex, LeaderTerm, LeaderCommitIndex, Witness, State) catch
+                    try send_logs_impl(Peer, NextLogIndex, LeaderTerm, LeaderCommitIndex, State) catch
                         T:E:S ->
                             ?RAFT_COUNT('raft.catchup.error'),
                             ?LOG_ERROR("Catchup[~p, term ~p] bulk logs transfer to ~0p failed with ~0p ~0p at ~p",
@@ -258,22 +258,15 @@ send_logs(Peer, NextLogIndex, LeaderTerm, LeaderCommitIndex, Witness, #state{nam
     ets:delete(?MODULE, Name),
     NewState.
 
--spec send_logs_impl(#raft_identity{}, wa_raft_log:log_index(), wa_raft_log:log_term(), wa_raft_log:log_index(), boolean(), #state{}) -> term().
-send_logs_impl(#raft_identity{node = PeerNode} = Peer, NextLogIndex, LeaderTerm, LeaderCommitIndex, Witness,
+-spec send_logs_impl(#raft_identity{}, wa_raft_log:log_index(), wa_raft_log:log_term(), wa_raft_log:log_index(), #state{}) -> term().
+send_logs_impl(#raft_identity{node = PeerNode} = Peer, NextLogIndex, LeaderTerm, LeaderCommitIndex,
                #state{application = App, name = Name, self = Self, identifier = Identifier, distribution_module = DistributionModule, server_name = Server, log = Log} = State) ->
     PrevLogIndex = NextLogIndex - 1,
     {ok, PrevLogTerm} = wa_raft_log:term(Log, PrevLogIndex),
 
     LogBatchEntries = ?RAFT_CATCHUP_MAX_ENTRIES_PER_BATCH(App),
-    Entries = case Witness of
-        false ->
-            LogBatchBytes = ?RAFT_CATCHUP_MAX_BYTES_PER_BATCH(App),
-            {ok, E} = wa_raft_log:get(Log, NextLogIndex, LogBatchEntries, LogBatchBytes),
-            E;
-        true ->
-            {ok, T} = wa_raft_log:get_terms(Log, NextLogIndex, min(LogBatchEntries, LeaderCommitIndex - NextLogIndex + 1)),
-            [{Term, []} || Term <- T]
-    end,
+    LogBatchBytes = ?RAFT_CATCHUP_MAX_BYTES_PER_BATCH(App),
+    {ok, Entries} = wa_raft_log:get(Log, NextLogIndex, LogBatchEntries, LogBatchBytes),
 
     case Entries of
         [] ->
@@ -287,7 +280,7 @@ send_logs_impl(#raft_identity{node = PeerNode} = Peer, NextLogIndex, LeaderTerm,
 
             try wa_raft_server:parse_rpc(Self, DistributionModule:call(Dest, Identifier, Command, Timeout)) of
                 {LeaderTerm, _, ?APPEND_ENTRIES_RESPONSE(PrevLogIndex, true, FollowerEndIndex)} ->
-                    send_logs_impl(Peer, FollowerEndIndex + 1, LeaderTerm, LeaderCommitIndex, Witness, State);
+                    send_logs_impl(Peer, FollowerEndIndex + 1, LeaderTerm, LeaderCommitIndex, State);
                 {LeaderTerm, _, ?APPEND_ENTRIES_RESPONSE(PrevLogIndex, false, _FollowerEndIndex)} ->
                     exit(append_failed);
                 {LeaderTerm, _, Other} ->

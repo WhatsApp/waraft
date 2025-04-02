@@ -30,13 +30,11 @@
     fold/5,
     fold/6,
 
-    fold_terms/5,
 
     term/2,
     get/2,
     get/3,
     get/4,
-    get_terms/3,
 
     config/1
 ]).
@@ -437,45 +435,6 @@ fold_impl(Log, First, Last, SizeLimit, Func, AccIn) ->
             {error, Reason}
     end.
 
-%% Folds over the terms in the log view of raw entries from the log provider
-%% between the provided first and last log indices (inclusive).
-%% If there exists a log term between the provided first and last indices then
-%% the accumulator function will be called on at least that term.
-%% This API provides no validation of the log indices and term passed by the
-%% provider to the callback function.
--spec fold_terms(LogOrView :: log() | view(),
-                 First :: log_index(),
-                 Last :: log_index(),
-                 Func :: fun((Index :: log_index(), Term :: log_term(), Acc) -> Acc),
-                 Acc) ->
-    {ok, Acc} | wa_raft:error().
-fold_terms(#log_view{log = Log, first = LogFirst, last = LogLast}, First, Last, Func, Acc) ->
-    fold_terms_impl(Log, max(First, LogFirst), min(Last, LogLast), Func, Acc);
-fold_terms(Log, First, Last, Func, Acc) ->
-    Provider = provider(Log),
-    LogFirst = Provider:first_index(Log),
-    LogLast = Provider:last_index(Log),
-    fold_terms_impl(Log, max(First, LogFirst), min(Last, LogLast), Func, Acc).
-
--spec fold_terms_impl(
-    Log :: log(),
-    First :: log_index(),
-    Last :: log_index(),
-    Func :: fun((Index :: log_index(), Term :: log_term(), Acc) -> Acc),
-    Acc :: term()
-) -> {ok, Acc} | wa_raft:error().
-fold_terms_impl(Log, First, Last, Func, AccIn) ->
-    ?RAFT_COUNT('raft.log.fold_terms'),
-    ?RAFT_COUNTV('raft.log.fold_terms.total', Last - First + 1),
-    Provider = provider(Log),
-    case Provider:fold_terms(Log, First, Last, Func, AccIn) of
-        {ok, AccOut} ->
-            {ok, AccOut};
-        {error, Reason} ->
-            ?RAFT_COUNT('raft.log.fold_terms.error'),
-            {error, Reason}
-    end.
-
 %% Gets the term of entry at the provided log index. When using a log view
 %% this function may return 'not_found' even if the underlying log entry still
 %% exists if the entry is outside of the log view.
@@ -531,25 +490,6 @@ get(LogOrView, First, CountLimit, SizeLimit) ->
         throw:{missing, Index} ->
             ?LOG_WARNING("[~p] detected log is missing index ~p during get of ~p ~~ ~p",
                 [log_name(LogOrView), Index, First, First + CountLimit - 1], #{domain => [whatsapp, wa_raft]}),
-            {error, corruption}
-    end.
-
--spec get_terms(LogOrView :: log() | view(), First :: log_index(), Limit :: non_neg_integer()) ->
-    {ok, Terms :: [wa_raft_log:log_term()]} | wa_raft:error().
-get_terms(LogOrView, First, Limit) ->
-    try
-        fold_terms(LogOrView, First, First + Limit - 1,
-            fun
-                (Index, Term, {Index, Acc})            -> {Index + 1, [Term | Acc]};
-                (_Index, _Term, {ExpectedIndex, _Acc}) -> throw({missing, ExpectedIndex})
-            end, {First, []})
-    of
-        {ok, {_, TermsRev}} -> {ok, lists:reverse(TermsRev)};
-        {error, Reason} -> {error, Reason}
-    catch
-        throw:{missing, Index} ->
-            ?LOG_WARNING("[~p] detected log is missing index ~p during get of ~p ~~ ~p",
-                [log_name(LogOrView), Index, First, First + Limit - 1], #{domain => [whatsapp, wa_raft]}),
             {error, corruption}
     end.
 
