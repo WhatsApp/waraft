@@ -757,7 +757,7 @@ stalled(_Type, ?REMOTE(Sender, ?APPEND_ENTRIES(PrevLogIndex, _PrevLogTerm, _Entr
     {keep_state, NewState};
 
 stalled({call, From}, ?BOOTSTRAP_COMMAND(#raft_log_pos{index = Index, term = Term} = Position, Config, Data),
-        #raft_state{name = Name, self = Self, data_dir = PartitionPath, log_view = View, storage = Storage, current_term = CurrentTerm, last_applied = LastApplied} = State0) ->
+        #raft_state{name = Name, self = Self, data_dir = PartitionPath, storage = Storage, current_term = CurrentTerm, last_applied = LastApplied} = State0) ->
     case Index > LastApplied andalso Term > 0 of
         true ->
             ?LOG_NOTICE("Server[~0p, term ~0p, stalled] attempting bootstrap at ~0p:~0p with config ~0p and data ~0P.",
@@ -765,28 +765,25 @@ stalled({call, From}, ?BOOTSTRAP_COMMAND(#raft_log_pos{index = Index, term = Ter
             Path = filename:join(PartitionPath, io_lib:format("snapshot.~0p.~0p.bootstrap.tmp", [Index, Term])),
             try
                 ok = wa_raft_storage:make_empty_snapshot(Storage, Path, Position, Config, Data),
-                ok = wa_raft_storage:open_snapshot(Storage, Path, Position),
-                {ok, NewView} = wa_raft_log:reset(View, Position),
-                State1 = State0#raft_state{log_view = NewView, last_applied = Index, commit_index = Index},
-                State2 = load_config(State1),
+                State1 = open_snapshot(Path, Position, State0),
                 case Term > CurrentTerm of
                     true ->
-                        case is_single_member(Self, config(State2)) of
+                        case is_single_member(Self, config(State1)) of
                             true ->
-                                State3 = advance_term(?FUNCTION_NAME, Term, node(), State2),
+                                State2 = advance_term(?FUNCTION_NAME, Term, node(), State1),
                                 ?LOG_NOTICE("Server[~0p, term ~0p, stalled] switching to leader as sole member after successful bootstrap.",
-                                    [Name, State3#raft_state.current_term], #{domain => [whatsapp, wa_raft]}),
-                                {next_state, leader, State3, {reply, From, ok}};
+                                    [Name, State2#raft_state.current_term], #{domain => [whatsapp, wa_raft]}),
+                                {next_state, leader, State2, {reply, From, ok}};
                             false ->
-                                State3 = advance_term(?FUNCTION_NAME, Term, undefined, State2),
+                                State2 = advance_term(?FUNCTION_NAME, Term, undefined, State1),
                                 ?LOG_NOTICE("Server[~0p, term ~0p, stalled] switching to follower after successful bootstrap.",
-                                    [Name, State3#raft_state.current_term], #{domain => [whatsapp, wa_raft]}),
-                                {next_state, follower, State3, {reply, From, ok}}
+                                    [Name, State2#raft_state.current_term], #{domain => [whatsapp, wa_raft]}),
+                                {next_state, follower, State2, {reply, From, ok}}
                         end;
                     false ->
                         ?LOG_NOTICE("Server[~0p, term ~0p, stalled] switching to follower after successful bootstrap.",
                             [Name, CurrentTerm], #{domain => [whatsapp, wa_raft]}),
-                        {next_state, follower, State2, {reply, From, ok}}
+                        {next_state, follower, State1, {reply, From, ok}}
                 end
             catch
                 _:Reason ->
@@ -803,27 +800,21 @@ stalled({call, From}, ?BOOTSTRAP_COMMAND(#raft_log_pos{index = Index, term = Ter
     end;
 
 stalled(Type, ?SNAPSHOT_AVAILABLE_COMMAND(Root, #raft_log_pos{index = SnapshotIndex, term = SnapshotTerm} = SnapshotPos),
-        #raft_state{name = Name, log_view = View0, storage = Storage,
-                    current_term = CurrentTerm, last_applied = LastApplied} = State0) ->
+        #raft_state{name = Name, current_term = CurrentTerm, last_applied = LastApplied} = State0) ->
     case SnapshotIndex > LastApplied orelse LastApplied =:= 0 of
         true ->
             try
-                ?LOG_NOTICE("Server[~0p, term ~0p, stalled] applying snapshot ~p:~p",
+                ?LOG_NOTICE("Server[~0p, term ~0p, stalled] applying snapshot at ~0p:~0p.",
                     [Name, CurrentTerm, SnapshotIndex, SnapshotTerm], #{domain => [whatsapp, wa_raft]}),
-                ok = wa_raft_storage:open_snapshot(Storage, Root, SnapshotPos),
-                {ok, View1} = wa_raft_log:reset(View0, SnapshotPos),
-                State1 = State0#raft_state{log_view = View1, last_applied = SnapshotIndex, commit_index = SnapshotIndex},
-                State2 = load_config(State1),
-                ?LOG_NOTICE("Server[~0p, term ~0p, stalled] switching to follower after installing snapshot at ~p:~p.",
-                    [Name, CurrentTerm, SnapshotIndex, SnapshotTerm], #{domain => [whatsapp, wa_raft]}),
-                State3 = case SnapshotTerm > CurrentTerm of
-                    true -> advance_term(?FUNCTION_NAME, SnapshotTerm, undefined, State2);
-                    false -> State2
+                State1 = open_snapshot(Root, SnapshotPos, State0),
+                State2 = case SnapshotTerm > CurrentTerm of
+                    true -> advance_term(?FUNCTION_NAME, SnapshotTerm, undefined, State1);
+                    false -> State1
                 end,
                 % At this point, we assume that we received some cluster membership configuration from
                 % our peer so it is safe to transition to an operational state.
                 reply(Type, ok),
-                {next_state, follower, State3}
+                {next_state, follower, State2}
             catch
                 _:Reason ->
                     ?LOG_WARNING("Server[~0p, term ~0p, stalled] failed to load available snapshot ~p due to ~p",
@@ -1633,16 +1624,14 @@ witness(_Type, ?REMOTE(_, ?HANDOVER_FAILED(_)), _State) ->
     keep_state_and_data;
 
 witness(Type, ?SNAPSHOT_AVAILABLE_COMMAND(undefined, #raft_log_pos{index = SnapshotIndex, term = SnapshotTerm} = SnapshotPos),
-        #raft_state{log_view = View0, name = Name, current_term = CurrentTerm, last_applied = LastApplied} = State0) ->
+        #raft_state{name = Name, current_term = CurrentTerm, last_applied = LastApplied} = State) ->
     case SnapshotIndex > LastApplied orelse LastApplied =:= 0 of
         true ->
             ?LOG_NOTICE("Server[~0p, term ~0p, witness] accepting snapshot ~p:~p but not loading",
                 [Name, CurrentTerm, SnapshotIndex, SnapshotTerm], #{domain => [whatsapp, wa_raft]}),
-            {ok, View1} = wa_raft_log:reset(View0, SnapshotPos),
-            State1 = State0#raft_state{log_view = View1, last_applied = SnapshotIndex, commit_index = SnapshotIndex},
-            State2 = load_config(State1),
+            NewState = reset_log(SnapshotPos, State),
             reply(Type, ok),
-            {next_state, witness, State2};
+            {next_state, witness, NewState};
         false ->
             ?LOG_NOTICE("Server[~0p, term ~0p, witness] ignoring available snapshot ~p:~p with index not past ours (~p)",
                 [Name, CurrentTerm, SnapshotIndex, SnapshotTerm, LastApplied], #{domain => [whatsapp, wa_raft]}),
@@ -2410,6 +2399,28 @@ adjust_config(Action, Config, #raft_state{self = Self}) ->
             end
     end.
 
+%%------------------------------------------------------------------------------
+%% RAFT Server - State Machine Implementation - Log State
+%%------------------------------------------------------------------------------
+
+-spec reset_log(Position :: wa_raft_log:log_pos(), Data :: #raft_state{}) -> #raft_state{}.
+reset_log(#raft_log_pos{index = Index} = Position, #raft_state{log_view = View} = Data) ->
+    {ok, NewView} = wa_raft_log:reset(View, Position),
+    NewData = Data#raft_state{
+        log_view = NewView,
+        last_applied = Index,
+        commit_index = Index
+    },
+    load_config(NewData).
+
+%%------------------------------------------------------------------------------
+%% RAFT Server - State Machine Implementation - Snapshots
+%%------------------------------------------------------------------------------
+
+-spec open_snapshot(Root :: string(), Position :: wa_raft_log:log_pos(), Data :: #raft_state{}) -> #raft_state{}.
+open_snapshot(Root, Position, #raft_state{storage = Storage} = Data) ->
+    ok = wa_raft_storage:open_snapshot(Storage, Root, Position),
+    reset_log(Position, Data).
 
 %%------------------------------------------------------------------------------
 %% RAFT Server - State Machine Implementation - Heartbeat
