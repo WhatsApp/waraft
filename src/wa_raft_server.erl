@@ -764,7 +764,7 @@ stalled({call, From}, ?BOOTSTRAP_COMMAND(#raft_log_pos{index = Index, term = Ter
                 [Name, CurrentTerm, Index, Term, Config, Data, 30], #{domain => [whatsapp, wa_raft]}),
             Path = filename:join(PartitionPath, io_lib:format("snapshot.~0p.~0p.bootstrap.tmp", [Index, Term])),
             try
-                ok = wa_raft_storage:make_empty_snapshot(Storage, Path, Position, Config, Data),
+                {ok, _} = wa_raft_storage:make_empty_snapshot(Storage, Path, Position, Config, Data),
                 ok = wa_raft_storage:open_snapshot(Storage, Path, Position),
                 {ok, NewView} = wa_raft_log:reset(View, Position),
                 State1 = State0#raft_state{log_view = NewView, last_applied = Index, commit_index = Index},

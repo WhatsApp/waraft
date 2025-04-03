@@ -358,7 +358,7 @@ create_snapshot(ServiceRef) ->
 create_snapshot(ServiceRef, Name) ->
     gen_server:call(ServiceRef, {snapshot_create, Name}, ?RAFT_STORAGE_CALL_TIMEOUT()).
 
--spec make_empty_snapshot(ServiceRef :: pid() | atom(), Path :: file:filename(), Position :: wa_raft_log:log_pos(), Config :: wa_raft_server:config(), Data :: term()) -> ok | error().
+-spec make_empty_snapshot(ServiceRef :: pid() | atom(), Path :: file:filename(), Position :: wa_raft_log:log_pos(), Config :: wa_raft_server:config(), Data :: dynamic()) -> {ok, Pos :: wa_raft_log:log_pos()} | error().
 make_empty_snapshot(ServiceRef, Path, Position, Config, Data) ->
     gen_server:call(ServiceRef, {make_empty_snapshot, Path, Position, Config, Data}).
 
@@ -453,7 +453,7 @@ init(#raft_options{table = Table, partition = Partition, identifier = Identifier
         status |
         {snapshot_create, Name :: string()} |
         {snapshot_open, Path :: file:filename(), LastAppliedPos :: wa_raft_log:log_pos()} |
-        {make_empty_snapshot, Path :: file:filename(), Position :: wa_raft_log:log_pos(), Config :: wa_raft_server:config(), Data :: term()} |
+        {make_empty_snapshot, Path :: file:filename(), Position :: wa_raft_log:log_pos(), Config :: wa_raft_server:config(), Data :: dynamic()} |
         position |
         label |
         config.
@@ -467,10 +467,10 @@ handle_call(snapshot_create, From, #state{last_applied = #raft_log_pos{index = L
     Name = ?SNAPSHOT_NAME(LastIndex, LastTerm),
     handle_call({snapshot_create, Name}, From, State);
 
-handle_call({snapshot_create, Name}, _From, #state{last_applied = #raft_log_pos{index = LastIndex, term = LastTerm}} = State) ->
+handle_call({snapshot_create, Name}, _From, #state{last_applied = LastApplied} = State) ->
     case create_snapshot_impl(Name, State) of
         ok ->
-            {reply, {ok, #raft_log_pos{index = LastIndex, term = LastTerm}}, State};
+            {reply, {ok, LastApplied}, State};
         {error, _} = Error ->
             {reply, Error, State}
     end;
@@ -482,12 +482,14 @@ handle_call({snapshot_open, SnapshotPath, LogPos}, _From, #state{name = Name, mo
         {error, Reason} -> {reply, {error, Reason}, State}
     end;
 
-handle_call({make_empty_snapshot, Path, Position, Config, Data}, _From, #state{name = Name, identifier = Identifier, module = Module} = State) ->
+handle_call({make_empty_snapshot, Path, Position, Config, Data}, _From, #state{name = Name, identifier = Identifier, last_applied = LastApplied} = State) ->
     ?LOG_NOTICE("Storage[~0p] making bootstrap snapshot ~0p at ~0p with config ~0p and data ~0P.",
         [Name, Path, Position, Config, Data, 30], #{domain => [whatsapp, wa_raft]}),
-    case erlang:function_exported(Module, storage_make_empty_snapshot, 6) of
-        true -> {reply, Module:storage_make_empty_snapshot(Name, Identifier, Path, Position, Config, Data), State};
-        false -> {reply, {error, not_supported}, State}
+    case create_empty_snapshot_impl(Name, Identifier, Path, Position, Config, Data, State) of
+        ok ->
+            {reply, {ok, LastApplied}, State};
+        {error, _} = Error ->
+            {reply, Error, State}
     end;
 
 handle_call(config, _From, #state{module = Module, handle = Handle} = State) ->
@@ -635,6 +637,21 @@ create_snapshot_impl(SnapName, #state{name = Name, root_dir = RootDir, module = 
             cleanup_snapshots(State),
             ?LOG_NOTICE("Create snapshot ~s for ~p.", [SnapName, Name], #{domain => [whatsapp, wa_raft]}),
             Module:storage_create_snapshot(SnapshotPath, Handle)
+    end.
+
+-spec create_empty_snapshot_impl(
+    Name :: atom(),
+    Identifier :: #raft_identifier{},
+    Path :: file:filename(),
+    Position :: wa_raft_log:log_pos(),
+    Config :: wa_raft_server:config(),
+    Data :: #{virtual_partition_range := kvdb_core:virtual_partition_range()},
+    Storage :: #state{}
+) -> ok | error().
+create_empty_snapshot_impl(Name, Identifier, Path, Position, Config, Data, #state{module = Module}) ->
+    case erlang:function_exported(Module, storage_make_empty_snapshot, 6) of
+        true -> Module:storage_make_empty_snapshot(Name, Identifier, Path, Position, Config, Data);
+        false -> {error, not_supported}
     end.
 
 -define(MAX_RETAINED_SNAPSHOT, 1).
