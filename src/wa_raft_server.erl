@@ -1614,7 +1614,7 @@ witness(_Type, ?REMOTE(Sender, ?HANDOVER(Ref, _, _, _)),
 witness(_Type, ?REMOTE(_, ?HANDOVER_FAILED(_)), _State) ->
     keep_state_and_data;
 
-witness(Type, ?SNAPSHOT_AVAILABLE_COMMAND(_, #raft_log_pos{index = SnapshotIndex, term = SnapshotTerm} = SnapshotPos),
+witness(Type, ?SNAPSHOT_AVAILABLE_COMMAND(undefined, #raft_log_pos{index = SnapshotIndex, term = SnapshotTerm} = SnapshotPos),
         #raft_state{log_view = View0, name = Name, current_term = CurrentTerm, last_applied = LastApplied} = State0) ->
     case SnapshotIndex > LastApplied orelse LastApplied =:= 0 of
         true ->
