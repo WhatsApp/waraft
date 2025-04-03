@@ -200,8 +200,8 @@
     | {commit_index, wa_raft_log:log_index()}
     | {last_applied, wa_raft_log:log_index()}
     | {leader_id, node()}
-    | {next_index, wa_raft_log:log_index()}
-    | {match_index, wa_raft_log:log_index()}
+    | {next_indices, #{node() => wa_raft_log:log_index()}}
+    | {match_indices, #{node() => wa_raft_log:log_index()}}
     | {log_module, module()}
     | {log_first, wa_raft_log:log_index()}
     | {log_last, wa_raft_log:log_index()}
@@ -923,38 +923,56 @@ leader(_Type, ?REMOTE(_, ?APPEND_ENTRIES(_, _, _, _, _)), _State) ->
 
 %% [Leader] Handle AppendEntries RPC responses (5.2, 5.3, 7).
 %% Handle normal-case successes
-leader(cast, ?REMOTE(?IDENTITY_REQUIRES_MIGRATION(_, FollowerId) = Sender, ?APPEND_ENTRIES_RESPONSE(_PrevIndex, true, FollowerEndIndex)),
+leader(
+    cast,
+    ?REMOTE(
+        ?IDENTITY_REQUIRES_MIGRATION(_, FollowerId) = Sender,
+        ?APPEND_ENTRIES_RESPONSE(_PrevIndex, true, FollowerMatchIndex)
+    ),
     #raft_state{
         name = Name,
         current_term = CurrentTerm,
         commit_index = CommitIndex0,
-        next_index = NextIndex0,
-        match_index = MatchIndex0,
+        next_indices = NextIndices,
+        match_indices = MatchIndices,
         heartbeat_response_ts = HeartbeatResponse0,
-        first_current_term_log_index = TermStartIndex} = State0) ->
+        first_current_term_log_index = TermStartIndex
+    } = State0
+) ->
     StartT = os:timestamp(),
     ?LOG_DEBUG("Server[~0p, term ~0p, leader] at commit index ~0p completed append to ~0p whose log now matches up to ~0p.",
-        [Name, CurrentTerm, CommitIndex0, Sender, FollowerEndIndex], #{domain => [whatsapp, wa_raft]}),
+        [Name, CurrentTerm, CommitIndex0, Sender, FollowerMatchIndex], #{domain => [whatsapp, wa_raft]}),
     HeartbeatResponse1 = HeartbeatResponse0#{FollowerId => erlang:monotonic_time(millisecond)},
     State1 = State0#raft_state{heartbeat_response_ts = HeartbeatResponse1},
 
-    case select_follower_replication_mode(FollowerEndIndex, State1) of
-        bulk_logs -> request_bulk_logs_for_follower(Sender, FollowerEndIndex, State1);
+    case select_follower_replication_mode(FollowerMatchIndex, State1) of
+        bulk_logs -> request_bulk_logs_for_follower(Sender, FollowerMatchIndex, State1);
         _         -> cancel_bulk_logs_for_follower(Sender, State1)
     end,
 
-    MatchIndex1 = MatchIndex0#{FollowerId => FollowerEndIndex},
-    OldNextIndex = maps:get(FollowerId, NextIndex0, TermStartIndex),
-    NextIndex1 = NextIndex0#{FollowerId => erlang:max(OldNextIndex, FollowerEndIndex + 1)},
+    NextIndex = maps:get(FollowerId, NextIndices, TermStartIndex),
+    NewMatchIndices = MatchIndices#{FollowerId => FollowerMatchIndex},
+    NewNextIndices = NextIndices#{FollowerId => max(NextIndex, FollowerMatchIndex + 1)},
 
-    State2 = State1#raft_state{match_index = MatchIndex1, next_index = NextIndex1},
+    State2 = State1#raft_state{match_indices = NewMatchIndices, next_indices = NewNextIndices},
     State3 = maybe_apply(State2),
     ?RAFT_GATHER('raft.leader.apply.func', timer:now_diff(os:timestamp(), StartT)),
     {keep_state, maybe_heartbeat(State3), ?HEARTBEAT_TIMEOUT(State3)};
 
 %% and failures.
-leader(cast, ?REMOTE(?IDENTITY_REQUIRES_MIGRATION(_, FollowerId) = Sender, ?APPEND_ENTRIES_RESPONSE(_PrevLogIndex, false, FollowerEndIndex)),
-       #raft_state{name = Name, current_term = CurrentTerm, commit_index = CommitIndex, next_index = NextIndex0} = State0) ->
+leader(
+    cast,
+    ?REMOTE(
+        ?IDENTITY_REQUIRES_MIGRATION(_, FollowerId) = Sender,
+        ?APPEND_ENTRIES_RESPONSE(_PrevLogIndex, false, FollowerEndIndex)
+    ),
+    #raft_state{
+        name = Name,
+        current_term = CurrentTerm,
+        commit_index = CommitIndex,
+        next_indices = NextIndices
+    } = State0
+) ->
     ?RAFT_COUNT('raft.leader.append.failure'),
     ?LOG_DEBUG("Server[~0p, term ~0p, leader] at commit index ~0p failed append to ~0p whose log now ends at ~0p.",
         [Name, CurrentTerm, CommitIndex, Sender, FollowerEndIndex], #{domain => [whatsapp, wa_raft]}),
@@ -967,8 +985,8 @@ leader(cast, ?REMOTE(?IDENTITY_REQUIRES_MIGRATION(_, FollowerId) = Sender, ?APPE
     % applied a snapshot since the last successful heartbeat. In such case, we need
     % to fast-forward the follower's next index so that we resume replication at the
     % point after the snapshot.
-    NextIndex1 = NextIndex0#{FollowerId => FollowerEndIndex + 1},
-    State1 = State0#raft_state{next_index = NextIndex1},
+    NewNextIndices = NextIndices#{FollowerId => FollowerEndIndex + 1},
+    State1 = State0#raft_state{next_indices = NewNextIndices},
     State2 = maybe_apply(State1),
     {keep_state, maybe_heartbeat(State2), ?HEARTBEAT_TIMEOUT(State2)};
 
@@ -1038,15 +1056,15 @@ leader(cast, ?COMMIT_COMMAND({Reference, _Op}), #raft_state{table = Table, parti
     wa_raft_queue:fulfill_incomplete_commit(Table, Partition, Reference, {error, {notify_redirect, Peer}}), % Optimistically redirect to handover peer
     {keep_state, State};
 %% [Commit] Otherwise, add a new commit to the RAFT log
-leader(cast, ?COMMIT_COMMAND(Op), #raft_state{application = App, log_view = View0, next_index = NextIndex} = State0) ->
+leader(cast, ?COMMIT_COMMAND(Op), #raft_state{application = App, log_view = View0, next_indices = NextIndices} = State0) ->
     ?RAFT_COUNT('raft.commit'),
     {State1, LogEntry} = get_log_entry(State0, Op),
     {ok, View1} = wa_raft_log:submit(View0, LogEntry),
     ExpectedLastIndex = wa_raft_log:last_index(View1) + wa_raft_log:pending(View1),
     State2 = apply_single_node_cluster(State1#raft_state{log_view = View1}), % apply immediately for single node cluster
 
-    MaxNexIndex = maps:fold(fun(_NodeId, V, Acc) -> erlang:max(Acc, V) end, 0, NextIndex),
-    case ?RAFT_COMMIT_BATCH_INTERVAL(App) > 0 andalso ExpectedLastIndex - MaxNexIndex < ?RAFT_COMMIT_BATCH_MAX_ENTRIES(App) of
+    MaxNextIndex = lists:max([0 | maps:values(NextIndices)]),
+    case ?RAFT_COMMIT_BATCH_INTERVAL(App) > 0 andalso ExpectedLastIndex - MaxNextIndex < ?RAFT_COMMIT_BATCH_MAX_ENTRIES(App) of
         true ->
             ?RAFT_COUNT('raft.commit.batch.delay'),
             {keep_state, State2, ?COMMIT_BATCH_TIMEOUT(State2)};
@@ -1187,8 +1205,8 @@ leader(Type, ?HANDOVER_COMMAND(Peer), #raft_state{name = Name, current_term = Cu
 
 %% [Handover] Attempt to start a handover to the specified peer
 leader(Type, ?HANDOVER_COMMAND(Peer),
-       #raft_state{application = App, name = Name, log_view = View,
-                   current_term = CurrentTerm, handover = undefined} = State0) ->
+       #raft_state{application = App, name = Name, log_view = View, current_term = CurrentTerm,
+                   match_indices = MatchIndices, handover = undefined} = State0) ->
     % TODO(hsun324): For the time being, assume that all members of the cluster use the same server name.
     case member({Name, Peer}, config(State0)) of
         false ->
@@ -1197,7 +1215,7 @@ leader(Type, ?HANDOVER_COMMAND(Peer),
             reply(Type, {error, invalid_peer}),
             keep_state_and_data;
         true ->
-            PeerMatchIndex = maps:get(Peer, State0#raft_state.match_index, 0),
+            PeerMatchIndex = maps:get(Peer, MatchIndices, 0),
             FirstIndex = wa_raft_log:first_index(View),
             PeerSendIndex = max(PeerMatchIndex + 1, FirstIndex + 1),
             LastIndex = wa_raft_log:last_index(View),
@@ -1685,8 +1703,8 @@ command(StateName, {call, From}, ?STATUS_COMMAND, State) ->
         {commit_index, State#raft_state.commit_index},
         {last_applied, State#raft_state.last_applied},
         {leader_id, State#raft_state.leader_id},
-        {next_index, State#raft_state.next_index},
-        {match_index, State#raft_state.match_index},
+        {next_indices, State#raft_state.next_indices},
+        {match_indices, State#raft_state.match_indices},
         {log_module, wa_raft_log:provider(State#raft_state.log_view)},
         {log_first, wa_raft_log:first_index(State#raft_state.log_view)},
         {log_last, wa_raft_log:last_index(State#raft_state.log_view)},
@@ -2057,19 +2075,20 @@ apply_single_node_cluster(#raft_state{self = Self, log_view = View} = State) ->
 %% Leader - check quorum and apply logs if necessary
 -spec maybe_apply(Data :: #raft_state{}) -> #raft_state{}.
 maybe_apply(#raft_state{name = Name, log_view = View, current_term = CurrentTerm,
-                        match_index = MatchIndex, commit_index = LastCommitIndex, last_applied = LastAppliedIndex} = State0) ->
+                        commit_index = LastCommitIndex, last_applied = LastAppliedIndex,
+                        match_indices = MatchIndices} = State0) ->
     % Raft paper section 5.4.3 - Only log entries from the leader’s current term are committed
     % by counting replicas; once an entry from the current term has been committed in this way,
     % then all prior entries are committed indirectly because of the View Matching Property
     % NOTE: See comment in successful branch of AppendEntriesResponse RPC handling for leader for
     %       precautions about changing match index handling.
     Config = config(State0),
-    case max_index_to_apply(MatchIndex, wa_raft_log:last_index(View), Config) of
+    case max_index_to_apply(MatchIndices, wa_raft_log:last_index(View), Config) of
         CommitIndex when CommitIndex > LastCommitIndex ->
             case wa_raft_log:term(View, CommitIndex) of
                 {ok, CurrentTerm} ->
                     % log entry is same term of current leader node
-                    TrimIndex = lists:min(to_member_list(MatchIndex#{node() => LastAppliedIndex}, 0, Config)),
+                    TrimIndex = lists:min(to_member_list(MatchIndices#{node() => LastAppliedIndex}, 0, Config)),
                     apply_log(State0, CommitIndex, TrimIndex, CurrentTerm);
                 {ok, Term} when Term < CurrentTerm ->
                     % Raft paper section 5.4.3 - as a leader, don't commit entries from previous term if no log entry of current term has applied yet
@@ -2280,8 +2299,8 @@ advance_term(State, NewTerm, VotedFor, #raft_state{current_term = CurrentTerm} =
         current_term = NewTerm,
         voted_for = VotedFor,
         votes = #{},
-        next_index = #{},
-        match_index = #{},
+        next_indices = #{},
+        match_indices = #{},
         last_heartbeat_ts = #{},
         heartbeat_response_ts = #{},
         handover = undefined
@@ -2297,12 +2316,12 @@ advance_term(State, NewTerm, VotedFor, #raft_state{current_term = CurrentTerm} =
 -spec heartbeat(#raft_identity{}, #raft_state{}) -> #raft_state{}.
 heartbeat(?IDENTITY_REQUIRES_MIGRATION(_, FollowerId) = Sender,
           #raft_state{application = App, name = Name, log_view = View, catchup = Catchup, current_term = CurrentTerm,
-                      commit_index = CommitIndex, next_index = NextIndex0, match_index = MatchIndex,
+                      commit_index = CommitIndex, next_indices = NextIndices, match_indices = MatchIndices,
                       last_heartbeat_ts = LastHeartbeatTs, first_current_term_log_index = TermStartIndex} = State0) ->
-    FollowerNextIndex = maps:get(FollowerId, NextIndex0, TermStartIndex),
+    FollowerNextIndex = maps:get(FollowerId, NextIndices, TermStartIndex),
     PrevLogIndex = FollowerNextIndex - 1,
     PrevLogTermRes = wa_raft_log:term(View, PrevLogIndex),
-    FollowerMatchIndex = maps:get(FollowerId, MatchIndex, 0),
+    FollowerMatchIndex = maps:get(FollowerId, MatchIndices, 0),
     FollowerMatchIndex =/= 0 andalso
         ?RAFT_GATHER('raft.leader.follower.lag', CommitIndex - FollowerMatchIndex),
     IsCatchingUp = wa_raft_log_catchup:is_catching_up(Catchup, Sender),
@@ -2328,28 +2347,28 @@ heartbeat(?IDENTITY_REQUIRES_MIGRATION(_, FollowerId) = Sender,
             ?LOG_DEBUG("Server[~0p, term ~0p, leader] heartbeat to follower ~p from ~p(~p entries). Commit index ~p",
                 [Name, CurrentTerm, FollowerId, FollowerNextIndex, length(Entries), CommitIndex], #{domain => [whatsapp, wa_raft]}),
             % Compute trim index.
-            TrimIndex = lists:min(to_member_list(MatchIndex#{node() => LastIndex}, 0, config(State1))),
+            TrimIndex = lists:min(to_member_list(MatchIndices#{node() => LastIndex}, 0, config(State1))),
             % Send append entries request.
             CastResult = send_rpc(Sender, ?APPEND_ENTRIES(PrevLogIndex, PrevLogTerm, Entries, CommitIndex, TrimIndex), State1),
-            NextIndex1 =
+            NewNextIndices =
                 case CastResult of
                     ok ->
                         % pipelining - move NextIndex after sending out logs. If a packet is lost, follower's AppendEntriesResponse
                         % will return send back its correct index
-                        NextIndex0#{FollowerId => PrevLogIndex + length(Entries) + 1};
+                        NextIndices#{FollowerId => PrevLogIndex + length(Entries) + 1};
                     _ ->
-                        NextIndex0
+                        NextIndices
                 end,
             LastFollowerHeartbeatTs =/= undefined andalso ?RAFT_GATHER('raft.leader.heartbeat.interval_ms', erlang:monotonic_time(millisecond) - LastFollowerHeartbeatTs),
-            State1#raft_state{next_index = NextIndex1}
+            State1#raft_state{next_indices = NewNextIndices}
     end.
 
 -spec compute_handover_candidates(State :: #raft_state{}) -> [node()].
-compute_handover_candidates(#raft_state{application = App, log_view = View, match_index = MatchIndex} = State) ->
+compute_handover_candidates(#raft_state{application = App, log_view = View, match_indices = MatchIndices} = State) ->
     Replicas = config_replicas(config(State)),
     LastLogIndex = wa_raft_log:last_index(View),
     MaxHandoverLogEntries = ?RAFT_HANDOVER_MAX_ENTRIES(App),
-    [Peer || {_Name, Peer} <- Replicas, Peer =/= node(), LastLogIndex - maps:get(Peer, MatchIndex, 0) =< MaxHandoverLogEntries].
+    [Peer || {_Name, Peer} <- Replicas, Peer =/= node(), LastLogIndex - maps:get(Peer, MatchIndices, 0) =< MaxHandoverLogEntries].
 
 -spec adjust_config(Action :: {add, peer()} | {remove, peer()} | {add_witness, peer()} | {remove_witness, peer()} | {refresh, undefined},
                     Config :: config(), State :: #raft_state{}) -> {ok, NewConfig :: config()} | {error, Reason :: atom()}.
@@ -2477,8 +2496,9 @@ append_entries(State, PrevLogIndex, PrevLogTerm, Entries, EntryCount, #raft_stat
                     ?LOG_WARNING("Server[~0p, term ~0p, ~0p] fails as progress requires truncation of log entry at ~0p due to log mismatch when log entries up to ~0p were already applied.",
                         [Name, CurrentTerm, State, PrevLogIndex, LastApplied], #{domain => [whatsapp, wa_raft]}),
                     {fatal,
-                        io_lib:format("Leader ~0p of term ~0p requested truncation of log entry at ~0p due to log term mismatch (local ~0p, leader ~0p) when log entries up to ~0p were already applied.",
-                            [LeaderId, CurrentTerm, PrevLogIndex, LocalPrevLogTerm, PrevLogTerm, LastApplied])};
+                        lists:flatten(
+                            io_lib:format("Leader ~0p of term ~0p requested truncation of log entry at ~0p due to log term mismatch (local ~0p, leader ~0p) when log entries up to ~0p were already applied.",
+                                [LeaderId, CurrentTerm, PrevLogIndex, LocalPrevLogTerm, PrevLogTerm, LastApplied]))};
                 false ->
                     % We are not deleting already applied log entries, so proceed with truncation.
                     ?LOG_NOTICE("Server[~0p, term ~0p, ~0p] truncating local log ending at ~0p to past ~0p due to log mismatch.",

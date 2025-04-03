@@ -393,9 +393,10 @@
     %% Catchup service name
     catchup :: atom(),
 
-    %% Log index that committed
+    %% The index of the latest log entry that is committed by the cluster
     commit_index = 0 :: non_neg_integer(),
-    %% Log index that applied to storage
+
+    %% The index of the latest log entry that has been sent to storage to be applied
     last_applied = 0 :: non_neg_integer(),
 
     %% currently cached RAFT configuration and its index
@@ -419,9 +420,11 @@
     %% Timestamp in milliseconds (monotonic) of the start of the current state
     state_start_ts :: non_neg_integer(),
 
-    %% leader
-    next_index = #{} :: #{node() => non_neg_integer()},
-    match_index = #{} :: #{node() => non_neg_integer()},
+    %% [Leader] Mapping from peer to the index of the first log entry to send in the next heartbeat
+    next_indices = #{} :: #{node() => wa_raft_log:log_index()},
+    %% [Leader] Mapping from peer to the index of the latest log entry in the peer's log known to match the leader's log
+    match_indices = #{} :: #{node() => wa_raft_log:log_index()},
+
     %% last timestamp in ms when we send heartbeat
     last_heartbeat_ts = #{} :: #{node() => integer()},
     %% Timestamps in milliseconds of last time each follower responded successfully to a heartbeat
