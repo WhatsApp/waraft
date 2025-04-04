@@ -713,7 +713,7 @@ list_snapshots(RootDir) ->
 -spec decode_snapshot_name(Name :: string()) -> {true, {wa_raft_log:log_pos(), file:filename()}} | false.
 decode_snapshot_name(Name) ->
     case string:lexemes(Name, ".") of
-        [?SNAPSHOT_PREFIX, IndexStr, TermStr] ->
+        [?SNAPSHOT_PREFIX, IndexStr, TermStr | _] ->
             case {list_to_integer(IndexStr), list_to_integer(TermStr)} of
                 {Index, Term} when Index >= 0 andalso Term >= 0 ->
                     {true, {#raft_log_pos{index = Index, term = Term}, Name}};
