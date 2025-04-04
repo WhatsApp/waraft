@@ -811,10 +811,14 @@ stalled(Type, ?SNAPSHOT_AVAILABLE_COMMAND(Root, #raft_log_pos{index = SnapshotIn
                     true -> advance_term(?FUNCTION_NAME, SnapshotTerm, undefined, State1);
                     false -> State1
                 end,
+                NextState = case is_self_witness(State2) of
+                    true -> witness;
+                    false -> follower
+                end,
                 % At this point, we assume that we received some cluster membership configuration from
                 % our peer so it is safe to transition to an operational state.
                 reply(Type, ok),
-                {next_state, follower, State2}
+                {next_state, NextState, State2}
             catch
                 _:Reason ->
                     ?LOG_WARNING("Server[~0p, term ~0p, stalled] failed to load available snapshot ~p due to ~p",
@@ -1828,7 +1832,7 @@ command(StateName, Type, ?ADJUST_MEMBERSHIP_COMMAND(Action, Peer, ConfigIndex), 
 %% [Snapshot Available] Follower and candidate nodes might switch to stalled to install snapshot.
 command(StateName, Type, ?SNAPSHOT_AVAILABLE_COMMAND(_Root, #raft_log_pos{index = SnapshotIndex}) = Event,
         #raft_state{name = Name, current_term = CurrentTerm, last_applied = LastAppliedIndex} = State)
-            when StateName =:= follower orelse StateName =:= candidate ->
+            when StateName =:= follower orelse StateName =:= candidate orelse StateName =:= witness ->
     case SnapshotIndex > LastAppliedIndex of
         true ->
             ?LOG_NOTICE("Server[~0p, term ~0p, ~0p] got snapshot with newer index ~p compared to currently applied index ~p",
@@ -1930,6 +1934,10 @@ config_witnesses(#{witness := Witnesses}) ->
     Witnesses;
 config_witnesses(_Config) ->
     [].
+
+-spec is_self_witness(#raft_state{}) -> boolean().
+is_self_witness(#raft_state{self = #raft_identity{name = Name, node = Node}} = RaftState) ->
+    lists:member({Name, Node}, config_witnesses(config(RaftState))).
 
 -spec config_identities(Config :: config()) -> Peers :: [#raft_identity{}].
 config_identities(#{membership := Membership}) ->
