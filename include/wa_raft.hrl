@@ -51,6 +51,10 @@
 -define(SNAPSHOT_PREFIX, "snapshot").
 %% Snapshot name
 -define(SNAPSHOT_NAME(Index, Term), (?SNAPSHOT_PREFIX "." ++ integer_to_list(Index) ++ "." ++ integer_to_list(Term))).
+
+%% Witness Snapshot name
+-define(WITNESS_SNAPSHOT_NAME(Index, Term), (?SNAPSHOT_PREFIX "." ++ integer_to_list(Index) ++ "." ++ integer_to_list(Term) ++ ".witness")).
+
 %% Location of a snapshot
 -define(RAFT_SNAPSHOT_PATH(Path, Name), (filename:join(Path, Name))).
 -define(RAFT_SNAPSHOT_PATH(Table, Partition, Name), ?RAFT_SNAPSHOT_PATH(?RAFT_PARTITION_PATH(Table, Partition), Name)).

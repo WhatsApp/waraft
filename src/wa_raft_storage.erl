@@ -31,6 +31,8 @@
     open_snapshot/3,
     create_snapshot/1,
     create_snapshot/2,
+    create_witness_snapshot/1,
+    create_witness_snapshot/2,
     make_empty_snapshot/5,
     delete_snapshot/2
 ]).
@@ -272,6 +274,14 @@
 -callback storage_make_empty_snapshot(Name :: atom(), Identifier :: #raft_identifier{}, Path :: file:filename(), Position :: wa_raft_log:log_pos(), Config :: wa_raft_server:config(), Data :: dynamic()) -> ok | error().
 -optional_callback([storage_make_empty_snapshot/6]).
 
+%% Create a new witness snapshot at the provided path, containing only the current
+%% position in storage, configuration, and virtual partition range information.
+%% The snapshot will be empty (without actual storage data) but will retain all
+%% necessary metadata. When loaded, this witness snapshot will reflect the exact
+%% position state of the original storage without the storage contents.
+-callback storage_create_witness_snapshot(Path :: file:filename(), Handle :: storage_handle()) -> ok | error().
+-optional_callback([storage_create_witness_snapshot/6]).
+
 %%-----------------------------------------------------------------------------
 %% RAFT Storage - Types
 %%-----------------------------------------------------------------------------
@@ -357,6 +367,14 @@ create_snapshot(ServiceRef) ->
 -spec create_snapshot(ServiceRef :: pid() | atom(), Name :: string()) -> {ok, Pos :: wa_raft_log:log_pos()} | error().
 create_snapshot(ServiceRef, Name) ->
     gen_server:call(ServiceRef, {snapshot_create, Name}, ?RAFT_STORAGE_CALL_TIMEOUT()).
+
+-spec create_witness_snapshot(ServiceRef :: pid() | atom()) -> {ok, Pos :: wa_raft_log:log_pos()} | error().
+create_witness_snapshot(ServiceRef) ->
+    gen_server:call(ServiceRef, snapshot_create_witness, ?RAFT_STORAGE_CALL_TIMEOUT()).
+
+-spec create_witness_snapshot(ServiceRef :: pid() | atom(), Name :: string()) -> {ok, Pos :: wa_raft_log:log_pos()} | error().
+create_witness_snapshot(ServiceRef, Name) ->
+    gen_server:call(ServiceRef, {snapshot_create_witness, Name}, ?RAFT_STORAGE_CALL_TIMEOUT()).
 
 -spec make_empty_snapshot(ServiceRef :: pid() | atom(), Path :: file:filename(), Position :: wa_raft_log:log_pos(), Config :: wa_raft_server:config(), Data :: term()) -> ok | error().
 make_empty_snapshot(ServiceRef, Path, Position, Config, Data) ->
@@ -450,8 +468,10 @@ init(#raft_options{table = Table, partition = Partition, identifier = Identifier
         open |
         {read, Op :: wa_raft_acceptor:command()} |
         snapshot_create |
+        snapshot_create_witness |
         status |
         {snapshot_create, Name :: string()} |
+        {snapshot_create_witness, Name :: string()} |
         {snapshot_open, Path :: file:filename(), LastAppliedPos :: wa_raft_log:log_pos()} |
         {make_empty_snapshot, Path :: file:filename(), Position :: wa_raft_log:log_pos(), Config :: wa_raft_server:config(), Data :: term()} |
         position |
@@ -471,6 +491,18 @@ handle_call({snapshot_create, Name}, _From, #state{last_applied = #raft_log_pos{
     case create_snapshot_impl(Name, State) of
         ok ->
             {reply, {ok, #raft_log_pos{index = LastIndex, term = LastTerm}}, State};
+        {error, _} = Error ->
+            {reply, Error, State}
+    end;
+
+handle_call(snapshot_create_witness, From, #state{last_applied = #raft_log_pos{index = LastIndex, term = LastTerm}} = State) ->
+    Name = ?WITNESS_SNAPSHOT_NAME(LastIndex, LastTerm),
+    handle_call({snapshot_create, Name}, From, State);
+
+handle_call({snapshot_create_witness, Name}, _From, #state{last_applied = LastApplied} = State) ->
+    case create_witness_snapshot_impl(Name, State) of
+        ok ->
+            {reply, {ok, LastApplied}, State};
         {error, _} = Error ->
             {reply, Error, State}
     end;
@@ -635,6 +667,22 @@ create_snapshot_impl(SnapName, #state{name = Name, root_dir = RootDir, module = 
             cleanup_snapshots(State),
             ?LOG_NOTICE("Create snapshot ~s for ~p.", [SnapName, Name], #{domain => [whatsapp, wa_raft]}),
             Module:storage_create_snapshot(SnapshotPath, Handle)
+    end.
+
+-spec create_witness_snapshot_impl(SnapName :: string(), Storage :: #state{}) -> ok | error().
+create_witness_snapshot_impl(SnapName, #state{name = Name, root_dir = RootDir, module = Module, handle = Handle} = State) ->
+    SnapshotPath = filename:join(RootDir, SnapName),
+    case filelib:is_dir(SnapshotPath) of
+        true ->
+            ?LOG_NOTICE("Snapshot ~s for ~p already exists. Skipping witness snapshot creation.", [SnapName, Name], #{domain => [whatsapp, wa_raft]}),
+            ok;
+        false ->
+            cleanup_snapshots(State),
+            ?LOG_NOTICE("Create witness snapshot ~s for ~p.", [SnapName, Name], #{domain => [whatsapp, wa_raft]}),
+            case erlang:function_exported(Module, storage_create_witness_snapshot, 2) of
+                true -> Module:storage_create_witness_snapshot(SnapshotPath, Handle);
+                false -> {error, not_supported}
+            end
     end.
 
 -define(MAX_RETAINED_SNAPSHOT, 1).
