@@ -2723,10 +2723,8 @@ select_follower_replication_mode(FollowerLastIndex, #raft_state{application = Ap
 %% always performs this request asynchronously.
 -spec request_snapshot_for_follower(node(), #raft_state{}) -> term().
 request_snapshot_for_follower(FollowerId, #raft_state{application = App, name = Name, table = Table, partition = Partition} = State) ->
-    case lists:member({Name, FollowerId}, config_witnesses(config(State))) of
-        true  -> wa_raft_snapshot_catchup:witness_replica(App, Name, FollowerId, Table, Partition);
-        false -> wa_raft_snapshot_catchup:full_replica(App, Name, FollowerId, Table, Partition)
-    end.
+    Witness = lists:member({Name, FollowerId}, config_witnesses(config(State))),
+    wa_raft_snapshot_catchup:catchup(App, Name, FollowerId, Table, Partition, Witness).
 
 -spec request_bulk_logs_for_follower(#raft_identity{}, wa_raft_log:log_index(), #raft_state{}) -> ok.
 request_bulk_logs_for_follower(Peer, FollowerEndIndex, #raft_state{name = Name, catchup = Catchup, current_term = CurrentTerm, commit_index = CommitIndex}) ->
