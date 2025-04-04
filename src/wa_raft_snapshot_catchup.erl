@@ -12,6 +12,7 @@
 
 -include_lib("kernel/include/logger.hrl").
 -include("wa_raft.hrl").
+-include("wa_raft_rpc.hrl").
 
 % erlint-ignore dialyzer_override: improper list expected by gen interface
 -dialyzer({no_improper_lists, [handle_cast/2]}).
@@ -29,7 +30,8 @@
 
 %% Internal API
 -export([
-    catchup/6
+    full_replica/5,
+    witness_replica/5
 ]).
 
 %% Snapshot catchup server implementation
@@ -51,7 +53,8 @@
 -define(PENDING_KEY(Name, Node), {pending, Name, Node}).
 
 -define(WHICH_TRANSPORTS, which_transports).
--define(CATCHUP(App, Name, Node, Table, Partition, Witness), {catchup, App, Name, Node, Table, Partition, Witness}).
+-define(FULL_REPLICA(App, Name, Node, Table, Partition), {full_replica, App, Name, Node, Table, Partition}).
+-define(WITNESS_REPLICA(App, Name, Node, Table, Partition), {witness_relica, App, Name, Node, Table, Partition}).
 
 -type key() :: {Name :: atom(), Node :: node()}.
 -type snapshot_key() :: {Table :: wa_raft:table(), Partition :: wa_raft:partition(), Position :: wa_raft_log:log_pos()}.
@@ -59,8 +62,9 @@
 -type which_transports() :: ?WHICH_TRANSPORTS.
 -type call() :: which_transports().
 
--type catchup() :: ?CATCHUP(atom(), atom(), node(), wa_raft:table(), wa_raft:partition(), boolean()).
--type cast() :: catchup().
+-type full_replica() :: ?FULL_REPLICA(atom(), atom(), node(), wa_raft:table(), wa_raft:partition()).
+-type witness_replica() :: ?WITNESS_REPLICA(atom(), atom(), node(), wa_raft:table(), wa_raft:partition()).
+-type cast() :: full_replica() | witness_replica().
 
 -record(transport, {
     app :: atom(),
@@ -98,19 +102,24 @@ start_link() ->
 which_transports() ->
     gen_server:call(?MODULE, ?WHICH_TRANSPORTS).
 
--spec catchup(
-    App :: atom(),
-    Name :: atom(),
-    Node :: node(),
-    Table :: wa_raft:table(),
-    Partition :: wa_raft:partition(),
-    Witness :: boolean()
-) -> ok.
-catchup(App, Name, Node, Table, Partition, Witness) ->
+-spec full_replica(App :: atom(), Name :: atom(), Node :: node(), Table :: wa_raft:table(), Partition :: wa_raft:partition()) -> ok.
+full_replica(App, Name, Node, Table, Partition) ->
     try
         % Check ETS to avoid putting duplicate requests into the message queue.
         ets:insert_new(?MODULE, {?PENDING_KEY(Name, Node)}) andalso
-            gen_server:cast(?MODULE, ?CATCHUP(App, Name, Node, Table, Partition, Witness)),
+            gen_server:cast(?MODULE, ?FULL_REPLICA(App, Name, Node, Table, Partition)),
+        ok
+    catch
+        error:badarg ->
+            ok
+    end.
+
+-spec witness_replica(App :: atom(), Name :: atom(), Node :: node(), Table :: wa_raft:table(), Partition :: wa_raft:partition()) -> ok.
+witness_replica(App, Name, Node, Table, Partition) ->
+    try
+        % Check ETS to avoid putting duplicate requests into the message queue.
+        ets:insert_new(?MODULE, {?PENDING_KEY(Name, Node)}) andalso
+            gen_server:cast(?MODULE, ?WITNESS_REPLICA(App, Name, Node, Table, Partition)),
         ok
     catch
         error:badarg ->
@@ -137,7 +146,7 @@ handle_call(Request, From, #state{} = State) ->
     {noreply, State}.
 
 -spec handle_cast(Request :: cast(), State :: #state{}) -> {noreply, #state{}}.
-handle_cast(?CATCHUP(App, Name, Node, Table, Partition, Witness), State0) ->
+handle_cast(?FULL_REPLICA(App, Name, Node, Table, Partition), State0) ->
     % Just immediately remove the pending key from the ETS. Doing this here is simpler
     % but permits a bounded number of extra requests to remain in the queue.
     ets:delete(?MODULE, ?PENDING_KEY(Name, Node)),
@@ -145,7 +154,9 @@ handle_cast(?CATCHUP(App, Name, Node, Table, Partition, Witness), State0) ->
     case allowed(Now, Name, Node, State0) of
         {true, #state{transports = Transports, snapshots = Snapshots, overload_backoffs = OverloadBackoffs} = State1} ->
             try
-                {#raft_log_pos{index = Index, term = Term} = LogPos, Path} = create_snapshot(Table, Partition, Witness),
+                StorageRef = wa_raft_storage:registered_name(Table, Partition),
+                {ok, #raft_log_pos{index = Index, term = Term} = LogPos} = wa_raft_storage:create_snapshot(StorageRef),
+                Path = ?RAFT_SNAPSHOT_PATH(Table, Partition, Index, Term),
                 case wa_raft_transport:start_snapshot_transfer(Node, Table, Partition, LogPos, Path, infinity) of
                     {error, receiver_overloaded} ->
                         ?LOG_NOTICE("destination node ~0p is overloaded, abort new transport for ~0p:~0p and try again later",
@@ -170,6 +181,41 @@ handle_cast(?CATCHUP(App, Name, Node, Table, Partition, Witness), State0) ->
             catch
                 _T:_E:S ->
                     ?LOG_ERROR("failed to start accepted snapshot transport of ~0p:~0p to ~0p at ~p",
+                        [Table, Partition, Node, S], #{domain => [whatsapp, wa_raft]}),
+                    {noreply, State1}
+            end;
+        {false, State1} ->
+            {noreply, State1}
+    end;
+handle_cast(?WITNESS_REPLICA(App, Name, Node, Table, Partition), State0) ->
+    % Just immediately remove the pending key from the ETS. Doing this here is simpler
+    % but permits a bounded number of extra requests to remain in the queue.
+    ets:delete(?MODULE, ?PENDING_KEY(Name, Node)),
+    Now = erlang:monotonic_time(millisecond),
+    case allowed(Now, Name, Node, State0) of
+        {true, #state{retry_backoffs = RetryBackoffs} = State1} ->
+            try
+                % If node is a witness, we can avoid creating a full snapshot as witness replicas
+                % do not maintain the storage state. Instead, issue a SnapshotAvailableCommand
+                % directly to the witness replica.
+                StorageRef = wa_raft_storage:registered_name(Table, Partition),
+                Position = wa_raft_storage:position(StorageRef),
+                ?LOG_NOTICE("sending abridged snapshot at ~0p to witness ~0p on ~0p",
+                    [Position, Name, Node], #{domain => [whatsapp, wa_raft]}),
+
+                % Until RAFT server supports casted SnapshotAvailableCommand, create an bogus
+                % reference that we pass off as an alias to absorb the response from the peer
+                % RAFT server.
+                % eqwalizer:ignore - improper list expected by gen interface
+                Tag = [alias | make_ref()],
+                Request = ?SNAPSHOT_AVAILABLE_COMMAND(undefined, Position),
+                erlang:send({Name, Node}, {'$gen_call', {self(), Tag}, Request}, [noconnect, nosuspend]),
+                NewRetryBackoff = Now + ?RAFT_SNAPSHOT_CATCHUP_COMPLETED_BACKOFF_MS(App),
+                NewRetryBackoffs = RetryBackoffs#{{Name, Node} => NewRetryBackoff},
+                {noreply, State1#state{retry_backoffs = NewRetryBackoffs}}
+            catch
+                _:_:S ->
+                    ?LOG_ERROR("failed to send abridged snapshot for ~0p:~0p to ~0p:~n~p",
                         [Table, Partition, Node, S], #{domain => [whatsapp, wa_raft]}),
                     {noreply, State1}
             end;
@@ -264,19 +310,3 @@ delete_snapshot(Table, Partition, #raft_log_pos{index = Index, term = Term}) ->
 -spec schedule_scan() -> reference().
 schedule_scan() ->
     erlang:send_after(?SCAN_EVERY_MS, self(), scan).
-
--spec create_snapshot(
-    Table :: wa_raft:table(),
-    Partition :: wa_raft:partition(),
-    Witness :: boolean()
-) -> {LogPos :: wa_raft_log:log_pos(), string()}.
-create_snapshot(Table, Partition, false) ->
-    StorageRef = wa_raft_storage:registered_name(Table, Partition),
-    {ok, #raft_log_pos{index = Index, term = Term} = LogPos} = wa_raft_storage:create_snapshot(StorageRef),
-    Path = ?RAFT_SNAPSHOT_PATH(Table, Partition, Index, Term),
-    {LogPos, Path};
-create_snapshot(Table, Partition, true) ->
-    StorageRef = wa_raft_storage:registered_name(Table, Partition),
-    {ok, #raft_log_pos{index = Index, term = Term} = LogPos} = wa_raft_storage:create_witness_snapshot(StorageRef),
-    Path = ?RAFT_SNAPSHOT_PATH(Table, Partition, ?WITNESS_SNAPSHOT_NAME(Index, Term)),
-    {LogPos, Path}.
