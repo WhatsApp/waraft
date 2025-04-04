@@ -274,8 +274,8 @@
 -callback storage_make_empty_snapshot(Name :: atom(), Identifier :: #raft_identifier{}, Path :: file:filename(), Position :: wa_raft_log:log_pos(), Config :: wa_raft_server:config(), Data :: dynamic()) -> ok | error().
 -optional_callback([storage_make_empty_snapshot/6]).
 
-%% Create a new witness snapshot at the provided path, containing only the current
-%% position in storage, configuration, and virtual partition range information.
+%% Create a new witness snapshot at the provided path which must contain the current
+%% position in storage and configuration.
 %% The snapshot will be empty (without actual storage data) but will retain all
 %% necessary metadata. When loaded, this witness snapshot will reflect the exact
 %% position state of the original storage without the storage contents.
