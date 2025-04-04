@@ -88,7 +88,8 @@
     snapshot_available/3,
     adjust_membership/3,
     adjust_membership/4,
-    promote/1,
+    trigger_election/1,
+    trigger_election/2,
     promote/2,
     promote/3,
     promote/4,
@@ -175,6 +176,8 @@
     disabled |
     witness.
 
+-type term_or_offset() :: wa_raft_log:log_term() | current | next | {next, Offset :: pos_integer()}.
+
 -type peer() :: {Name :: atom(), Node :: node()}.
 -type membership() :: [peer()].
 
@@ -222,12 +225,16 @@
 -type legacy_rpc() :: ?LEGACY_RAFT_RPC(atom(), wa_raft_log:log_term(), node(), undefined | tuple()).
 -type rpc_named() :: ?RAFT_NAMED_RPC(atom(), wa_raft_log:log_term(), atom(), node(), undefined | tuple()).
 
--type command() :: commit_command() | read_command() | status_command() | promote_command() | resign_command() | adjust_membership_command() | snapshot_available_command() |
-                   handover_candidates_command() | handover_command() | enable_command() | disable_command() | bootstrap_command().
+-type command() :: commit_command() | read_command() | status_command() | trigger_election_command() |
+                   promote_command() | resign_command() | adjust_membership_command() |
+                   snapshot_available_command() | handover_candidates_command() | handover_command() |
+                   enable_command() | disable_command() | bootstrap_command().
+
 -type commit_command()              :: ?COMMIT_COMMAND(wa_raft_acceptor:op()).
 -type read_command()                :: ?READ_COMMAND(wa_raft_acceptor:read_op()).
 -type status_command()              :: ?STATUS_COMMAND.
--type promote_command()             :: ?PROMOTE_COMMAND() | ?PROMOTE_COMMAND(wa_raft_log:log_term() | next, boolean(), config() | undefined).
+-type trigger_election_command()    :: ?TRIGGER_ELECTION_COMMAND(term_or_offset()).
+-type promote_command()             :: ?PROMOTE_COMMAND(wa_raft_log:log_term() | next, boolean(), config() | undefined).
 -type resign_command()              :: ?RESIGN_COMMAND.
 -type adjust_membership_command()   :: ?ADJUST_MEMBERSHIP_COMMAND(membership_action(), peer() | undefined, wa_raft_log:log_index() | undefined).
 -type snapshot_available_command()  :: ?SNAPSHOT_AVAILABLE_COMMAND(string(), wa_raft_log:log_pos()).
@@ -460,9 +467,15 @@ adjust_membership(Server, Action, Peer) ->
 adjust_membership(Server, Action, Peer, ConfigIndex) ->
     gen_statem:call(Server, ?ADJUST_MEMBERSHIP_COMMAND(Action, Peer, ConfigIndex), ?RAFT_RPC_CALL_TIMEOUT()).
 
--spec promote(Server :: gen_statem:server_ref()) -> ok.
-promote(Server) ->
-    gen_statem:call(Server, ?PROMOTE_COMMAND(), ?RAFT_RPC_CALL_TIMEOUT()).
+%% Request the specified RAFT server to start an election in the next term.
+-spec trigger_election(Server :: gen_statem:server_ref()) -> ok | wa_raft:error().
+trigger_election(Server) ->
+    trigger_election(Server, current).
+
+%% Request the specified RAFT server to trigger a new election in the term *after* the specified term.
+-spec trigger_election(Server :: gen_statem:server_ref(), Term :: term_or_offset()) -> ok | wa_raft:error().
+trigger_election(Server, Term) ->
+    gen_statem:call(Server, ?TRIGGER_ELECTION_COMMAND(Term), ?RAFT_RPC_CALL_TIMEOUT()).
 
 -spec promote(
     Server :: gen_statem:server_ref(),
@@ -755,6 +768,10 @@ stalled(_Type, ?REMOTE(Sender, ?APPEND_ENTRIES(PrevLogIndex, _PrevLogTerm, _Entr
     NewState = State#raft_state{leader_heartbeat_ts = erlang:monotonic_time(millisecond)},
     send_rpc(Sender, ?APPEND_ENTRIES_RESPONSE(PrevLogIndex, false, 0), NewState),
     {keep_state, NewState};
+
+stalled({call, From}, ?TRIGGER_ELECTION_COMMAND(_), #raft_state{name = Name, current_term = CurrentTerm}) ->
+    ?LOG_WARNING("Server[~0p, term ~0p, stalled] cannot start an election.", [Name, CurrentTerm], #{domain => [whatsapp, wa_raft]}),
+    {keep_state_and_data, {reply, From, {error, invalid_state}}};
 
 stalled({call, From}, ?BOOTSTRAP_COMMAND(#raft_log_pos{index = Index, term = Term} = Position, Config, Data),
         #raft_state{name = Name, self = Self, data_dir = PartitionPath, storage = Storage, current_term = CurrentTerm, last_applied = LastApplied} = State0) ->
@@ -1546,9 +1563,9 @@ disabled(_Type, ?REMOTE(_, ?APPEND_ENTRIES(_, _, _, _, _)), _State) ->
 disabled(_Type, ?REMOTE(_, ?REQUEST_VOTE(_, _, _)), _State) ->
     keep_state_and_data;
 
-disabled({call, From}, ?PROMOTE_COMMAND(), #raft_state{name = Name, current_term = CurrentTerm}) ->
-    ?LOG_WARNING("Server[~0p, term ~0p, disabled] cannot promote to candidate.", [Name, CurrentTerm], #{domain => [whatsapp, wa_raft]}),
-    {keep_state_and_data, {reply, From, {error, rejected}}};
+disabled({call, From}, ?TRIGGER_ELECTION_COMMAND(_), #raft_state{name = Name, current_term = CurrentTerm}) ->
+    ?LOG_WARNING("Server[~0p, term ~0p, disabled] cannot start an election.", [Name, CurrentTerm], #{domain => [whatsapp, wa_raft]}),
+    {keep_state_and_data, {reply, From, {error, invalid_state}}};
 
 disabled({call, From}, ?PROMOTE_COMMAND(_Term, _Force, _Config), #raft_state{name = Name, current_term = CurrentTerm}) ->
     ?LOG_WARNING("Server[~0p, term ~0p, disabled] cannot be promoted.", [Name, CurrentTerm], #{domain => [whatsapp, wa_raft]}),
@@ -1626,6 +1643,10 @@ witness(_Type, ?REMOTE(Sender, ?HANDOVER(Ref, _, _, _)),
 %% [Handover][HandoverFailed RPC] Witnesses should not act upon any incoming failed handover
 witness(_Type, ?REMOTE(_, ?HANDOVER_FAILED(_)), _State) ->
     keep_state_and_data;
+
+witness({call, From}, ?TRIGGER_ELECTION_COMMAND(_), #raft_state{name = Name, current_term = CurrentTerm}) ->
+    ?LOG_WARNING("Server[~0p, term ~0p, witness] cannot start an election.", [Name, CurrentTerm], #{domain => [whatsapp, wa_raft]}),
+    {keep_state_and_data, {reply, From, {error, invalid_state}}};
 
 witness(Type, ?SNAPSHOT_AVAILABLE_COMMAND(undefined, #raft_log_pos{index = SnapshotIndex, term = SnapshotTerm} = SnapshotPos),
         #raft_state{name = Name, current_term = CurrentTerm, last_applied = LastApplied} = State) ->
@@ -1710,25 +1731,42 @@ command(StateName, {call, From}, ?STATUS_COMMAND, State) ->
     ],
     {keep_state_and_data, {reply, From, Status}};
 
-%% [Promote] Promote full replica nodes to candidate which will advance to next term.
+%% [Promote] Request full replica nodes to start a new election.
 command(
     StateName,
     {call, From},
-    ?PROMOTE_COMMAND(),
+    ?TRIGGER_ELECTION_COMMAND(TermOrOffset),
     #raft_state{application = App, name = Name, current_term = CurrentTerm} = State
 ) when StateName =/= stalled, StateName =/= witness, StateName =/= disabled ->
-    case ?RAFT_LEADER_ELIGIBLE(App) of
+    Term = case TermOrOffset of
+        current -> CurrentTerm;
+        next -> CurrentTerm + 1;
+        {next, Offset} -> CurrentTerm + Offset;
+        _ -> TermOrOffset
+    end,
+    case is_integer(Term) andalso Term >= CurrentTerm of
         true ->
-            ?LOG_NOTICE("Server[~0p, term ~0p, ~0p] is switching to candidate after promotion request.",
-                [Name, CurrentTerm, StateName], #{domain => [whatsapp, wa_raft]}),
-            case StateName of
-                candidate -> {repeat_state, State, {reply, From, ok}};
-                _Other    -> {next_state, candidate, State, {reply, From, ok}}
+            case ?RAFT_LEADER_ELIGIBLE(App) of
+                true ->
+                    ?LOG_NOTICE("Server[~0p, term ~0p, ~0p] is switching to candidate after promotion request.",
+                        [Name, CurrentTerm, StateName], #{domain => [whatsapp, wa_raft]}),
+                    NewState = case Term > CurrentTerm of
+                        true -> advance_term(StateName, Term, undefined, State);
+                        false -> State
+                    end,
+                    case StateName of
+                        candidate -> {repeat_state, NewState, {reply, From, ok}};
+                        _Other    -> {next_state, candidate, NewState, {reply, From, ok}}
+                    end;
+                false ->
+                    ?LOG_ERROR("Server[~0p, term ~0p, ~0p] cannot be promoted as candidate while ineligible.",
+                        [Name, CurrentTerm, StateName], #{domain => [whatsapp, wa_raft]}),
+                    {keep_state_and_data, {reply, From, {error, ineligible}}}
             end;
         false ->
-            ?LOG_ERROR("Server[~0p, term ~0p, ~0p] cannot be promoted as candidate while ineligible.",
-                [Name, CurrentTerm, StateName], #{domain => [whatsapp, wa_raft]}),
-            {keep_state_and_data, {reply, From, {error, ineligible}}}
+            ?LOG_ERROR("Server[~0p, term ~0p, ~0p] refusing to promote to current, older, or invalid term ~0p.",
+                [Name, CurrentTerm, StateName, Term], #{domain => [whatsapp, wa_raft]}),
+            {keep_state_and_data, {reply, From, {error, rejected}}}
     end;
 
 %% [Promote] Non-disabled nodes check if eligible to promote and then promote to leader.

@@ -78,7 +78,7 @@
 -define(READ_COMMAND(Op),                                       ?RAFT_COMMAND(read, Op)).
 
 -define(STATUS_COMMAND,                                         ?RAFT_COMMAND(status, undefined)).
--define(PROMOTE_COMMAND(),                                      ?RAFT_COMMAND(promote, undefined)).
+-define(TRIGGER_ELECTION_COMMAND(TermOrOffset),                 ?RAFT_COMMAND(trigger_election, {TermOrOffset})).
 -define(PROMOTE_COMMAND(Term, Force, Config),                   ?RAFT_COMMAND(promote, {Term, Force, Config})).
 -define(RESIGN_COMMAND,                                         ?RAFT_COMMAND(resign, undefined)).
 
