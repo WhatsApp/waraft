@@ -69,13 +69,6 @@
     code_change/3
 ]).
 
-%% Test API
--ifdef(TEST).
--export([
-    reset/3
-]).
--endif.
-
 -export_type([
     storage_handle/0,
     metadata/0,
@@ -395,17 +388,6 @@ label(ServiceRef) ->
 -spec config(ServiceRef :: pid() | atom()) -> {ok, wa_raft_log:log_pos(), wa_raft_server:config()} | undefined | wa_raft_storage:error().
 config(ServiceRef) ->
     gen_server:call(ServiceRef, config, ?RAFT_STORAGE_CALL_TIMEOUT()).
-
--ifdef(TEST).
--spec reset(ServiceRef :: pid() | atom(), Position :: wa_raft_log:log_pos(), Config :: wa_raft_server:config() | undefined) -> ok | error().
-reset(ServiceRef, Position, Config) ->
-    sys:replace_state(ServiceRef, fun (#state{module = Module, handle = Handle} = State) ->
-        Config =/= undefined andalso
-            Module:storage_apply_config(Config, Position, Handle),
-        State#state{last_applied = Position}
-    end, ?RAFT_STORAGE_CALL_TIMEOUT()),
-    ok.
--endif.
 
 %%-------------------------------------------------------------------
 %% RAFT Storage - Internal API
