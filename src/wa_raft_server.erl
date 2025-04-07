@@ -775,7 +775,7 @@ stalled({call, From}, ?TRIGGER_ELECTION_COMMAND(_), #raft_state{name = Name, cur
 
 stalled({call, From}, ?BOOTSTRAP_COMMAND(#raft_log_pos{index = Index, term = Term} = Position, Config, Data),
         #raft_state{name = Name, self = Self, data_dir = PartitionPath, storage = Storage, current_term = CurrentTerm, last_applied = LastApplied} = State0) ->
-    case Index > LastApplied andalso Term > 0 of
+    case LastApplied =:= 0 of
         true ->
             ?LOG_NOTICE("Server[~0p, term ~0p, stalled] attempting bootstrap at ~0p:~0p with config ~0p and data ~0P.",
                 [Name, CurrentTerm, Index, Term, Config, Data, 30], #{domain => [whatsapp, wa_raft]}),
@@ -783,16 +783,17 @@ stalled({call, From}, ?BOOTSTRAP_COMMAND(#raft_log_pos{index = Index, term = Ter
             try
                 ok = wa_raft_storage:make_empty_snapshot(Storage, Path, Position, Config, Data),
                 State1 = open_snapshot(Path, Position, State0),
-                case Term > CurrentTerm of
+                AdjustedTerm = max(1, Term),
+                case AdjustedTerm > CurrentTerm of
                     true ->
                         case is_single_member(Self, config(State1)) of
                             true ->
-                                State2 = advance_term(?FUNCTION_NAME, Term, node(), State1),
+                                State2 = advance_term(?FUNCTION_NAME, AdjustedTerm, node(), State1),
                                 ?LOG_NOTICE("Server[~0p, term ~0p, stalled] switching to leader as sole member after successful bootstrap.",
                                     [Name, State2#raft_state.current_term], #{domain => [whatsapp, wa_raft]}),
                                 {next_state, leader, State2, {reply, From, ok}};
                             false ->
-                                State2 = advance_term(?FUNCTION_NAME, Term, undefined, State1),
+                                State2 = advance_term(?FUNCTION_NAME, AdjustedTerm, undefined, State1),
                                 ?LOG_NOTICE("Server[~0p, term ~0p, stalled] switching to follower after successful bootstrap.",
                                     [Name, State2#raft_state.current_term], #{domain => [whatsapp, wa_raft]}),
                                 {next_state, follower, State2, {reply, From, ok}}
@@ -811,7 +812,7 @@ stalled({call, From}, ?BOOTSTRAP_COMMAND(#raft_log_pos{index = Index, term = Ter
                 catch file:del_dir_r(Path)
             end;
         false ->
-            ?LOG_NOTICE("Server[~0p, term ~0p, stalled] at ~0p rejecting request to bootstrap at invalid position ~0p:~0p.",
+            ?LOG_NOTICE("Server[~0p, term ~0p, stalled] at ~0p rejecting request to bootstrap with data.",
                 [Name, CurrentTerm, LastApplied, Index, Term], #{domain => [whatsapp, wa_raft]}),
             {keep_state_and_data, {reply, From, {error, rejected}}}
     end;
@@ -1649,14 +1650,18 @@ witness({call, From}, ?TRIGGER_ELECTION_COMMAND(_), #raft_state{name = Name, cur
     {keep_state_and_data, {reply, From, {error, invalid_state}}};
 
 witness(Type, ?SNAPSHOT_AVAILABLE_COMMAND(undefined, #raft_log_pos{index = SnapshotIndex, term = SnapshotTerm} = SnapshotPos),
-        #raft_state{name = Name, current_term = CurrentTerm, last_applied = LastApplied} = State) ->
+        #raft_state{name = Name, current_term = CurrentTerm, last_applied = LastApplied} = State0) ->
     case SnapshotIndex > LastApplied orelse LastApplied =:= 0 of
         true ->
             ?LOG_NOTICE("Server[~0p, term ~0p, witness] accepting snapshot ~p:~p but not loading",
                 [Name, CurrentTerm, SnapshotIndex, SnapshotTerm], #{domain => [whatsapp, wa_raft]}),
-            NewState = reset_log(SnapshotPos, State),
+            State1 = reset_log(SnapshotPos, State0),
+            State2 = case SnapshotTerm > CurrentTerm of
+                true -> advance_term(?FUNCTION_NAME, SnapshotTerm, undefined, State1);
+                false -> State1
+            end,
             reply(Type, ok),
-            {next_state, witness, NewState};
+            {next_state, witness, State2};
         false ->
             ?LOG_NOTICE("Server[~0p, term ~0p, witness] ignoring available snapshot ~p:~p with index not past ours (~p)",
                 [Name, CurrentTerm, SnapshotIndex, SnapshotTerm, LastApplied], #{domain => [whatsapp, wa_raft]}),
@@ -1771,7 +1776,7 @@ command(
 
 %% [Promote] Non-disabled nodes check if eligible to promote and then promote to leader.
 command(StateName, {call, From}, ?PROMOTE_COMMAND(RawTerm, Force, ConfigAll),
-        #raft_state{application = App, name = Name, log_view = View0, current_term = CurrentTerm, leader_heartbeat_ts = HeartbeatTs} = State0) when StateName =/= disabled ->
+        #raft_state{application = App, name = Name, log_view = View0, current_term = CurrentTerm, leader_heartbeat_ts = HeartbeatTs, leader_id = LeaderId} = State0) when StateName =/= disabled ->
     ElectionWeight = ?RAFT_ELECTION_WEIGHT(App),
     Term = case RawTerm of
         next -> CurrentTerm + 1;
@@ -1790,23 +1795,28 @@ command(StateName, {call, From}, ?PROMOTE_COMMAND(RawTerm, Force, ConfigAll),
     Now = erlang:monotonic_time(millisecond),
     HeartbeatGracePeriodMs = ?RAFT_PROMOTION_GRACE_PERIOD(App) * 1000,
     Allowed = if
-        Term =< CurrentTerm ->
-            ?LOG_ERROR("Server[~0p, term ~0p, ~0p] cannot attempt promotion to invalid term ~p.",
+        % Prevent promotions to older or invalid terms
+        not is_integer(Term) orelse Term < CurrentTerm ->
+            ?LOG_ERROR("Server[~0p, term ~0p, ~0p] cannot attempt promotion to current, older, or invalid term ~0p.",
                 [Name, CurrentTerm, StateName, Term], #{domain => [whatsapp, wa_raft]}),
+            invalid_term;
+        Term =:= CurrentTerm andalso LeaderId =/= undefined ->
+            ?LOG_ERROR("Server[~0p, term ~0p, ~0p] refusing to promote to leader of current term already led by ~0p.",
+                [Name, CurrentTerm, StateName, LeaderId], #{domain => [whatsapp, wa_raft]}),
             invalid_term;
         ElectionWeight =:= 0 ->
             ?LOG_ERROR("Server[~0p, term ~0p, ~0p] node election weight is zero and cannot be promoted as leader.",
                 [Name, CurrentTerm, StateName], #{domain => [whatsapp, wa_raft]}),
             ineligible;
+        StateName =:= witness ->
+            ?LOG_ERROR("Server[~0p, term ~0p, ~0p] cannot promote a witness node.",
+                [Name, CurrentTerm, StateName], #{domain => [whatsapp, wa_raft]}),
+            invalid_state;
         % Prevent promotions to any operational state when there is no cluster membership configuration.
         SavedMembership =:= [] andalso OverrideMembership =:= [] ->
             ?LOG_ERROR("Server[~0p, term ~0p, ~0p] cannot promote with neither existing nor forced config having configured membership.",
                 [Name, CurrentTerm, StateName], #{domain => [whatsapp, wa_raft]}),
             invalid_configuration;
-        StateName =:= witness ->
-            ?LOG_ERROR("Server[~0p, term ~0p, ~0p] cannot promote a witness node.",
-                [Name, CurrentTerm, StateName], #{domain => [whatsapp, wa_raft]}),
-            invalid_state;
         Force ->
             true;
         Config =/= undefined ->
@@ -1834,7 +1844,10 @@ command(StateName, {call, From}, ?PROMOTE_COMMAND(RawTerm, Force, ConfigAll),
                 [Name, CurrentTerm, StateName, NewStateName, Term], #{domain => [whatsapp, wa_raft]}),
 
             % Advance to the term requested for promotion to
-            State1 = advance_term(StateName, Term, undefined, State0),
+            State1 = case Term > CurrentTerm of
+                true -> advance_term(StateName, Term, undefined, State0);
+                false -> State0
+            end,
             State3 = case Config of
                 undefined ->
                     State1;
