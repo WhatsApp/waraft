@@ -92,7 +92,6 @@
     trigger_election/2,
     promote/2,
     promote/3,
-    promote/4,
     resign/1,
     handover/1,
     handover/2,
@@ -234,7 +233,7 @@
 -type read_command()                :: ?READ_COMMAND(wa_raft_acceptor:read_op()).
 -type status_command()              :: ?STATUS_COMMAND.
 -type trigger_election_command()    :: ?TRIGGER_ELECTION_COMMAND(term_or_offset()).
--type promote_command()             :: ?PROMOTE_COMMAND(wa_raft_log:log_term() | next, boolean(), config() | undefined).
+-type promote_command()             :: ?PROMOTE_COMMAND(term_or_offset(), boolean()).
 -type resign_command()              :: ?RESIGN_COMMAND.
 -type adjust_membership_command()   :: ?ADJUST_MEMBERSHIP_COMMAND(membership_action(), peer() | undefined, wa_raft_log:log_index() | undefined).
 -type snapshot_available_command()  :: ?SNAPSHOT_AVAILABLE_COMMAND(string(), wa_raft_log:log_pos()).
@@ -477,29 +476,14 @@ trigger_election(Server) ->
 trigger_election(Server, Term) ->
     gen_statem:call(Server, ?TRIGGER_ELECTION_COMMAND(Term), ?RAFT_RPC_CALL_TIMEOUT()).
 
--spec promote(
-    Server :: gen_statem:server_ref(),
-    Term :: wa_raft_log:log_term() | next
-) -> ok | wa_raft:error().
+%% Request the specified RAFT server to promote itself to leader of the specified term.
+-spec promote(Server :: gen_statem:server_ref(), Term :: term_or_offset()) -> ok | wa_raft:error().
 promote(Server, Term) ->
     promote(Server, Term, false).
 
--spec promote(
-    Server :: gen_statem:server_ref(),
-    Term :: wa_raft_log:log_term() | next,
-    Force :: boolean()
-) -> ok | wa_raft:error().
+-spec promote(Server :: gen_statem:server_ref(), Term :: term_or_offset(), Force :: boolean()) -> ok | wa_raft:error().
 promote(Server, Term, Force) ->
-    promote(Server, Term, Force, undefined).
-
--spec promote(
-    Server :: gen_statem:server_ref(),
-    Term :: wa_raft_log:log_term() | next,
-    Force :: boolean(),
-    Config :: config() | config_all() | undefined
-) -> ok | wa_raft:error().
-promote(Server, Term, Force, Config) ->
-    gen_statem:call(Server, ?PROMOTE_COMMAND(Term, Force, Config), ?RAFT_RPC_CALL_TIMEOUT()).
+    gen_statem:call(Server, ?PROMOTE_COMMAND(Term, Force), ?RAFT_RPC_CALL_TIMEOUT()).
 
 -spec resign(Server :: gen_statem:server_ref()) -> ok | wa_raft:error().
 resign(Server) ->
@@ -773,6 +757,10 @@ stalled({call, From}, ?TRIGGER_ELECTION_COMMAND(_), #raft_state{name = Name, cur
     ?LOG_WARNING("Server[~0p, term ~0p, stalled] cannot start an election.", [Name, CurrentTerm], #{domain => [whatsapp, wa_raft]}),
     {keep_state_and_data, {reply, From, {error, invalid_state}}};
 
+stalled({call, From}, ?PROMOTE_COMMAND(_, _), #raft_state{name = Name, current_term = CurrentTerm}) ->
+    ?LOG_WARNING("Server[~0p, term ~0p, stalled] cannot be promoted to leader.", [Name, CurrentTerm], #{domain => [whatsapp, wa_raft]}),
+    {keep_state_and_data, {reply, From, {error, invalid_state}}};
+
 stalled({call, From}, ?BOOTSTRAP_COMMAND(#raft_log_pos{index = Index, term = Term} = Position, Config, Data),
         #raft_state{name = Name, self = Self, data_dir = PartitionPath, storage = Storage, current_term = CurrentTerm, last_applied = LastApplied} = State0) ->
     case LastApplied =:= 0 of
@@ -882,35 +870,27 @@ leader(enter, PreviousStateName, #raft_state{name = Name, self = Self, current_t
     State1 = enter_state(?FUNCTION_NAME, State0),
     State2 = set_leader(?FUNCTION_NAME, Self, State1),
 
-    % During promotion, we may add a config update operation to the end of the log.
-    % If there is such an operation and it has the same term number as the current term,
-    % then make sure to set the start of the current term so that it gets replicated
-    % immediately.
+    % Attempt to refresh the label state as necessary for new log entries
     LastLogIndex = wa_raft_log:last_index(View0),
-    State5 = case wa_raft_log:get(View0, LastLogIndex) of
-        {ok, {CurrentTerm, {_Ref, {config, _NewConfig}}}} ->
-            State2#raft_state{first_current_term_log_index = LastLogIndex, last_label = undefined};
-        {ok, {CurrentTerm, {_Ref, LastLabel, {config, _NewConfig}}}} ->
-            State2#raft_state{first_current_term_log_index = LastLogIndex, last_label = LastLabel};
-        {ok, LastLogEntry} ->
-            % Otherwise, the server should add a new log entry to start the current term.
-            % This will flush pending commits, clear out and log mismatches on replicas,
-            % and establish a quorum as soon as possible.
-            State3 = case LastLogEntry of
-                {_CurrentTerm, {_Ref, LastLabel, _Command}} ->
-                    State2#raft_state{last_label = LastLabel};
-                {_, undefined} ->
-                    % The RAFT log could have been reset (i.e. after snapshot installation).
-                    % In such case load the log label state from storage.
-                    LastLabel = load_label_state(State2),
-                    State2#raft_state{last_label = LastLabel};
-                _ ->
-                    State2#raft_state{last_label = undefined}
-            end,
-            {State4, LogEntry} = get_log_entry(State3, {make_ref(), noop}),
-            {ok, NewLastLogIndex, View1} = wa_raft_log:append(View0, [LogEntry]),
-            State4#raft_state{log_view = View1, first_current_term_log_index = NewLastLogIndex}
+    State3 = case wa_raft_log:get(View0, LastLogIndex) of
+        {ok, {_Term, {_Key, LastLabel, _Command}}} ->
+            State2#raft_state{last_label = LastLabel};
+        {ok, {_Term, undefined}} ->
+            % The RAFT log could have been reset (i.e. after snapshot installation).
+            % In such case load the log label state from storage.
+            LastLabel = load_label_state(State2),
+            State2#raft_state{last_label = LastLabel};
+        {ok, _Entry} ->
+            State2#raft_state{last_label = undefined}
     end,
+
+    % At the start of a new term, the leader should append a new log
+    % entry that will start the process of establishing the first
+    % quorum in the new term by starting replication and clearing out
+    % any log mismatches on follower replicas.
+    {State4, LogEntry} = get_log_entry(State3, {make_ref(), noop}),
+    {ok, NewLastLogIndex, View1} = wa_raft_log:append(View0, [LogEntry]),
+    State5 = State4#raft_state{log_view = View1, first_current_term_log_index = NewLastLogIndex},
 
     % Perform initial heartbeat and log entry resolution
     State6 = append_entries_to_followers(State5),
@@ -1568,9 +1548,9 @@ disabled({call, From}, ?TRIGGER_ELECTION_COMMAND(_), #raft_state{name = Name, cu
     ?LOG_WARNING("Server[~0p, term ~0p, disabled] cannot start an election.", [Name, CurrentTerm], #{domain => [whatsapp, wa_raft]}),
     {keep_state_and_data, {reply, From, {error, invalid_state}}};
 
-disabled({call, From}, ?PROMOTE_COMMAND(_Term, _Force, _Config), #raft_state{name = Name, current_term = CurrentTerm}) ->
-    ?LOG_WARNING("Server[~0p, term ~0p, disabled] cannot be promoted.", [Name, CurrentTerm], #{domain => [whatsapp, wa_raft]}),
-    {keep_state_and_data, {reply, From, {error, disabled}}};
+disabled({call, From}, ?PROMOTE_COMMAND(_, _), #raft_state{name = Name, current_term = CurrentTerm}) ->
+    ?LOG_WARNING("Server[~0p, term ~0p, disabled] cannot be promoted to leader.", [Name, CurrentTerm], #{domain => [whatsapp, wa_raft]}),
+    {keep_state_and_data, {reply, From, {error, invalid_state}}};
 
 disabled({call, From}, ?ENABLE_COMMAND, #raft_state{name = Name, current_term = CurrentTerm} = State0) ->
     ?LOG_NOTICE("Server[~0p, term ~0p, disabled] re-enabling by request from ~0p by moving to stalled state.",
@@ -1647,6 +1627,10 @@ witness(_Type, ?REMOTE(_, ?HANDOVER_FAILED(_)), _State) ->
 
 witness({call, From}, ?TRIGGER_ELECTION_COMMAND(_), #raft_state{name = Name, current_term = CurrentTerm}) ->
     ?LOG_WARNING("Server[~0p, term ~0p, witness] cannot start an election.", [Name, CurrentTerm], #{domain => [whatsapp, wa_raft]}),
+    {keep_state_and_data, {reply, From, {error, invalid_state}}};
+
+witness({call, From}, ?PROMOTE_COMMAND(_, _), #raft_state{name = Name, current_term = CurrentTerm}) ->
+    ?LOG_WARNING("Server[~0p, term ~0p, witness] cannot be promoted to leader.", [Name, CurrentTerm], #{domain => [whatsapp, wa_raft]}),
     {keep_state_and_data, {reply, From, {error, invalid_state}}};
 
 witness(Type, ?SNAPSHOT_AVAILABLE_COMMAND(undefined, #raft_log_pos{index = SnapshotIndex, term = SnapshotTerm} = SnapshotPos),
@@ -1775,25 +1759,22 @@ command(
     end;
 
 %% [Promote] Non-disabled nodes check if eligible to promote and then promote to leader.
-command(StateName, {call, From}, ?PROMOTE_COMMAND(RawTerm, Force, ConfigAll),
-        #raft_state{application = App, name = Name, log_view = View0, current_term = CurrentTerm, leader_heartbeat_ts = HeartbeatTs, leader_id = LeaderId} = State0) when StateName =/= disabled ->
-    ElectionWeight = ?RAFT_ELECTION_WEIGHT(App),
-    Term = case RawTerm of
-        next -> CurrentTerm + 1;
-        _ when is_integer(RawTerm) -> RawTerm
-    end,
-    Config = case ConfigAll of
-        undefined -> undefined;
-        _         -> maybe_upgrade_config(ConfigAll)
-    end,
-    SavedConfig = config(State0),
-    SavedMembership = get_config_members(SavedConfig),
-    OverrideMembership = case Config of
-        undefined -> [];
-        _         -> get_config_members(Config)
-    end,
+command(
+    StateName,
+    {call, From},
+    ?PROMOTE_COMMAND(TermOrOffset, Force),
+    #raft_state{application = App, name = Name, current_term = CurrentTerm, leader_heartbeat_ts = HeartbeatTs, leader_id = LeaderId} = State
+) when StateName =/= stalled; StateName =/= witness; StateName =/= disabled ->
     Now = erlang:monotonic_time(millisecond),
+    Eligible = ?RAFT_LEADER_ELIGIBLE(App),
     HeartbeatGracePeriodMs = ?RAFT_PROMOTION_GRACE_PERIOD(App) * 1000,
+    Term = case TermOrOffset of
+        current -> CurrentTerm;
+        next -> CurrentTerm + 1;
+        {next, Offset} -> CurrentTerm + Offset;
+        _ -> TermOrOffset
+    end,
+    Membership = get_config_members(config(State)),
     Allowed = if
         % Prevent promotions to older or invalid terms
         not is_integer(Term) orelse Term < CurrentTerm ->
@@ -1804,8 +1785,9 @@ command(StateName, {call, From}, ?PROMOTE_COMMAND(RawTerm, Force, ConfigAll),
             ?LOG_ERROR("Server[~0p, term ~0p, ~0p] refusing to promote to leader of current term already led by ~0p.",
                 [Name, CurrentTerm, StateName, LeaderId], #{domain => [whatsapp, wa_raft]}),
             invalid_term;
-        ElectionWeight =:= 0 ->
-            ?LOG_ERROR("Server[~0p, term ~0p, ~0p] node election weight is zero and cannot be promoted as leader.",
+        % Prevent promotions that will immediately result in a resignation.
+        not Eligible ->
+            ?LOG_ERROR("Server[~0p, term ~0p, ~0p] cannot promote to leader as the node is ineligible.",
                 [Name, CurrentTerm, StateName], #{domain => [whatsapp, wa_raft]}),
             ineligible;
         StateName =:= witness ->
@@ -1813,56 +1795,32 @@ command(StateName, {call, From}, ?PROMOTE_COMMAND(RawTerm, Force, ConfigAll),
                 [Name, CurrentTerm, StateName], #{domain => [whatsapp, wa_raft]}),
             invalid_state;
         % Prevent promotions to any operational state when there is no cluster membership configuration.
-        SavedMembership =:= [] andalso OverrideMembership =:= [] ->
-            ?LOG_ERROR("Server[~0p, term ~0p, ~0p] cannot promote with neither existing nor forced config having configured membership.",
+        Membership =:= [] ->
+            ?LOG_ERROR("Server[~0p, term ~0p, ~0p] cannot promote to leader with no existing membership.",
                 [Name, CurrentTerm, StateName], #{domain => [whatsapp, wa_raft]}),
             invalid_configuration;
         Force ->
             true;
-        Config =/= undefined ->
-            ?LOG_ERROR("Server[~0p, term ~0p, ~0p] cannot forcibly apply a configuration when doing a non-forced promotion.",
-                [Name, CurrentTerm, StateName], #{domain => [whatsapp, wa_raft]}),
-            not_forced;
-        StateName =:= stalled ->
-            ?LOG_ERROR("Server[~0p, term ~0p, ~0p] cannot promote a stalled node.",
-                [Name, CurrentTerm, StateName], #{domain => [whatsapp, wa_raft]}),
-            invalid_state;
         HeartbeatTs =:= undefined ->
             true;
         Now - HeartbeatTs >= HeartbeatGracePeriodMs ->
             true;
         true ->
+            ?LOG_ERROR("Server[~0p, term ~0p, ~0p] rejecting request to promote to leader as a valid heartbeat was recently received.",
+                [Name, CurrentTerm, StateName], #{domain => [whatsapp, wa_raft]}),
             rejected
     end,
     case Allowed of
         true ->
-            NewStateName = case Force of
-                true  -> leader;
-                false -> candidate
+            ?LOG_NOTICE("Server[~0p, term ~0p, ~0p] is promoting to leader of term ~0p.",
+                [Name, CurrentTerm, StateName, Term], #{domain => [whatsapp, wa_raft]}),
+            NewState = case Term > CurrentTerm of
+                true -> advance_term(StateName, Term, node(), State);
+                false -> State
             end,
-            ?LOG_NOTICE("Server[~0p, term ~0p, ~0p] promoted to ~p of term ~p.",
-                [Name, CurrentTerm, StateName, NewStateName, Term], #{domain => [whatsapp, wa_raft]}),
-
-            % Advance to the term requested for promotion to
-            State1 = case Term > CurrentTerm of
-                true -> advance_term(StateName, Term, undefined, State0);
-                false -> State0
-            end,
-            State3 = case Config of
-                undefined ->
-                    State1;
-                _ ->
-                    % If this promotion is part of the bootstrapping operation, then we must append
-                    % the new configuration to the log before we can transition to leader; otherwise,
-                    % the server will not know who to replicate to as leader.
-                    Op = {make_ref(), {config, Config}},
-                    {State2, LogEntry} = get_log_entry(State1, Op),
-                    {ok, _, View1} = wa_raft_log:append(View0, [LogEntry]),
-                    State2#raft_state{log_view = View1}
-            end,
-            case StateName =:= NewStateName of
-                true  -> {repeat_state, State3, {reply, From, ok}};
-                false -> {next_state, NewStateName, State3, {reply, From, ok}}
+            case StateName of
+                leader -> {repeat_state, NewState, {reply, From, ok}};
+                _      -> {next_state, leader, NewState, {reply, From, ok}}
             end;
         Reason ->
             ?LOG_NOTICE("Server[~0p, term ~0p, ~0p] rejected leader promotion to term ~0p due to ~0p.",

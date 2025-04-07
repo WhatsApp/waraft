@@ -79,7 +79,7 @@
 
 -define(STATUS_COMMAND,                                         ?RAFT_COMMAND(status, undefined)).
 -define(TRIGGER_ELECTION_COMMAND(TermOrOffset),                 ?RAFT_COMMAND(trigger_election, {TermOrOffset})).
--define(PROMOTE_COMMAND(Term, Force, Config),                   ?RAFT_COMMAND(promote, {Term, Force, Config})).
+-define(PROMOTE_COMMAND(TermOrOffset, Force),                   ?RAFT_COMMAND(promote, {TermOrOffset, Force})).
 -define(RESIGN_COMMAND,                                         ?RAFT_COMMAND(resign, undefined)).
 
 -define(ADJUST_MEMBERSHIP_COMMAND(Action, Peer, ConfigIndex),   ?RAFT_COMMAND(adjust_membership, {Action, Peer, ConfigIndex})).
