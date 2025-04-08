@@ -479,7 +479,7 @@ handle_call({snapshot_create, Name}, _From, #state{last_applied = #raft_log_pos{
 
 handle_call(snapshot_create_witness, From, #state{last_applied = #raft_log_pos{index = LastIndex, term = LastTerm}} = State) ->
     Name = ?WITNESS_SNAPSHOT_NAME(LastIndex, LastTerm),
-    handle_call({snapshot_create, Name}, From, State);
+    handle_call({snapshot_create_witness, Name}, From, State);
 
 handle_call({snapshot_create_witness, Name}, _From, #state{last_applied = LastApplied} = State) ->
     case create_witness_snapshot_impl(Name, State) of
