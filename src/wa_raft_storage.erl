@@ -290,7 +290,8 @@
     path :: file:filename(),
     module :: module(),
     handle :: storage_handle(),
-    position :: wa_raft_log:log_pos()
+    position :: wa_raft_log:log_pos(),
+    config :: undefined | {ok, wa_raft_log:log_pos(), wa_raft_server:config()}
 }).
 
 %%-----------------------------------------------------------------------------
@@ -474,6 +475,10 @@ init(#raft_options{table = Table, partition = Partition, identifier = Identifier
 
     Handle = Module:storage_open(Name, Identifier, Path),
     Position = Module:storage_position(Handle),
+    Config = case Module:storage_config(Handle) of
+        {ok, ConfigPosition, ConfigAll} -> {ok, ConfigPosition, wa_raft_server:normalize_config(ConfigAll)};
+        undefined -> undefined
+    end,
 
     ?LOG_NOTICE("Storage[~0p] opened at position ~0p.",
         [Name, Position], #{domain => [whatsapp, wa_raft]}),
@@ -486,7 +491,8 @@ init(#raft_options{table = Table, partition = Partition, identifier = Identifier
         path = Path,
         module = Module,
         handle = Handle,
-        position = Position
+        position = Position,
+        config = Config
     }}.
 
 %% The interaction between the RAFT server and the RAFT storage server is designed to be
@@ -524,10 +530,8 @@ handle_call(?LABEL_REQUEST, _From, #state{module = Module, handle = Handle} = St
     Result = Module:storage_label(Handle),
     {reply, Result, State};
 
-handle_call(?CONFIG_REQUEST, _From, #state{module = Module, handle = Handle} = State) ->
-    ?RAFT_COUNT('raft.storage.config'),
-    Result = Module:storage_config(Handle),
-    {reply, Result, State};
+handle_call(?CONFIG_REQUEST, _From, #state{config = Config} = State) ->
+    {reply, Config, State};
 
 handle_call(?READ_REQUEST(Command), _From, #state{module = Module, handle = Handle, position = Position} = State) ->
     {reply, Module:storage_read(Command, Position, Handle), State};
@@ -538,8 +542,14 @@ handle_call(?OPEN_REQUEST, _From, #state{position = Position} = State) ->
 handle_call(?OPEN_SNAPSHOT_REQUEST(SnapshotPath, SnapshotPosition), _From, #state{name = Name, module = Module, handle = Handle, position = Position} = State) ->
     ?LOG_NOTICE("Storage[~0p] at ~0p is opening snapshot ~0p.", [Name, Position, SnapshotPosition], #{domain => [whatsapp, wa_raft]}),
     case Module:storage_open_snapshot(SnapshotPath, SnapshotPosition, Handle) of
-        {ok, NewHandle} -> {reply, ok, State#state{position = SnapshotPosition, handle = NewHandle}};
-        {error, Reason} -> {reply, {error, Reason}, State}
+        {ok, NewHandle} ->
+            NewConfig = case Module:storage_config(NewHandle) of
+                {ok, ConfigPosition, ConfigAll} -> {ok, ConfigPosition, wa_raft_server:normalize_config(ConfigAll)};
+                undefined -> undefined
+            end,
+            {reply, ok, State#state{position = SnapshotPosition, handle = NewHandle, config = NewConfig}};
+        {error, Reason} ->
+            {reply, {error, Reason}, State}
     end;
 
 handle_call(?CREATE_SNAPSHOT_REQUEST(), _From, #state{position = #raft_log_pos{index = Index, term = Term}} = State) ->
@@ -663,7 +673,7 @@ handle_command(_Label, {config, Config}, Position, #state{name = Name, module = 
     ?LOG_INFO("Storage[~0p] is applying a new configuration ~0p at ~0p.",
         [Name, Config, Position], #{domain => [whatsapp, wa_raft]}),
     {Reply, NewHandle} = Module:storage_apply_config(Config, Position, Handle),
-    {Reply, State#state{handle = NewHandle, position = Position}};
+    {Reply, State#state{handle = NewHandle, position = Position, config = {ok, Position, wa_raft_server:normalize_config(Config)}}};
 handle_command(Label, Command, Position, #state{module = Module, handle = Handle} = State) ->
     {Reply, NewHandle} = case Label of
         undefined -> Module:storage_apply(Command, Position, Handle);
