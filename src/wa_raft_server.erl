@@ -1081,7 +1081,7 @@ leader(cast, ?READ_COMMAND({From, Command}),
     case is_single_member(Self, config(State0)) of
         % If we are a single node cluster and we are fully-applied, then immediately dispatch.
         true when Pending =:= 0, ReadIndex =:= LastApplied ->
-            wa_raft_storage:read(Storage, From, Command),
+            wa_raft_storage:apply_read(Storage, From, Command),
             {keep_state, State0};
         _ ->
             ok = wa_raft_queue:submit_read(Table, Partition, ReadIndex + 1, From, Command),
@@ -2189,10 +2189,10 @@ apply_op(LogIndex, _Entry, _EffectiveTerm, #raft_state{name = Name, last_applied
         [Name, CurrentTerm, LogIndex, LastAppliedIndex], #{domain => [whatsapp, wa_raft]}),
     State;
 apply_op(LogIndex, {Term, {Ref, Command} = Op}, EffectiveTerm, #raft_state{storage = Storage} = State0) ->
-    wa_raft_storage:apply_op(Storage, {LogIndex, {Term, {Ref, undefined, Command}}}, EffectiveTerm),
+    wa_raft_storage:apply(Storage, {LogIndex, {Term, {Ref, undefined, Command}}}, EffectiveTerm),
     maybe_update_config(LogIndex, Term, Op, State0#raft_state{last_applied = LogIndex, commit_index = LogIndex});
 apply_op(LogIndex, {Term, {_Ref, _Label, _Command} = Op}, EffectiveTerm, #raft_state{storage = Storage} = State0) ->
-    wa_raft_storage:apply_op(Storage, {LogIndex, {Term, Op}}, EffectiveTerm),
+    wa_raft_storage:apply(Storage, {LogIndex, {Term, Op}}, EffectiveTerm),
     maybe_update_config(LogIndex, Term, Op, State0#raft_state{last_applied = LogIndex, commit_index = LogIndex});
 apply_op(LogIndex, undefined, _EffectiveTerm, #raft_state{name = Name, log_view = View, current_term = CurrentTerm}) ->
     ?RAFT_COUNT('raft.server.missing.log.entry'),
