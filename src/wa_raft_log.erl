@@ -110,8 +110,7 @@
     first = 0 :: log_index(),
     last = 0 :: log_index(),
     pending = [] :: [log_entry()],
-    config_index :: undefined | log_index(),
-    config :: undefined | wa_raft_server:config()
+    config :: undefined | {log_index(), wa_raft_server:config()}
 }).
 
 %% The state stored by the RAFT log server which is
@@ -334,10 +333,9 @@ append(#log_view{log = Log, last = Last} = View0, Start, Entries) ->
     case Provider:append(View0, Start, Entries, strict) of
         ok ->
             ?RAFT_COUNT('raft.log.append.ok'),
-            View1 = update_config_cache(View0, Start, Entries),
             NewMatch = Start + length(Entries) - 1,
             NewLast = max(Last, NewMatch),
-            {ok, NewMatch, View1#log_view{last = NewLast}};
+            {ok, NewMatch, refresh_config(View0#log_view{last = NewLast})};
         {mismatch, Index} ->
             ?RAFT_COUNT('raft.log.append.mismatch'),
             case truncate(View0, Index) of
@@ -346,10 +344,9 @@ append(#log_view{log = Log, last = Last} = View0, Start, Entries) ->
                     case Provider:append(View1, Index, NewEntries, strict) of
                         ok ->
                             ?RAFT_COUNT('raft.log.append.ok'),
-                            View2 = update_config_cache(View1, Start, NewEntries),
                             NewMatch = Start + length(Entries) - 1,
                             NewLast = max(Index - 1, NewMatch),
-                            {ok, NewMatch, View2#log_view{last = NewLast}};
+                            {ok, NewMatch, refresh_config(View1#log_view{last = NewLast})};
                         {error, Reason} ->
                             ?RAFT_COUNT('raft.log.append.error'),
                             {error, Reason}
@@ -552,18 +549,21 @@ get_terms(LogOrView, First, Limit) ->
             {error, corruption}
     end.
 
--spec config(LogOrView :: log() | view()) -> {ok, Index :: log_index(), Config :: wa_raft_server:config() | undefined} | not_found.
-config(#log_view{config_index = undefined}) ->
+-spec config(LogOrView :: log() | view()) -> {ok, Index :: log_index(), Config :: wa_raft_server:config()} | not_found.
+config(#log_view{config = undefined}) ->
     not_found;
-config(#log_view{first = First, config_index = Index}) when First > Index ->
+config(#log_view{first = First, config = {Index, _}}) when First > Index ->
     % After trims, it is possible that we have a cached config from before the start
     % of the log view. Don't return the cached config in this case.
     not_found;
-config(#log_view{config_index = Index, config = Config}) ->
+config(#log_view{config = {Index, Config}}) ->
     {ok, Index, Config};
 config(Log) ->
     Provider = provider(Log),
-    Provider:config(Log).
+    case Provider:config(Log) of
+        {ok, Index, Config} -> {ok, Index, wa_raft_server:normalize_config(Config)};
+        Other -> Other
+    end.
 
 %%-------------------------------------------------------------------
 %% APIs for batching new entries and committing
@@ -593,14 +593,13 @@ pending(#log_view{pending = Pending}) ->
 %% the append fails, then this function will return 'skipped' and there will
 %% be no change to the log nor to the pending log entries in the current batch.
 -spec sync(View :: view()) -> {ok, NewView :: view()} | skipped | wa_raft:error().
-sync(#log_view{log = Log, last = Last, pending = Pending} = View0) ->
+sync(#log_view{log = Log, last = Last, pending = Pending} = View) ->
     ?RAFT_COUNT('raft.log.sync'),
     Entries = lists:reverse(Pending),
     Provider = provider(Log),
-    case Provider:append(View0, Last + 1, Entries, relaxed) of
+    case Provider:append(View, Last + 1, Entries, relaxed) of
         ok ->
-            View1 = update_config_cache(View0, Last + 1, Entries),
-            {ok, View1#log_view{last = Last + length(Pending), pending = []}};
+            {ok, refresh_config(View#log_view{last = Last + length(Pending), pending = []})};
         skipped ->
             skipped;
         {error, Reason} ->
@@ -714,23 +713,15 @@ provider(#log_view{log = #raft_log{provider = Provider}}) ->
 provider(#raft_log{provider = Provider}) ->
     Provider.
 
--spec update_config_cache(
-    View :: view(),
-    Index :: log_index(),
-    Entries :: [log_entry()]
-) -> View :: view().
-update_config_cache(#log_view{} = View, _Index, []) ->
-    View;
-update_config_cache(#log_view{config_index = undefined} = View, Index, [{_Term, {_Ref, {config, Config}}} | Entries]) ->
-    update_config_cache(View#log_view{config_index = Index, config = Config}, Index + 1, Entries);
-update_config_cache(#log_view{config_index = undefined} = View, Index, [{_Term, {_Ref, _Label, {config, Config}}} | Entries]) ->
-    update_config_cache(View#log_view{config_index = Index, config = Config}, Index + 1, Entries);
-update_config_cache(#log_view{config_index = ConfigIndex} = View, Index, [{_Term, {_Ref, {config, Config}}} | Entries]) when Index > ConfigIndex ->
-    update_config_cache(View#log_view{config_index = Index, config = Config}, Index + 1, Entries);
-update_config_cache(#log_view{config_index = ConfigIndex} = View, Index, [{_Term, {_Ref, _Label, {config, Config}}} | Entries]) when Index > ConfigIndex ->
-    update_config_cache(View#log_view{config_index = Index, config = Config}, Index + 1, Entries);
-update_config_cache(#log_view{} = View, Index, [_Entry | Entries]) ->
-    update_config_cache(View, Index + 1, Entries).
+-spec refresh_config(View :: view()) -> NewView :: view().
+refresh_config(#log_view{log = Log} = View) ->
+    Provider = provider(Log),
+    case Provider:config(Log) of
+        {ok, Index, Config} ->
+            View#log_view{config = {Index, wa_raft_server:normalize_config(Config)}};
+        not_found ->
+            View#log_view{config = undefined}
+    end.
 
 %%-------------------------------------------------------------------
 %% gen_server Callbacks
@@ -807,7 +798,6 @@ terminate(Reason, #log_state{log = Log, state = State}) ->
         [Log, Reason], #{domain => [whatsapp, wa_raft]}),
     State =/= ?PROVIDER_NOT_OPENED andalso Provider:close(Log, State).
 
-
 %%-------------------------------------------------------------------
 %% RAFT Log Server Logic
 %%-------------------------------------------------------------------
@@ -854,10 +844,7 @@ handle_open(#raft_log_pos{index = Index, term = Term} = Position,
                         LastIndex ->
                             View1#log_view{last = LastIndex}
                     end,
-                    View3 = case Provider:config(Log) of
-                        {ok, ConfigIndex, Config} -> View2#log_view{config_index = ConfigIndex, config = Config};
-                        not_found                 -> View2
-                    end,
+                    View3 = refresh_config(View2),
                     {{ok, View3}, State1};
                 reset ->
                     ?RAFT_COUNT('raft.log.open.reset'),
@@ -891,7 +878,7 @@ handle_reset(#raft_log_pos{index = Index, term = Term} = Position, View0,
     Provider = provider(Log),
     case Provider:reset(Log, Position, ProviderState) of
         {ok, NewProviderState} ->
-            View1 = View0#log_view{first = Index, last = Index, config_index = undefined, config = undefined},
+            View1 = View0#log_view{first = Index, last = Index, config = undefined},
             State1 = State0#log_state{state = NewProviderState},
             {ok, View1, State1};
         {error, Reason} ->
@@ -913,10 +900,7 @@ handle_truncate(Index, #log_view{last = Last} = View0, #log_state{log = Log, sta
     case Provider:truncate(Log, Index, ProviderState) of
         {ok, NewProviderState} ->
             View1 = View0#log_view{last = min(Last, Index - 1)},
-            View2 = case Provider:config(Log) of
-                not_found                 -> View1#log_view{config_index = undefined, config = undefined};
-                {ok, ConfigIndex, Config} -> View1#log_view{config_index = ConfigIndex, config = Config}
-            end,
+            View2 = refresh_config(View1),
             State1 = State0#log_state{state = NewProviderState},
             {ok, View2, State1};
         {error, Reason} ->

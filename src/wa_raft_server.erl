@@ -1958,8 +1958,8 @@ config_identities(_Config) ->
 -spec config(State :: #raft_state{}) -> Config :: config().
 config(#raft_state{log_view = View, cached_config = {ConfigIndex, Config}}) ->
     case wa_raft_log:config(View) of
-        {ok, LogConfigIndex, LogConfig} when LogConfig =/= undefined, LogConfigIndex > ConfigIndex ->
-            normalize_config(LogConfig);
+        {ok, LogConfigIndex, LogConfig} when LogConfigIndex > ConfigIndex ->
+            LogConfig;
         {ok, _LogConfigIndex, _LogConfig} ->
             % This case will normally only occur when the log has leftover log entries from
             % previous incarnations of the RAFT server that have been applied but not yet
@@ -1968,24 +1968,28 @@ config(#raft_state{log_view = View, cached_config = {ConfigIndex, Config}}) ->
         not_found ->
             Config
     end;
-config(#raft_state{cached_config = undefined} = State) ->
-    config(State#raft_state{cached_config = {0, make_config()}}).
+config(#raft_state{log_view = View}) ->
+    case wa_raft_log:config(View) of
+        {ok, _LogConfigIndex, LogConfig} -> LogConfig;
+        not_found -> make_config()
+    end.
 
 -spec config_index(State :: #raft_state{}) -> ConfigIndex :: wa_raft_log:log_index().
 config_index(#raft_state{log_view = View, cached_config = {ConfigIndex, _Config}}) ->
     case wa_raft_log:config(View) of
-        {ok, LogConfigIndex, LogConfig} when LogConfig =/= undefined, LogConfigIndex > ConfigIndex ->
-            LogConfigIndex;
-        {ok, _LogConfigIndex, _LogConfig} ->
-            % This case will normally only occur when the log has leftover log entries from
-            % previous incarnations of the RAFT server that have been applied but not yet
-            % trimmed this incarnation.
-            ConfigIndex;
+        {ok, LogConfigIndex, _LogConfig} ->
+            % The case where the log contains a config that is already applied generally
+            % only occurs after a restart as any log entries whose trim was deferred
+            % will become visible again.
+            max(LogConfigIndex, ConfigIndex);
         not_found ->
             ConfigIndex
     end;
-config_index(#raft_state{cached_config = undefined} = State) ->
-    config_index(State#raft_state{cached_config = {0, make_config()}}).
+config_index(#raft_state{log_view = View}) ->
+    case wa_raft_log:config(View) of
+        {ok, LogConfigIndex, _LogConfig} -> LogConfigIndex;
+        not_found -> 0
+    end.
 
 %% Loads and caches the current configuration stored in the RAFT storage.
 %% This configuration is used whenever there is no newer configuration
