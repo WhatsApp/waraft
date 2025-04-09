@@ -41,7 +41,8 @@
 -export([
     make_config/0,
     make_config/1,
-    make_config/2
+    make_config/2,
+    normalize_config/1
 ]).
 
 %% Modification of cluster configuration
@@ -322,7 +323,7 @@ make_config(Members, Witnesses) ->
 %% Will upgrade the cluster configuration to the latest version.
 -spec set_config_members(Members :: [#raft_identity{}], ConfigAll :: config() | config_all()) -> config().
 set_config_members(Members, ConfigAll) ->
-    Config = maybe_upgrade_config(ConfigAll),
+    Config = normalize_config(ConfigAll),
     Config#{membership => lists:sort([{Name, Node} || #raft_identity{name = Name, node = Node} <- Members])}.
 
 %% Replace the set of members and witnesses in the provided cluster configuration.
@@ -334,19 +335,17 @@ set_config_members(Members, Witnesses, ConfigAll) ->
 
 %% Attempt to upgrade any configuration from an older configuration version to the
 %% latest configuration version if possible.
--spec maybe_upgrade_config(ConfigAll :: config() | config_all()) -> Config :: config().
-maybe_upgrade_config(#{version := 1} = Config) ->
+-spec normalize_config(ConfigAll :: config() | config_all()) -> Config :: config().
+normalize_config(#{version := 1} = Config) ->
     % Fill in any missing fields.
     Config#{
         membership => maps:get(membership, Config, []),
         witness => maps:get(witness, Config, [])
     };
-maybe_upgrade_config(#{version := Version}) ->
-    % We are not able to properly handle configurations with newer versions.
-    error({unsupported_version, Version});
-maybe_upgrade_config(_Config) ->
-    % All valid configurations will contain at least their own version.
-    error(badarg).
+normalize_config(#{version := Version}) ->
+    % All valid configurations will contain at least their own version; however,
+    % we do not know how to handle configurations with newer versions.
+    error({unsupported_version, Version}).
 
 %%------------------------------------------------------------------------------
 %% RAFT Server - Public APIs
@@ -1960,7 +1959,7 @@ config_identities(_Config) ->
 config(#raft_state{log_view = View, cached_config = {ConfigIndex, Config}}) ->
     case wa_raft_log:config(View) of
         {ok, LogConfigIndex, LogConfig} when LogConfig =/= undefined, LogConfigIndex > ConfigIndex ->
-            maybe_upgrade_config(LogConfig);
+            normalize_config(LogConfig);
         {ok, _LogConfigIndex, _LogConfig} ->
             % This case will normally only occur when the log has leftover log entries from
             % previous incarnations of the RAFT server that have been applied but not yet
@@ -1997,7 +1996,7 @@ load_config(#raft_state{storage = Storage, table = Table, partition = Partition}
     case wa_raft_storage:config(Storage) of
         {ok, #raft_log_pos{index = ConfigIndex}, Config} ->
             wa_raft_info:set_membership(Table, Partition, maps:get(membership, Config, [])),
-            State#raft_state{cached_config = {ConfigIndex, maybe_upgrade_config(Config)}};
+            State#raft_state{cached_config = {ConfigIndex, normalize_config(Config)}};
         undefined ->
             State#raft_state{cached_config = undefined};
         {error, Reason} ->
