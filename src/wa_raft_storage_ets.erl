@@ -41,18 +41,21 @@
 -define(LABEL_TAG, '$label').
 %% Tag used for recording the current storage position
 -define(POSITION_TAG, '$position').
+%% Tag used for tracking if the current storage is incomplete.
+-define(INCOMPLETE_TAG, '$incomplete').
 
 -record(state, {
     name :: atom(),
     table :: wa_raft:table(),
     partition :: wa_raft:partition(),
+    self :: #raft_identity{},
     storage :: ets:table()
 }).
 
 -spec storage_open(#raft_options{}, file:filename()) -> #state{}.
-storage_open(#raft_options{table = Table, partition = Partition, storage_name = Name}, _RootDir) ->
+storage_open(#raft_options{table = Table, partition = Partition, self = Self, storage_name = Name}, _RootDir) ->
     Storage = ets:new(Name, ?OPTIONS),
-    #state{name = Name, table = Table, partition = Partition, storage = Storage}.
+    #state{name = Name, table = Table, partition = Partition, self = Self, storage = Storage}.
 
 -spec storage_close(#state{}) -> ok.
 storage_close(#state{storage = Storage}) ->
@@ -77,6 +80,10 @@ storage_config(#state{storage = Storage}) ->
         []                      -> undefined
     end.
 
+-spec storage_incomplete(#state{}) -> boolean().
+storage_incomplete(#state{storage = Storage}) ->
+    ets:lookup_element(Storage, ?INCOMPLETE_TAG, 2, false).
+
 -spec storage_apply(Command :: wa_raft_acceptor:command(), Position :: wa_raft_log:log_pos(), Label :: wa_raft_label:label(), Storage :: #state{}) -> {ok, #state{}}.
 storage_apply(Command, Position, Label, #state{storage = Storage} = State) ->
     true = ets:insert(Storage, {?LABEL_TAG, Label}),
@@ -85,6 +92,9 @@ storage_apply(Command, Position, Label, #state{storage = Storage} = State) ->
 -spec storage_apply(Command :: wa_raft_acceptor:command(), Position :: wa_raft_log:log_pos(), Storage :: #state{}) -> {ok, #state{}}.
 storage_apply(noop, Position, #state{storage = Storage} = State) ->
     true = ets:insert(Storage, {?POSITION_TAG, Position}),
+    {ok, State};
+storage_apply(noop_omitted, Position, #state{storage = Storage} = State) ->
+    true = ets:insert(Storage, [{?INCOMPLETE_TAG, true}, {?POSITION_TAG, Position}]),
     {ok, State};
 storage_apply({write, _Table, Key, Value}, Position, #state{storage = Storage} = State) ->
     true = ets:insert(Storage, [{Key, Value}, {?POSITION_TAG, Position}]),
@@ -100,6 +110,7 @@ storage_apply({delete, _Table, Key}, Position, #state{storage = Storage} = State
     State :: #state{}
 ) -> {ok | wa_raft_storage:error(), #state{}}.
 storage_apply_config(Config, LogPos, State) ->
+    storage_check_config(Config, State),
     storage_apply_config(Config, LogPos, LogPos, State).
 
 -spec storage_apply_config(
@@ -129,10 +140,10 @@ storage_create_snapshot(SnapshotPath, #state{storage = Storage}) ->
     end.
 
 -spec storage_create_witness_snapshot(file:filename(), #state{}) -> ok | wa_raft_storage:error().
-storage_create_witness_snapshot(SnapshotPath, #state{name = Name, table = Table, partition = Partition} = State) ->
+storage_create_witness_snapshot(SnapshotPath, #state{name = Name, table = Table, partition = Partition, self = Self} = State) ->
     {ok, ConfigPosition, Config} = storage_config(State),
     SnapshotPosition = storage_position(State),
-    storage_make_empty_snapshot(Name, Table, Partition, SnapshotPath, SnapshotPosition, Config, ConfigPosition, #{}).
+    storage_make_empty_snapshot(Name, Table, Partition, Self, SnapshotPath, SnapshotPosition, Config, ConfigPosition, #{}).
 
 -spec storage_open_snapshot(file:filename(), wa_raft_log:log_pos(), #state{}) -> {ok, #state{}} | wa_raft_storage:error().
 storage_open_snapshot(SnapshotPath, SnapshotPosition, #state{storage = Storage} = State) ->
@@ -141,8 +152,10 @@ storage_open_snapshot(SnapshotPath, SnapshotPosition, #state{storage = Storage} 
         {ok, NewStorage} ->
             case ets:lookup_element(NewStorage, ?POSITION_TAG, 2, #raft_log_pos{}) of
                 SnapshotPosition ->
+                    NewState = State#state{storage = NewStorage},
+                    storage_check_config(NewState),
                     catch ets:delete(Storage),
-                    {ok, State#state{storage = NewStorage}};
+                    {ok, NewState};
                 _IncorrectPosition ->
                     catch ets:delete(NewStorage),
                     {error, bad_position}
@@ -151,13 +164,27 @@ storage_open_snapshot(SnapshotPath, SnapshotPosition, #state{storage = Storage} 
             {error, Reason}
     end.
 
--spec storage_make_empty_snapshot(#raft_options{}, file:filename(), wa_raft_log:log_pos(), wa_raft_server:config(), dynamic()) -> ok | wa_raft_storage:error().
-storage_make_empty_snapshot(#raft_options{table = Table, partition = Partition, storage_name = Name}, SnapshotPath, SnapshotPosition, Config, Data) ->
-    storage_make_empty_snapshot(Name, Table, Partition, SnapshotPath, SnapshotPosition, Config, SnapshotPosition, Data).
+-spec storage_check_config(#state{}) -> ok.
+storage_check_config(State) ->
+    case storage_config(State) of
+        {ok, _, Config} -> storage_check_config(Config, State);
+        undefined -> ok
+    end.
 
--spec storage_make_empty_snapshot(atom(), wa_raft:table(), wa_raft:partition(), file:filename(), wa_raft_log:log_pos(), wa_raft_server:config(), wa_raft_log:log_pos(), dynamic()) -> ok | wa_raft_storage:error().
-storage_make_empty_snapshot(Name, Table, Partition, SnapshotPath, SnapshotPosition, Config, ConfigPosition, _Data) ->
+-spec storage_check_config(wa_raft_server:config(), #state{}) -> ok.
+storage_check_config(Config, #state{self = Self} = State) ->
+    case storage_incomplete(State) andalso wa_raft_server:is_data_replica(Self, Config) of
+        true -> error(invalid_incomplete_replica);
+        false -> ok
+    end.
+
+-spec storage_make_empty_snapshot(#raft_options{}, file:filename(), wa_raft_log:log_pos(), wa_raft_server:config(), dynamic()) -> ok | wa_raft_storage:error().
+storage_make_empty_snapshot(#raft_options{table = Table, partition = Partition, self = Self, storage_name = Name}, SnapshotPath, SnapshotPosition, Config, Data) ->
+    storage_make_empty_snapshot(Name, Table, Partition, Self, SnapshotPath, SnapshotPosition, Config, SnapshotPosition, Data).
+
+-spec storage_make_empty_snapshot(atom(), wa_raft:table(), wa_raft:partition(), #raft_identity{}, file:filename(), wa_raft_log:log_pos(), wa_raft_server:config(), wa_raft_log:log_pos(), dynamic()) -> ok | wa_raft_storage:error().
+storage_make_empty_snapshot(Name, Table, Partition, Self, SnapshotPath, SnapshotPosition, Config, ConfigPosition, _Data) ->
     Storage = ets:new(Name, ?OPTIONS),
-    State = #state{name = Name, table = Table, partition = Partition, storage = Storage},
+    State = #state{name = Name, table = Table, partition = Partition, self = Self, storage = Storage},
     storage_apply_config(Config, ConfigPosition, SnapshotPosition, State),
     storage_create_snapshot(SnapshotPath, State).

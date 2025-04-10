@@ -60,8 +60,9 @@
 -include_lib("kernel/include/logger.hrl").
 -include("wa_raft.hrl").
 
--type command() :: noop_command() | config_command() | dynamic().
+-type command() :: noop_command() | noop_omitted_command() | config_command() | dynamic().
 -type noop_command() :: noop.
+-type noop_omitted_command() :: noop_omitted.
 -type config_command() :: {config, Config :: wa_raft_server:config()}.
 
 -type key() :: term().
