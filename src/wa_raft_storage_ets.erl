@@ -12,7 +12,7 @@
 -behaviour(wa_raft_storage).
 
 -export([
-    storage_open/3,
+    storage_open/2,
     storage_close/1,
     storage_label/1,
     storage_position/1,
@@ -24,7 +24,7 @@
     storage_create_snapshot/2,
     storage_create_witness_snapshot/2,
     storage_open_snapshot/3,
-    storage_make_empty_snapshot/6
+    storage_make_empty_snapshot/5
 ]).
 
 -include("wa_raft.hrl").
@@ -49,8 +49,8 @@
     storage :: ets:table()
 }).
 
--spec storage_open(atom(), #raft_identifier{}, file:filename()) -> #state{}.
-storage_open(Name, #raft_identifier{table = Table, partition = Partition}, _RootDir) ->
+-spec storage_open(#raft_options{}, file:filename()) -> #state{}.
+storage_open(#raft_options{table = Table, partition = Partition, storage_name = Name}, _RootDir) ->
     Storage = ets:new(Name, ?OPTIONS),
     #state{name = Name, table = Table, partition = Partition, storage = Storage}.
 
@@ -151,8 +151,8 @@ storage_open_snapshot(SnapshotPath, SnapshotPosition, #state{storage = Storage} 
             {error, Reason}
     end.
 
--spec storage_make_empty_snapshot(atom(), #raft_identifier{}, file:filename(), wa_raft_log:log_pos(), wa_raft_server:config(), dynamic()) -> ok | wa_raft_storage:error().
-storage_make_empty_snapshot(Name, #raft_identifier{table = Table, partition = Partition}, SnapshotPath, SnapshotPosition, Config, Data) ->
+-spec storage_make_empty_snapshot(#raft_options{}, file:filename(), wa_raft_log:log_pos(), wa_raft_server:config(), dynamic()) -> ok | wa_raft_storage:error().
+storage_make_empty_snapshot(#raft_options{table = Table, partition = Partition, storage_name = Name}, SnapshotPath, SnapshotPosition, Config, Data) ->
     storage_make_empty_snapshot(Name, Table, Partition, SnapshotPath, SnapshotPosition, Config, SnapshotPosition, Data).
 
 -spec storage_make_empty_snapshot(atom(), wa_raft:table(), wa_raft:partition(), file:filename(), wa_raft_log:log_pos(), wa_raft_server:config(), wa_raft_log:log_pos(), dynamic()) -> ok | wa_raft_storage:error().

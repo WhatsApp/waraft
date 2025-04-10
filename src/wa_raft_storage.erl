@@ -101,7 +101,7 @@
 %%-----------------------------------------------------------------------------
 
 %% Open the storage state for the specified RAFT partition.
--callback storage_open(Name :: atom(), RaftIdentifier :: #raft_identifier{}, PartitionPath :: file:filename()) -> Handle :: storage_handle().
+-callback storage_open(Options :: #raft_options{}, Path :: file:filename()) -> Handle :: storage_handle().
 
 %% Get any custom status to be reported alongside the status reported by the
 %% RAFT storage server.
@@ -241,7 +241,7 @@
 %% necessary metadata. When loaded, this witness snapshot will reflect the exact
 %% position state of the original storage without the storage contents.
 -callback storage_create_witness_snapshot(Path :: file:filename(), Handle :: storage_handle()) -> ok | error().
--optional_callback([storage_create_witness_snapshot/6]).
+-optional_callback([storage_create_witness_snapshot/2]).
 
 %% Load a snapshot previously created by the same storage provider, possibly
 %% copied, rooted at the provided path. If successful, the current storage
@@ -262,8 +262,8 @@
 %% version and the config as the value. Extra data may be used by implementors
 %% to provide extra state via arguments to external APIs that use this
 %% endpoint, such as the partition bootstrapping API.
--callback storage_make_empty_snapshot(Name :: atom(), Identifier :: #raft_identifier{}, Path :: file:filename(), Position :: wa_raft_log:log_pos(), Config :: wa_raft_server:config(), Data :: dynamic()) -> ok | error().
--optional_callback([storage_make_empty_snapshot/6]).
+-callback storage_make_empty_snapshot(Options :: #raft_options{}, Path :: file:filename(), Position :: wa_raft_log:log_pos(), Config :: wa_raft_server:config(), Data :: dynamic()) -> ok | error().
+-optional_callback([storage_make_empty_snapshot/5]).
 
 %%-----------------------------------------------------------------------------
 %% RAFT Storage - Types
@@ -286,7 +286,7 @@
     name :: atom(),
     table :: wa_raft:table(),
     partition :: wa_raft:partition(),
-    identifier :: #raft_identifier{},
+    options :: #raft_options{},
     path :: file:filename(),
     module :: module(),
     handle :: storage_handle(),
@@ -467,13 +467,13 @@ registered_name(Table, Partition) ->
 %%-------------------------------------------------------------------
 
 -spec init(Options :: #raft_options{}) -> {ok, #state{}}.
-init(#raft_options{table = Table, partition = Partition, identifier = Identifier, database = Path, storage_name = Name, storage_module = Module}) ->
+init(#raft_options{table = Table, partition = Partition, database = Path, storage_name = Name, storage_module = Module} = Options) ->
     process_flag(trap_exit, true),
 
     ?LOG_NOTICE("Storage[~0p] starting for partition ~0p/~0p at ~0p using ~0p",
         [Name, Table, Partition, Path, Module], #{domain => [whatsapp, wa_raft]}),
 
-    Handle = Module:storage_open(Name, Identifier, Path),
+    Handle = Module:storage_open(Options, Path),
     Position = Module:storage_position(Handle),
     Config = case Module:storage_config(Handle) of
         {ok, ConfigPosition, ConfigAll} -> {ok, ConfigPosition, wa_raft_server:normalize_config(ConfigAll)};
@@ -487,7 +487,7 @@ init(#raft_options{table = Table, partition = Partition, identifier = Identifier
         name = Name,
         table = Table,
         partition = Partition,
-        identifier = Identifier,
+        options = Options,
         path = Path,
         module = Module,
         handle = Handle,
@@ -566,11 +566,11 @@ handle_call(?CREATE_WITNESS_SNAPSHOT_REQUEST(), _From, #state{position = #raft_l
 handle_call(?CREATE_WITNESS_SNAPSHOT_REQUEST(Name), _From, #state{} = State) ->
     {reply, handle_create_witness_snapshot(Name, State), State};
 
-handle_call(?MAKE_EMPTY_SNAPSHOT_REQUEST(SnapshotPath, SnapshotPosition, Config, Data), _From, #state{name = Name, identifier = Identifier, module = Module} = State) ->
+handle_call(?MAKE_EMPTY_SNAPSHOT_REQUEST(SnapshotPath, SnapshotPosition, Config, Data), _From, #state{name = Name, options = Options, module = Module} = State) ->
     ?LOG_NOTICE("Storage[~0p] making bootstrap snapshot ~0p at ~0p with config ~0p and data ~0P.",
         [Name, SnapshotPath, SnapshotPosition, Config, Data, 30], #{domain => [whatsapp, wa_raft]}),
-    case erlang:function_exported(Module, storage_make_empty_snapshot, 6) of
-        true -> {reply, Module:storage_make_empty_snapshot(Name, Identifier, SnapshotPath, SnapshotPosition, Config, Data), State};
+    case erlang:function_exported(Module, storage_make_empty_snapshot, 5) of
+        true -> {reply, Module:storage_make_empty_snapshot(Options, SnapshotPath, SnapshotPosition, Config, Data), State};
         false -> {reply, {error, not_supported}, State}
     end;
 
