@@ -279,9 +279,9 @@ send_logs_impl(#raft_identity{node = PeerNode} = Peer, NextLogIndex, LeaderTerm,
             Timeout = ?RAFT_CATCHUP_HEARTBEAT_TIMEOUT(),
 
             try wa_raft_server:parse_rpc(Self, DistributionModule:call(Dest, Identifier, Command, Timeout)) of
-                {LeaderTerm, _, ?APPEND_ENTRIES_RESPONSE(PrevLogIndex, true, FollowerEndIndex)} ->
-                    send_logs_impl(Peer, FollowerEndIndex + 1, LeaderTerm, LeaderCommitIndex, State);
-                {LeaderTerm, _, ?APPEND_ENTRIES_RESPONSE(PrevLogIndex, false, _FollowerEndIndex)} ->
+                {LeaderTerm, _, ?APPEND_ENTRIES_RESPONSE(PrevLogIndex, true, FollowerMatchIndex, _)} ->
+                    send_logs_impl(Peer, FollowerMatchIndex + 1, LeaderTerm, LeaderCommitIndex, State);
+                {LeaderTerm, _, ?APPEND_ENTRIES_RESPONSE(PrevLogIndex, false, _FollowerLastIndex, _)} ->
                     exit(append_failed);
                 {LeaderTerm, _, Other} ->
                     exit({bad_response, Other});

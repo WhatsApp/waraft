@@ -40,13 +40,13 @@
 
 %% Definitions of each of the standard procedures.
 -define(PROCEDURE(Type, Payload), {procedure, Type, Payload}).
--define(APPEND_ENTRIES(PrevLogIndex, PrevLogTerm, Entries, CommitIndex, TrimIndex), ?PROCEDURE(?APPEND_ENTRIES, {PrevLogIndex, PrevLogTerm, Entries, CommitIndex, TrimIndex})).
--define(APPEND_ENTRIES_RESPONSE(PrevLogIndex, Success, LastIndex),                  ?PROCEDURE(?APPEND_ENTRIES_RESPONSE, {PrevLogIndex, Success, LastIndex})).
--define(REQUEST_VOTE(ElectionType, LastLogIndex, LastLogTerm),                      ?PROCEDURE(?REQUEST_VOTE, {ElectionType, LastLogIndex, LastLogTerm})).
--define(VOTE(Vote),                                                                 ?PROCEDURE(?VOTE, {Vote})).
--define(HANDOVER(Ref, PrevLogIndex, PrevLogTerm, Entries),                          ?PROCEDURE(?HANDOVER, {Ref, PrevLogIndex, PrevLogTerm, Entries})).
--define(HANDOVER_FAILED(Ref),                                                       ?PROCEDURE(?HANDOVER_FAILED, {Ref})).
--define(NOTIFY_TERM(),                                                              ?PROCEDURE(?NOTIFY_TERM, {})).
+-define(APPEND_ENTRIES(PrevLogIndex, PrevLogTerm, Entries, CommitIndex, TrimIndex),   ?PROCEDURE(?APPEND_ENTRIES, {PrevLogIndex, PrevLogTerm, Entries, CommitIndex, TrimIndex})).
+-define(APPEND_ENTRIES_RESPONSE(PrevLogIndex, Success, MatchIndex, LastAppliedIndex), ?PROCEDURE(?APPEND_ENTRIES_RESPONSE, {PrevLogIndex, Success, MatchIndex, LastAppliedIndex})).
+-define(REQUEST_VOTE(ElectionType, LastLogIndex, LastLogTerm),                        ?PROCEDURE(?REQUEST_VOTE, {ElectionType, LastLogIndex, LastLogTerm})).
+-define(VOTE(Vote),                                                                   ?PROCEDURE(?VOTE, {Vote})).
+-define(HANDOVER(Ref, PrevLogIndex, PrevLogTerm, Entries),                            ?PROCEDURE(?HANDOVER, {Ref, PrevLogIndex, PrevLogTerm, Entries})).
+-define(HANDOVER_FAILED(Ref),                                                         ?PROCEDURE(?HANDOVER_FAILED, {Ref})).
+-define(NOTIFY_TERM(),                                                                ?PROCEDURE(?NOTIFY_TERM, {})).
 
 %% A request to execute a particular procedure. This request could
 %% have been issued locally or as a result of a remote procedure

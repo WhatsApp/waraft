@@ -213,6 +213,14 @@
 %% trying to send huge numbers of logs to catchup a peer during handover.
 -define(RAFT_HANDOVER_MAX_ENTRIES, raft_max_handover_log_entries).
 -define(RAFT_HANDOVER_MAX_ENTRIES(App), ?RAFT_APP_CONFIG(App, ?RAFT_HANDOVER_MAX_ENTRIES, 200)).
+%% Maximum number of total log entries from the leader's current log that a
+%% peer has not yet confirmed to be applied. This limit helps prevent nodes who
+%% may have already received all the current log entries but are behind in
+%% actually applying them to the underlying storage from becoming leader due to
+%% handover before they are ready. This defaults to equal to the maximum number
+%% of missing log entries. (See `?RAFT_HANDOVER_MAX_ENTRIES`.)
+-define(RAFT_HANDOVER_MAX_UNAPPLIED_ENTRIES, raft_handover_max_unapplied_entries).
+-define(RAFT_HANDOVER_MAX_UNAPPLIED_ENTRIES(App), ?RAFT_APP_CONFIG(App, ?RAFT_HANDOVER_MAX_UNAPPLIED_ENTRIES, undefined)).
 %% Maximum total byte size of log entries to include in a Handover RPC.
 -define(RAFT_HANDOVER_MAX_BYTES, raft_max_handover_log_size).
 -define(RAFT_HANDOVER_MAX_BYTES(App), ?RAFT_APP_CONFIG(App, ?RAFT_HANDOVER_MAX_BYTES, 50 * 1024 * 1024)).
@@ -428,6 +436,8 @@
     next_indices = #{} :: #{node() => wa_raft_log:log_index()},
     %% [Leader] Mapping from peer to the index of the latest log entry in the peer's log known to match the leader's log
     match_indices = #{} :: #{node() => wa_raft_log:log_index()},
+    %% [Leader] Mapping from peer to the index of the latest log entry that the peer has applied
+    last_applied_indices = #{} :: #{node() => wa_raft_log:log_index()},
 
     %% last timestamp in ms when we send heartbeat
     last_heartbeat_ts = #{} :: #{node() => integer()},

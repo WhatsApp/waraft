@@ -617,7 +617,7 @@ terminate(Reason, State, #raft_state{name = Name, table = Table, partition = Par
 
 -type normalized_procedure() :: append_entries() | append_entries_response() | request_vote() | vote() | handover() | handover_failed() | notify_term().
 -type append_entries()          :: ?APPEND_ENTRIES         (wa_raft_log:log_index(), wa_raft_log:log_term(), [wa_raft_log:log_entry()], wa_raft_log:log_index(), wa_raft_log:log_index()).
--type append_entries_response() :: ?APPEND_ENTRIES_RESPONSE(wa_raft_log:log_index(), boolean(), wa_raft_log:log_index()).
+-type append_entries_response() :: ?APPEND_ENTRIES_RESPONSE(wa_raft_log:log_index(), boolean(), wa_raft_log:log_index(), wa_raft_log:log_index() | undefined).
 -type request_vote()            :: ?REQUEST_VOTE           (election_type(), wa_raft_log:log_index(), wa_raft_log:log_term()).
 -type vote()                    :: ?VOTE                   (boolean()).
 -type handover()                :: ?HANDOVER               (reference(), wa_raft_log:log_index(), wa_raft_log:log_term(), [wa_raft_log:log_entry()]).
@@ -630,7 +630,7 @@ terminate(Reason, State, #raft_state{name = Name, table = Table, partition = Par
 protocol() ->
     #{
         ?APPEND_ENTRIES          => ?APPEND_ENTRIES(0, 0, [], 0, 0),
-        ?APPEND_ENTRIES_RESPONSE => ?APPEND_ENTRIES_RESPONSE(0, false, 0),
+        ?APPEND_ENTRIES_RESPONSE => ?APPEND_ENTRIES_RESPONSE(0, false, 0, undefined),
         ?REQUEST_VOTE            => ?REQUEST_VOTE(normal, 0, 0),
         ?VOTE                    => ?VOTE(false),
         ?HANDOVER                => ?HANDOVER(undefined, 0, 0, []),
@@ -765,7 +765,7 @@ stalled(Type, Event, State) when is_tuple(Event), element(1, Event) =:= rpc ->
 %% [AppendEntries RPC] Stalled nodes always discard heartbeats
 stalled(_Type, ?REMOTE(Sender, ?APPEND_ENTRIES(PrevLogIndex, _PrevLogTerm, _Entries, _LeaderCommit, _TrimIndex)), State) ->
     NewState = State#raft_state{leader_heartbeat_ts = erlang:monotonic_time(millisecond)},
-    send_rpc(Sender, ?APPEND_ENTRIES_RESPONSE(PrevLogIndex, false, 0), NewState),
+    send_rpc(Sender, ?APPEND_ENTRIES_RESPONSE(PrevLogIndex, false, 0, 0), NewState),
     {keep_state, NewState};
 
 stalled({call, From}, ?TRIGGER_ELECTION_COMMAND(_), #raft_state{name = Name, current_term = CurrentTerm}) ->
@@ -935,7 +935,7 @@ leader(
     cast,
     ?REMOTE(
         ?IDENTITY_REQUIRES_MIGRATION(_, FollowerId) = Sender,
-        ?APPEND_ENTRIES_RESPONSE(_PrevIndex, true, FollowerMatchIndex)
+        ?APPEND_ENTRIES_RESPONSE(_PrevIndex, true, FollowerMatchIndex, FollowerLastAppliedIndex)
     ),
     #raft_state{
         name = Name,
@@ -943,6 +943,7 @@ leader(
         commit_index = CommitIndex0,
         next_indices = NextIndices,
         match_indices = MatchIndices,
+        last_applied_indices = LastAppliedIndices,
         heartbeat_response_ts = HeartbeatResponse0,
         first_current_term_log_index = TermStartIndex
     } = State0
@@ -961,8 +962,16 @@ leader(
     NextIndex = maps:get(FollowerId, NextIndices, TermStartIndex),
     NewMatchIndices = MatchIndices#{FollowerId => FollowerMatchIndex},
     NewNextIndices = NextIndices#{FollowerId => max(NextIndex, FollowerMatchIndex + 1)},
+    NewLastAppliedIndices = case FollowerLastAppliedIndex of
+        undefined -> LastAppliedIndices;
+        _ -> LastAppliedIndices#{FollowerId => FollowerLastAppliedIndex}
+    end,
 
-    State2 = State1#raft_state{match_indices = NewMatchIndices, next_indices = NewNextIndices},
+    State2 = State1#raft_state{
+        next_indices = NewNextIndices,
+        match_indices = NewMatchIndices,
+        last_applied_indices = NewLastAppliedIndices
+    },
     State3 = maybe_apply(State2),
     ?RAFT_GATHER('raft.leader.apply.func', timer:now_diff(os:timestamp(), StartT)),
     {keep_state, maybe_heartbeat(State3), ?HEARTBEAT_TIMEOUT(State3)};
@@ -972,13 +981,14 @@ leader(
     cast,
     ?REMOTE(
         ?IDENTITY_REQUIRES_MIGRATION(_, FollowerId) = Sender,
-        ?APPEND_ENTRIES_RESPONSE(_PrevLogIndex, false, FollowerEndIndex)
+        ?APPEND_ENTRIES_RESPONSE(_PrevLogIndex, false, FollowerEndIndex, FollowerLastAppliedIndex)
     ),
     #raft_state{
         name = Name,
         current_term = CurrentTerm,
         commit_index = CommitIndex,
-        next_indices = NextIndices
+        next_indices = NextIndices,
+        last_applied_indices = LastAppliedIndices
     } = State0
 ) ->
     ?RAFT_COUNT('raft.leader.append.failure'),
@@ -994,7 +1004,15 @@ leader(
     % to fast-forward the follower's next index so that we resume replication at the
     % point after the snapshot.
     NewNextIndices = NextIndices#{FollowerId => FollowerEndIndex + 1},
-    State1 = State0#raft_state{next_indices = NewNextIndices},
+    NewLastAppliedIndices = case FollowerLastAppliedIndex of
+        undefined -> LastAppliedIndices;
+        _ -> LastAppliedIndices#{FollowerId => FollowerLastAppliedIndex}
+    end,
+
+    State1 = State0#raft_state{
+        next_indices = NewNextIndices,
+        last_applied_indices = NewLastAppliedIndices
+    },
     State2 = maybe_apply(State1),
     {keep_state, maybe_heartbeat(State2), ?HEARTBEAT_TIMEOUT(State2)};
 
@@ -1316,7 +1334,7 @@ follower(Type, ?REMOTE(Leader, ?APPEND_ENTRIES(PrevLogIndex, PrevLogTerm, Entrie
     handle_heartbeat(?FUNCTION_NAME, Type, Leader, PrevLogIndex, PrevLogTerm, Entries, CommitIndex, TrimIndex, State);
 
 %% [AppendEntriesResponse RPC] Followers should not act upon any incoming heartbeat responses (5.2)
-follower(_Type, ?REMOTE(_, ?APPEND_ENTRIES_RESPONSE(_, _, _)), _State) ->
+follower(_Type, ?REMOTE(_, ?APPEND_ENTRIES_RESPONSE(_, _, _, _)), _State) ->
     keep_state_and_data;
 
 %% [RequestVote RPC] Handle incoming vote requests (5.2)
@@ -1625,7 +1643,7 @@ witness(Type, ?REMOTE(Leader, ?APPEND_ENTRIES(PrevLogIndex, PrevLogTerm, Entries
     handle_heartbeat(?FUNCTION_NAME, Type, Leader, PrevLogIndex, PrevLogTerm, Entries, CommitIndex, TrimIndex, State);
 
 %% [AppendEntriesResponse RPC] Witnesses should not act upon any incoming heartbeat responses (5.2)
-witness(_Type, ?REMOTE(_, ?APPEND_ENTRIES_RESPONSE(_, _, _)), _State) ->
+witness(_Type, ?REMOTE(_, ?APPEND_ENTRIES_RESPONSE(_, _, _, _)), _State) ->
     keep_state_and_data;
 
 %% [Handover][Handover RPC] Witnesses should not receive handover requests
@@ -1945,14 +1963,6 @@ config_membership(#{membership := Membership}) when Membership =/= [] ->
 config_membership(_Config) ->
     error(membership_not_set).
 
--spec config_replicas(Config :: config()) -> Replicas :: membership().
-config_replicas(#{membership := Membership, witness := Witnesses}) ->
-    Membership -- Witnesses;
-config_replicas(#{membership := Membership}) ->
-    Membership;
-config_replicas(_Config) ->
-    error(membership_not_set).
-
 -spec config_witnesses(Config :: config()) -> Witnesses :: [peer()].
 config_witnesses(#{witness := Witnesses}) ->
     Witnesses;
@@ -1967,6 +1977,14 @@ is_self_witness(#raft_state{self = #raft_identity{name = Name, node = Node}} = R
 config_identities(#{membership := Membership}) ->
     [#raft_identity{name = Name, node = Node} || {Name, Node} <- Membership];
 config_identities(_Config) ->
+    error(membership_not_set).
+
+-spec config_replica_identities(Config :: config()) -> Replicas :: [#raft_identity{}].
+config_replica_identities(#{membership := Membership, witness := Witnesses}) ->
+    [#raft_identity{name = Name, node = Node} || {Name, Node} <- Membership -- Witnesses];
+config_replica_identities(#{membership := Membership}) ->
+    [#raft_identity{name = Name, node = Node} || {Name, Node} <- Membership];
+config_replica_identities(_Config) ->
     error(membership_not_set).
 
 %% Returns the current effective RAFT configuration. This is the most recent configuration
@@ -2326,6 +2344,7 @@ advance_term(State, NewTerm, VotedFor, #raft_state{current_term = CurrentTerm} =
         votes = #{},
         next_indices = #{},
         match_indices = #{},
+        last_applied_indices = #{},
         last_heartbeat_ts = #{},
         heartbeat_response_ts = #{},
         handover = undefined
@@ -2389,11 +2408,24 @@ heartbeat(?IDENTITY_REQUIRES_MIGRATION(_, FollowerId) = Sender,
     end.
 
 -spec compute_handover_candidates(State :: #raft_state{}) -> [node()].
-compute_handover_candidates(#raft_state{application = App, log_view = View, match_indices = MatchIndices} = State) ->
-    Replicas = config_replicas(config(State)),
-    LastLogIndex = wa_raft_log:last_index(View),
-    MaxHandoverLogEntries = ?RAFT_HANDOVER_MAX_ENTRIES(App),
-    [Peer || {_Name, Peer} <- Replicas, Peer =/= node(), LastLogIndex - maps:get(Peer, MatchIndices, 0) =< MaxHandoverLogEntries].
+compute_handover_candidates(#raft_state{application = App, log_view = View} = State) ->
+    Replicas = config_replica_identities(config(State)),
+    LastIndex = wa_raft_log:last_index(View),
+    MatchCutoffIndex = LastIndex - ?RAFT_HANDOVER_MAX_ENTRIES(App),
+    ApplyCutoffIndex =
+        case ?RAFT_HANDOVER_MAX_UNAPPLIED_ENTRIES(App) of
+            undefined -> MatchCutoffIndex;
+            Limit -> LastIndex - Limit
+        end,
+    [Peer || ?IDENTITY_REQUIRES_MIGRATION(_, Peer) = Replica <- Replicas, Peer =/= node(), is_eligible_for_handover(Replica, MatchCutoffIndex, ApplyCutoffIndex, State)].
+
+-spec is_eligible_for_handover(Candidate :: #raft_identity{}, MatchCutoffIndex :: wa_raft_log:log_index(), ApplyCutoffIndex :: wa_raft_log:log_index(), State :: #raft_state{}) -> boolean().
+is_eligible_for_handover(?IDENTITY_REQUIRES_MIGRATION(_, CandidateId), MatchCutoffIndex, ApplyCutoffIndex, #raft_state{match_indices = MatchIndices, last_applied_indices = LastAppliedIndices}) ->
+    % A peer whose matching index is unknown should not be eligible for handovers.
+    MatchIndex = maps:get(CandidateId, MatchIndices, 0),
+    % A peer whose last applied index is unknown will be allowed to receive handovers.
+    LastAppliedIndex = maps:get(CandidateId, LastAppliedIndices, ApplyCutoffIndex),
+    MatchIndex >= MatchCutoffIndex andalso LastAppliedIndex >= ApplyCutoffIndex.
 
 -spec adjust_config(Action :: {add, peer()} | {remove, peer()} | {add_witness, peer()} | {remove_witness, peer()} | {refresh, undefined},
                     Config :: config(), State :: #raft_state{}) -> {ok, NewConfig :: config()} | {error, Reason :: atom()}.
@@ -2476,7 +2508,7 @@ open_snapshot(Root, Position, #raft_state{storage = Storage} = Data) ->
     TrimIndex :: wa_raft_log:log_index(),
     Data :: #raft_state{}
 ) -> gen_statem:event_handler_result(state(), #raft_state{}).
-handle_heartbeat(State, Event, Leader, PrevLogIndex, PrevLogTerm, Entries, CommitIndex, TrimIndex, #raft_state{application = App, name = Name, current_term = CurrentTerm, log_view = View} = Data0) ->
+handle_heartbeat(State, Event, Leader, PrevLogIndex, PrevLogTerm, Entries, CommitIndex, TrimIndex, #raft_state{application = App, name = Name, current_term = CurrentTerm, log_view = View, last_applied = LastApplied} = Data0) ->
     EntryCount = length(Entries),
 
     ?RAFT_GATHER({raft, State, 'heartbeat.size'}, EntryCount),
@@ -2485,7 +2517,7 @@ handle_heartbeat(State, Event, Leader, PrevLogIndex, PrevLogTerm, Entries, Commi
 
     case append_entries(State, PrevLogIndex, PrevLogTerm, Entries, EntryCount, Data0) of
         {ok, Accepted, NewMatchIndex, Data1} ->
-            send_rpc(Leader, ?APPEND_ENTRIES_RESPONSE(PrevLogIndex, Accepted, NewMatchIndex), Data1),
+            send_rpc(Leader, ?APPEND_ENTRIES_RESPONSE(PrevLogIndex, Accepted, NewMatchIndex, LastApplied), Data1),
             reply_rpc(Event, ?LEGACY_APPEND_ENTRIES_RESPONSE_RPC(CurrentTerm, node(), PrevLogIndex, Accepted, NewMatchIndex), Data1),
 
             LocalTrimIndex = case ?RAFT_LOG_ROTATION_BY_TRIM_INDEX(App) of
