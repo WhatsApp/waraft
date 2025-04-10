@@ -286,12 +286,14 @@
     name :: atom(),
     table :: wa_raft:table(),
     partition :: wa_raft:partition(),
+    self :: #raft_identity{},
     options :: #raft_options{},
     path :: file:filename(),
     module :: module(),
     handle :: storage_handle(),
     position :: wa_raft_log:log_pos(),
-    config :: undefined | {ok, wa_raft_log:log_pos(), wa_raft_server:config()}
+    config :: undefined | {ok, wa_raft_log:log_pos(), wa_raft_server:config()},
+    witness = false :: boolean()
 }).
 
 %%-----------------------------------------------------------------------------
@@ -467,7 +469,7 @@ registered_name(Table, Partition) ->
 %%-------------------------------------------------------------------
 
 -spec init(Options :: #raft_options{}) -> {ok, #state{}}.
-init(#raft_options{table = Table, partition = Partition, database = Path, storage_name = Name, storage_module = Module} = Options) ->
+init(#raft_options{table = Table, partition = Partition, self = Self, database = Path, storage_name = Name, storage_module = Module} = Options) ->
     process_flag(trap_exit, true),
 
     ?LOG_NOTICE("Storage[~0p] starting for partition ~0p/~0p at ~0p using ~0p",
@@ -475,25 +477,22 @@ init(#raft_options{table = Table, partition = Partition, database = Path, storag
 
     Handle = Module:storage_open(Options, Path),
     Position = Module:storage_position(Handle),
-    Config = case Module:storage_config(Handle) of
-        {ok, ConfigPosition, ConfigAll} -> {ok, ConfigPosition, wa_raft_server:normalize_config(ConfigAll)};
-        undefined -> undefined
-    end,
 
     ?LOG_NOTICE("Storage[~0p] opened at position ~0p.",
         [Name, Position], #{domain => [whatsapp, wa_raft]}),
 
-    {ok, #state{
+    State = #state{
         name = Name,
         table = Table,
         partition = Partition,
+        self = Self,
         options = Options,
         path = Path,
         module = Module,
         handle = Handle,
-        position = Position,
-        config = Config
-    }}.
+        position = Position
+    },
+    {ok, refresh_config(State)}.
 
 %% The interaction between the RAFT server and the RAFT storage server is designed to be
 %% as asynchronous as possible since the RAFT storage server may be caught up in handling
@@ -543,11 +542,7 @@ handle_call(?OPEN_SNAPSHOT_REQUEST(SnapshotPath, SnapshotPosition), _From, #stat
     ?LOG_NOTICE("Storage[~0p] at ~0p is opening snapshot ~0p.", [Name, Position, SnapshotPosition], #{domain => [whatsapp, wa_raft]}),
     case Module:storage_open_snapshot(SnapshotPath, SnapshotPosition, Handle) of
         {ok, NewHandle} ->
-            NewConfig = case Module:storage_config(NewHandle) of
-                {ok, ConfigPosition, ConfigAll} -> {ok, ConfigPosition, wa_raft_server:normalize_config(ConfigAll)};
-                undefined -> undefined
-            end,
-            {reply, ok, State#state{position = SnapshotPosition, handle = NewHandle, config = NewConfig}};
+            {reply, ok, refresh_config(State#state{position = SnapshotPosition, handle = NewHandle})};
         {error, Reason} ->
             {reply, {error, Reason}, State}
     end;
@@ -673,8 +668,12 @@ handle_command(_Label, {config, Config}, Position, #state{name = Name, module = 
     ?LOG_INFO("Storage[~0p] is applying a new configuration ~0p at ~0p.",
         [Name, Config, Position], #{domain => [whatsapp, wa_raft]}),
     {Reply, NewHandle} = Module:storage_apply_config(Config, Position, Handle),
-    {Reply, State#state{handle = NewHandle, position = Position, config = {ok, Position, wa_raft_server:normalize_config(Config)}}};
-handle_command(Label, Command, Position, #state{module = Module, handle = Handle} = State) ->
+    {Reply, refresh_config(State#state{handle = NewHandle, position = Position})};
+handle_command(Label, RawCommand, Position, #state{module = Module, handle = Handle, witness = Witness} = State) ->
+    Command = case Witness andalso RawCommand =/= noop of
+        true -> noop_omitted;
+        false -> RawCommand
+    end,
     {Reply, NewHandle} = case Label of
         undefined -> Module:storage_apply(Command, Position, Handle);
         _         -> Module:storage_apply(Command, Position, Label, Handle)
@@ -730,6 +729,21 @@ handle_create_witness_snapshot(SnapshotName, #state{name = Name, path = Path, mo
                 false ->
                     {error, not_supported}
             end
+    end.
+
+-spec refresh_config(Storage :: #state{}) -> #state{}.
+refresh_config(#state{self = Self, module = Module, handle = Handle} = Storage) ->
+    case Module:storage_config(Handle) of
+        {ok, Version, Config} ->
+            Storage#state{
+                config = {ok, Version, wa_raft_server:normalize_config(Config)},
+                witness = wa_raft_server:is_witness(Self, Config)
+            };
+        undefined ->
+            Storage#state{
+                config = undefined,
+                witness = false
+            }
     end.
 
 -define(MAX_RETAINED_SNAPSHOT, 1).
