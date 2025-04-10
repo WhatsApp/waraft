@@ -8,12 +8,15 @@
 -module(wa_raft).
 -compile(warn_missing_spec_all).
 
+-include("wa_raft.hrl").
+
 %% Public Types
 -export_type([
     table/0,
     partition/0,
     error/0,
-    args/0
+    args/0,
+    identity/0
 ]).
 
 -type table() :: atom().
@@ -40,3 +43,5 @@
         % Witness flag
         witness => boolean()
     }.
+
+-type identity() :: #raft_identity{}.
