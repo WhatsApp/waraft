@@ -331,7 +331,6 @@
     application :: atom(),
     table :: wa_raft:table(),
     partition :: wa_raft:partition(),
-    witness :: boolean(),
     self :: #raft_identity{},
     identifier :: #raft_identifier{},
     database :: file:filename(),
@@ -447,8 +446,5 @@
     handover :: undefined | {node(), reference(), integer()},
 
     %% disabled
-    disable_reason :: term(),
-
-    %% witness
-    witness :: boolean()
+    disable_reason :: term()
 }).
