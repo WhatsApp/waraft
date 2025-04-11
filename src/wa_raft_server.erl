@@ -2452,7 +2452,7 @@ adjust_config(Action, Config, #raft_state{self = Self}) ->
             case {PeerIdentity, lists:member(PeerIdentity, Membership)} of
                 {Self, _}  -> {error, cannot_remove_self};
                 {_, false} -> {error, not_a_member};
-                {_, true}  -> {ok, set_config_members(lists:delete(PeerIdentity, Membership), lists:delete(PeerIdentity, Witness), Config)}
+                {_, true}  -> {ok, set_config_members(lists:delete(PeerIdentity, Membership), Witness, Config)}
             end;
         {remove_witness, {Name, Node}} ->
             PeerIdentity = ?IDENTITY_REQUIRES_MIGRATION(Name, Node),
