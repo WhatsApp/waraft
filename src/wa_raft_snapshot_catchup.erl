@@ -54,7 +54,7 @@
 -define(CATCHUP(App, Name, Node, Table, Partition, Witness), {catchup, App, Name, Node, Table, Partition, Witness}).
 
 -type key() :: {Name :: atom(), Node :: node()}.
--type snapshot_key() :: {Table :: wa_raft:table(), Partition :: wa_raft:partition(), Position :: wa_raft_log:log_pos()}.
+-type snapshot_key() :: {Table :: wa_raft:table(), Partition :: wa_raft:partition(), Position :: wa_raft_log:log_pos(), Witness :: boolean()}.
 
 -type which_transports() :: ?WHICH_TRANSPORTS.
 -type call() :: which_transports().
@@ -67,7 +67,7 @@
     table :: wa_raft:table(),
     partition :: wa_raft:partition(),
     id :: wa_raft_transport:transport_id(),
-    snapshot :: wa_raft_log:log_pos()
+    snapshot :: {wa_raft_log:log_pos(), Witness :: boolean()}
 }).
 -record(state, {
     % currently active transports
@@ -161,10 +161,10 @@ handle_cast(?CATCHUP(App, Name, Node, Table, Partition, Witness), State0) ->
                             table = Table,
                             partition = Partition,
                             id = ID,
-                            snapshot = LogPos
+                            snapshot = {LogPos, Witness}
                         },
                         NewTransports = Transports#{{Name, Node} => NewTransport},
-                        NewSnapshots = maps:update_with({Table, Partition, LogPos}, fun(V) -> V + 1 end, 1, Snapshots),
+                        NewSnapshots = maps:update_with({Table, Partition, LogPos, Witness}, fun(V) -> V + 1 end, 1, Snapshots),
                         {noreply, State1#state{transports = NewTransports, snapshots = NewSnapshots}}
                 end
             catch
@@ -196,8 +196,8 @@ terminate(_Reason, #state{transports = Transports, snapshots = Snapshots}) ->
             wa_raft_transport:cancel(ID, terminating)
         end, Transports),
     maps:foreach(
-        fun ({Table, Partition, LogPos}, _) ->
-            delete_snapshot(Table, Partition, LogPos)
+        fun ({Table, Partition, LogPos, Witness}, _) ->
+            delete_snapshot(Table, Partition, LogPos, Witness)
         end, Snapshots).
 
 -spec allowed(Now :: integer(), Name :: atom(), Node :: node(), State :: #state{}) -> {boolean(), #state{}}.
@@ -236,14 +236,14 @@ scan_transport(Key, #transport{app = App, id = ID} = Transport, State) ->
     end.
 
 -spec finish_transport(Key :: key(), Transport :: #transport{}, Backoff :: pos_integer(), State :: #state{}) -> #state{}.
-finish_transport(Key, #transport{table = Table, partition = Partition, snapshot = LogPos}, Backoff,
+finish_transport(Key, #transport{table = Table, partition = Partition, snapshot = {LogPos, Witness}}, Backoff,
                  #state{transports = Transports, snapshots = Snapshots, retry_backoffs = RetryBackoffs} = State) ->
     Now = erlang:monotonic_time(millisecond),
-    SnapshotKey = {Table, Partition, LogPos},
+    SnapshotKey = {Table, Partition, LogPos, Witness},
     NewSnapshots = case Snapshots of
         #{SnapshotKey := 1} ->
             % try to delete a snapshot if it is the last transport using it
-            delete_snapshot(Table, Partition, LogPos),
+            delete_snapshot(Table, Partition, LogPos, Witness),
             maps:remove(SnapshotKey, Snapshots);
         #{SnapshotKey := Count} ->
             % otherwise decrement the reference count for the snapshot
@@ -256,27 +256,33 @@ finish_transport(Key, #transport{table = Table, partition = Partition, snapshot 
     State#state{transports = maps:remove(Key, Transports), snapshots = NewSnapshots, retry_backoffs = NewRetryBackoffs}.
 
 -spec delete_snapshot(Table :: wa_raft:table(), Partition :: wa_raft:partition(),
-                      Position :: wa_raft_log:log_pos()) -> ok.
-delete_snapshot(Table, Partition, #raft_log_pos{index = Index, term = Term}) ->
+                      Position :: wa_raft_log:log_pos(), Witness :: boolean()) -> ok.
+delete_snapshot(Table, Partition, Position, Witness) ->
     Storage = wa_raft_storage:registered_name(Table, Partition),
-    wa_raft_storage:delete_snapshot(Storage, ?SNAPSHOT_NAME(Index, Term)).
+    wa_raft_storage:delete_snapshot(Storage, snapshot_name(Position, Witness)).
 
 -spec schedule_scan() -> reference().
 schedule_scan() ->
     erlang:send_after(?SCAN_EVERY_MS, self(), scan).
 
+-spec snapshot_name(LogPos :: wa_raft_log:log_pos(), Witness :: boolean()) -> string().
+snapshot_name(#raft_log_pos{index = Index, term = Term}, false) ->
+    ?SNAPSHOT_NAME(Index, Term);
+snapshot_name(#raft_log_pos{index = Index, term = Term}, true) ->
+    ?WITNESS_SNAPSHOT_NAME(Index, Term).
+
 -spec create_snapshot(
     Table :: wa_raft:table(),
     Partition :: wa_raft:partition(),
     Witness :: boolean()
-) -> {LogPos :: wa_raft_log:log_pos(), string()}.
-create_snapshot(Table, Partition, false) ->
+) -> {LogPos :: wa_raft_log:log_pos(), Path :: string()}.
+create_snapshot(Table, Partition, Witness) ->
     StorageRef = wa_raft_storage:registered_name(Table, Partition),
-    {ok, #raft_log_pos{index = Index, term = Term} = LogPos} = wa_raft_storage:create_snapshot(StorageRef),
-    Path = ?RAFT_SNAPSHOT_PATH(Table, Partition, Index, Term),
-    {LogPos, Path};
-create_snapshot(Table, Partition, true) ->
-    StorageRef = wa_raft_storage:registered_name(Table, Partition),
-    {ok, #raft_log_pos{index = Index, term = Term} = LogPos} = wa_raft_storage:create_witness_snapshot(StorageRef),
-    Path = ?RAFT_SNAPSHOT_PATH(Table, Partition, ?WITNESS_SNAPSHOT_NAME(Index, Term)),
+    {ok, LogPos} = case Witness of
+        false ->
+            wa_raft_storage:create_snapshot(StorageRef);
+        true ->
+            wa_raft_storage:create_witness_snapshot(StorageRef)
+    end,
+    Path = ?RAFT_SNAPSHOT_PATH(Table, Partition, snapshot_name(LogPos, Witness)),
     {LogPos, Path}.
