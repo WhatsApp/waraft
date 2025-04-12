@@ -39,7 +39,9 @@
         % Storage module
         storage_module => module(),
         % Transport module
-        transport_module => module()
+        transport_module => module(),
+        % Witness flag
+        witness => boolean()
     }.
 
 -type identity() :: #raft_identity{}.
