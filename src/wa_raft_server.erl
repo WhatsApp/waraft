@@ -1665,26 +1665,6 @@ witness({call, From}, ?PROMOTE_COMMAND(_, _), #raft_state{name = Name, current_t
     ?LOG_WARNING("Server[~0p, term ~0p, witness] cannot be promoted to leader.", [Name, CurrentTerm], #{domain => [whatsapp, wa_raft]}),
     {keep_state_and_data, {reply, From, {error, invalid_state}}};
 
-witness(Type, ?SNAPSHOT_AVAILABLE_COMMAND(undefined, #raft_log_pos{index = SnapshotIndex, term = SnapshotTerm} = SnapshotPos),
-        #raft_state{name = Name, current_term = CurrentTerm, last_applied = LastApplied} = State0) ->
-    case SnapshotIndex > LastApplied orelse LastApplied =:= 0 of
-        true ->
-            ?LOG_NOTICE("Server[~0p, term ~0p, witness] accepting snapshot ~p:~p but not loading",
-                [Name, CurrentTerm, SnapshotIndex, SnapshotTerm], #{domain => [whatsapp, wa_raft]}),
-            State1 = reset_log(SnapshotPos, State0),
-            State2 = case SnapshotTerm > CurrentTerm of
-                true -> advance_term(?FUNCTION_NAME, SnapshotTerm, undefined, State1);
-                false -> State1
-            end,
-            reply(Type, ok),
-            {next_state, witness, State2};
-        false ->
-            ?LOG_NOTICE("Server[~0p, term ~0p, witness] ignoring available snapshot ~p:~p with index not past ours (~p)",
-                [Name, CurrentTerm, SnapshotIndex, SnapshotTerm, LastApplied], #{domain => [whatsapp, wa_raft]}),
-            reply(Type, {error, rejected}),
-            keep_state_and_data
-    end;
-
 %% [RequestVote RPC] Handle incoming vote requests (5.2)
 witness(_Type, ?REMOTE(Candidate, ?REQUEST_VOTE(_, CandidateIndex, CandidateTerm)), State) ->
     request_vote_impl(?FUNCTION_NAME, Candidate, CandidateIndex, CandidateTerm, State);
