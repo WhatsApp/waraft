@@ -1620,8 +1620,7 @@ witness(enter, PreviousStateName, #raft_state{name = Name, current_term = Curren
     ?RAFT_COUNT('raft.witness.enter'),
     ?LOG_NOTICE("Server[~0p, term ~0p, witness] becomes witness from state ~0p.",
         [Name, CurrentTerm, PreviousStateName], #{domain => [whatsapp, wa_raft]}),
-    State1 = enter_state(?FUNCTION_NAME, State),
-    {keep_state, State1, ?ELECTION_TIMEOUT(State1)};
+    {keep_state, enter_state(?FUNCTION_NAME, State)};
 
 %% [Internal] Advance to newer term when requested
 witness(internal, ?ADVANCE_TERM(NewTerm), #raft_state{name = Name, current_term = CurrentTerm} = State) when NewTerm > CurrentTerm ->
@@ -1629,9 +1628,6 @@ witness(internal, ?ADVANCE_TERM(NewTerm), #raft_state{name = Name, current_term 
     ?LOG_NOTICE("Server[~0p, term ~0p, witness] advancing to new term ~0p.",
         [Name, CurrentTerm, NewTerm], #{domain => [whatsapp, wa_raft]}),
     {keep_state, advance_term(?FUNCTION_NAME, NewTerm, undefined, State)};
-
-witness(state_timeout, _, State) ->
-    {repeat_state, State};
 
 %% [Protocol] Parse any RPCs in network formats
 witness(Type, Event, State) when is_tuple(Event), element(1, Event) =:= rpc ->
