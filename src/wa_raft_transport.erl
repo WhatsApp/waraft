@@ -26,9 +26,9 @@
 
 %% Snapshot Transfer API
 -export([
-    start_snapshot_transfer/5,
     start_snapshot_transfer/6,
-    transfer_snapshot/6
+    start_snapshot_transfer/7,
+    transfer_snapshot/7
 ]).
 
 %% Transport API
@@ -122,7 +122,8 @@
     type := snapshot,
     table := wa_raft:table(),
     partition := wa_raft:partition(),
-    position := wa_raft_log:log_pos()
+    position := wa_raft_log:log_pos(),
+    witness := boolean()
 }.
 
 -type file_id() :: pos_integer().
@@ -220,17 +221,17 @@ transfer(Peer, Table, Partition, Root, Timeout) ->
 %%%  Snapshot Transfer API
 %%%
 
--spec start_snapshot_transfer(Peer :: atom(), Table :: wa_raft:table(), Partition :: wa_raft:partition(), LogPos :: wa_raft_log:log_pos(), Root :: string()) -> {ok, ID :: transport_id()} | wa_raft:error().
-start_snapshot_transfer(Peer, Table, Partition, LogPos, Root) ->
-    start_snapshot_transfer(Peer, Table, Partition, LogPos, Root, 10000).
+-spec start_snapshot_transfer(Peer :: atom(), Table :: wa_raft:table(), Partition :: wa_raft:partition(), LogPos :: wa_raft_log:log_pos(), Root :: string(), Witness :: boolean()) -> {ok, ID :: transport_id()} | wa_raft:error().
+start_snapshot_transfer(Peer, Table, Partition, LogPos, Root, Witness) ->
+    start_snapshot_transfer(Peer, Table, Partition, LogPos, Root, Witness, 10000).
 
--spec start_snapshot_transfer(Peer :: atom(), Table :: wa_raft:table(), Partition :: wa_raft:partition(), LogPos :: wa_raft_log:log_pos(), Root :: string(), Timeout :: timeout()) -> {ok, ID :: transport_id()} | wa_raft:error().
-start_snapshot_transfer(Peer, Table, Partition, LogPos, Root, Timeout) ->
-    start_transport(Peer, #{type => snapshot, table => Table, partition => Partition, position => LogPos}, Root, Timeout).
+-spec start_snapshot_transfer(Peer :: atom(), Table :: wa_raft:table(), Partition :: wa_raft:partition(), LogPos :: wa_raft_log:log_pos(), Root :: string(), Witness :: boolean(), Timeout :: timeout()) -> {ok, ID :: transport_id()} | wa_raft:error().
+start_snapshot_transfer(Peer, Table, Partition, LogPos, Root, Witness, Timeout) ->
+    start_transport(Peer, #{type => snapshot, table => Table, partition => Partition, position => LogPos, witness => Witness}, Root, Timeout).
 
--spec transfer_snapshot(Peer :: atom(), Table :: wa_raft:table(), Partition :: wa_raft:partition(), LogPos :: wa_raft_log:log_pos(), Root :: string(), Timeout :: timeout()) -> {ok, ID :: transport_id()} | wa_raft:error().
-transfer_snapshot(Peer, Table, Partition, LogPos, Root, Timeout) ->
-    start_transport_and_wait(Peer, #{type => snapshot, table => Table, partition => Partition, position => LogPos}, Root, Timeout).
+-spec transfer_snapshot(Peer :: atom(), Table :: wa_raft:table(), Partition :: wa_raft:partition(), LogPos :: wa_raft_log:log_pos(), Root :: string(), Witness :: boolean(), Timeout :: timeout()) -> {ok, ID :: transport_id()} | wa_raft:error().
+transfer_snapshot(Peer, Table, Partition, LogPos, Root, Witness, Timeout) ->
+    start_transport_and_wait(Peer, #{type => snapshot, table => Table, partition => Partition, position => LogPos, witness => Witness}, Root, Timeout).
 
 %%% ------------------------------------------------------------------------
 %%%  Transport API
@@ -324,14 +325,29 @@ file_info(ID, FileID) ->
     end.
 
 -spec maybe_update_active_inbound_transport_counts(OldInfo :: transport_info() | undefined, NewInfo :: transport_info(), Counters :: counters:counters_ref()) -> ok.
-maybe_update_active_inbound_transport_counts(undefined, #{type := receiver, status := running}, Counters) ->
+maybe_update_active_inbound_transport_counts(OldInfo, #{meta := Meta} = NewInfo, Counters) ->
+    case is_witness_transport(Meta) of
+        true ->
+            ok;
+        false ->
+            maybe_update_active_inbound_transport_counts_impl(OldInfo, NewInfo, Counters)
+    end.
+
+-spec maybe_update_active_inbound_transport_counts_impl(OldInfo :: transport_info() | undefined, NewInfo :: transport_info(), Counters :: counters:counters_ref()) -> ok.
+maybe_update_active_inbound_transport_counts_impl(undefined, #{type := receiver, status := running}, Counters) ->
     counters:add(Counters, ?RAFT_TRANSPORT_COUNTER_ACTIVE_RECEIVES, 1);
-maybe_update_active_inbound_transport_counts(#{type := receiver, status := OldStatus}, #{status := running}, Counters) when OldStatus =/= running ->
+maybe_update_active_inbound_transport_counts_impl(#{type := receiver, status := OldStatus}, #{status := running}, Counters) when OldStatus =/= running ->
     counters:add(Counters, ?RAFT_TRANSPORT_COUNTER_ACTIVE_RECEIVES, 1);
-maybe_update_active_inbound_transport_counts(#{type := receiver, status := running}, #{status := NewStatus}, Counters) when NewStatus =/= running ->
+maybe_update_active_inbound_transport_counts_impl(#{type := receiver, status := running}, #{status := NewStatus}, Counters) when NewStatus =/= running ->
     counters:sub(Counters, ?RAFT_TRANSPORT_COUNTER_ACTIVE_RECEIVES, 1);
-maybe_update_active_inbound_transport_counts(_, _, _) ->
+maybe_update_active_inbound_transport_counts_impl(_, _, _) ->
     ok.
+
+-spec is_witness_transport(Meta :: meta()) -> boolean().
+is_witness_transport(#{witness := true}) ->
+    true;
+is_witness_transport(_) ->
+    false.
 
 % This function should only be called from the "worker" process responsible for the
 % transport of the specified file since it does not provide any atomicity guarantees.
@@ -450,12 +466,14 @@ handle_call({start_wait, Peer, Meta, Root}, From, #state{counters = Counters} = 
 handle_call({transport, ID, Peer, Module, Meta, Files}, From, #state{counters = Counters} = State) ->
     try
         MaxIncomingSnapshotTransfers = ?RAFT_MAX_CONCURRENT_INCOMING_SNAPSHOT_TRANSFERS(),
-        case {transport_info(ID), counters:get(Counters, ?RAFT_TRANSPORT_COUNTER_ACTIVE_RECEIVES)} of
+        NumActiveReceives = counters:get(Counters, ?RAFT_TRANSPORT_COUNTER_ACTIVE_RECEIVES),
+        ShouldThrottle = not is_witness_transport(Meta) andalso NumActiveReceives >= MaxIncomingSnapshotTransfers,
+        case {transport_info(ID), ShouldThrottle} of
             {{ok, _Info}, _} ->
                 ?LOG_WARNING("wa_raft_transport got duplicate transport receive start for ~p from ~p",
                     [ID, From], #{domain => [whatsapp, wa_raft]}),
                 {reply, duplicate, State};
-            {not_found, NumActiveReceives} when NumActiveReceives >= MaxIncomingSnapshotTransfers ->
+            {not_found, true} ->
                 {reply, {error, receiver_overloaded}, State};
             {not_found, _} ->
                 ?RAFT_COUNT('raft.transport.receive'),
@@ -785,11 +803,7 @@ transport_module(_Meta) ->
 transport_destination(ID, #{type := transfer, table := Table, partition := Partition}) ->
     filename:join(wa_raft_transport:registered_directory(Table, Partition), integer_to_list(ID));
 transport_destination(ID, #{type := snapshot, table := Table, partition := Partition}) ->
-    filename:join(wa_raft_transport:registered_directory(Table, Partition), integer_to_list(ID));
-transport_destination(ID, Meta) ->
-    ?LOG_WARNING("wa_raft_transport cannot determine transport destination for transport ~0p with metadata ~0p",
-        [ID, Meta], #{domain => [whatsapp, wa_raft]}),
-    error(no_known_destination).
+    filename:join(wa_raft_transport:registered_directory(Table, Partition), integer_to_list(ID)).
 
 -spec collect_files(string()) -> [{non_neg_integer(), string(), string(), integer(), non_neg_integer()}].
 collect_files(Root) ->

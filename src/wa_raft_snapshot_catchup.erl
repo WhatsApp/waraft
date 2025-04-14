@@ -146,7 +146,7 @@ handle_cast(?CATCHUP(App, Name, Node, Table, Partition, Witness), State0) ->
         {true, #state{transports = Transports, snapshots = Snapshots, overload_backoffs = OverloadBackoffs} = State1} ->
             try
                 {#raft_log_pos{index = Index, term = Term} = LogPos, Path} = create_snapshot(Table, Partition, Witness),
-                case wa_raft_transport:start_snapshot_transfer(Node, Table, Partition, LogPos, Path, infinity) of
+                case wa_raft_transport:start_snapshot_transfer(Node, Table, Partition, LogPos, Path, Witness, infinity) of
                     {error, receiver_overloaded} ->
                         ?LOG_NOTICE("destination node ~0p is overloaded, abort new transport for ~0p:~0p and try again later",
                             [Node, Table, Partition], #{domain => [whatsapp, wa_raft]}),
