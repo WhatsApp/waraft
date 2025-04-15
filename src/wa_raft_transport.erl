@@ -273,7 +273,7 @@ transport_info(ID, Item) ->
         _                      -> undefined
     end.
 
-% This function should only be called from the "factory" process since it does not
+% This function should only be called from the "gen_server" process since it does not
 % provide any atomicity guarantees.
 -spec set_transport_info(ID :: transport_id(), Info :: transport_info(), Counters :: counters:counters_ref()) -> term().
 set_transport_info(ID, #{atomics := TransportAtomics} = Info, Counters) ->
@@ -281,7 +281,7 @@ set_transport_info(ID, #{atomics := TransportAtomics} = Info, Counters) ->
     maybe_update_active_inbound_transport_counts(undefined, Info, Counters),
     ok = atomics:put(TransportAtomics, ?RAFT_TRANSPORT_ATOMICS_UPDATED_TS, erlang:system_time(millisecond)).
 
-% This function should only be called from the "factory" process since it does not
+% This function should only be called from the "gen_server" process since it does not
 % provide any atomicity guarantees.
 -spec update_and_get_transport_info(
     ID :: transport_id(),
@@ -325,29 +325,16 @@ file_info(ID, FileID) ->
     end.
 
 -spec maybe_update_active_inbound_transport_counts(OldInfo :: transport_info() | undefined, NewInfo :: transport_info(), Counters :: counters:counters_ref()) -> ok.
-maybe_update_active_inbound_transport_counts(OldInfo, #{meta := Meta} = NewInfo, Counters) ->
-    case is_witness_transport(Meta) of
-        true ->
-            ok;
-        false ->
-            maybe_update_active_inbound_transport_counts_impl(OldInfo, NewInfo, Counters)
-    end.
-
--spec maybe_update_active_inbound_transport_counts_impl(OldInfo :: transport_info() | undefined, NewInfo :: transport_info(), Counters :: counters:counters_ref()) -> ok.
-maybe_update_active_inbound_transport_counts_impl(undefined, #{type := receiver, status := running}, Counters) ->
+maybe_update_active_inbound_transport_counts(_OldInfo, #{meta := #{witness := true}}, _Counters) ->
+    ok;
+maybe_update_active_inbound_transport_counts(undefined, #{type := receiver, status := running}, Counters) ->
     counters:add(Counters, ?RAFT_TRANSPORT_COUNTER_ACTIVE_RECEIVES, 1);
-maybe_update_active_inbound_transport_counts_impl(#{type := receiver, status := OldStatus}, #{status := running}, Counters) when OldStatus =/= running ->
+maybe_update_active_inbound_transport_counts(#{type := receiver, status := OldStatus}, #{status := running}, Counters) when OldStatus =/= running ->
     counters:add(Counters, ?RAFT_TRANSPORT_COUNTER_ACTIVE_RECEIVES, 1);
-maybe_update_active_inbound_transport_counts_impl(#{type := receiver, status := running}, #{status := NewStatus}, Counters) when NewStatus =/= running ->
+maybe_update_active_inbound_transport_counts(#{type := receiver, status := running}, #{status := NewStatus}, Counters) when NewStatus =/= running ->
     counters:sub(Counters, ?RAFT_TRANSPORT_COUNTER_ACTIVE_RECEIVES, 1);
-maybe_update_active_inbound_transport_counts_impl(_, _, _) ->
+maybe_update_active_inbound_transport_counts(_, _, _) ->
     ok.
-
--spec is_witness_transport(Meta :: meta()) -> boolean().
-is_witness_transport(#{witness := true}) ->
-    true;
-is_witness_transport(_) ->
-    false.
 
 % This function should only be called from the "worker" process responsible for the
 % transport of the specified file since it does not provide any atomicity guarantees.
@@ -467,7 +454,7 @@ handle_call({transport, ID, Peer, Module, Meta, Files}, From, #state{counters = 
     try
         MaxIncomingSnapshotTransfers = ?RAFT_MAX_CONCURRENT_INCOMING_SNAPSHOT_TRANSFERS(),
         NumActiveReceives = counters:get(Counters, ?RAFT_TRANSPORT_COUNTER_ACTIVE_RECEIVES),
-        ShouldThrottle = not is_witness_transport(Meta) andalso NumActiveReceives >= MaxIncomingSnapshotTransfers,
+        ShouldThrottle = not maps:get(witness, Meta, false) andalso NumActiveReceives >= MaxIncomingSnapshotTransfers,
         case {transport_info(ID), ShouldThrottle} of
             {{ok, _Info}, _} ->
                 ?LOG_WARNING("wa_raft_transport got duplicate transport receive start for ~p from ~p",
@@ -574,7 +561,7 @@ handle_call({cancel, ID, Reason}, _From, #state{counters = Counters} = State) ->
         end,
     {reply, Reply, State};
 handle_call(Request, _From, #state{} = State) ->
-    ?LOG_WARNING("wa_raft_transport received unrecognized factory call ~p",
+    ?LOG_WARNING("wa_raft_transport received unrecognized call ~p",
         [Request], #{domain => [whatsapp, wa_raft]}),
     {noreply, State}.
 
