@@ -84,10 +84,13 @@
 -define(RAFT_TRANSPORT_SCAN_INTERVAL_SECS, 30).
 
 %% Number of counters
--define(RAFT_TRANSPORT_COUNTERS, 1).
+-define(RAFT_TRANSPORT_COUNTERS, 2).
 
 %% Counter - inflight receives
 -define(RAFT_TRANSPORT_COUNTER_ACTIVE_RECEIVES, 1).
+
+%% Counter - inflight witness receives
+-define(RAFT_TRANSPORT_COUNTER_ACTIVE_WITNESS_RECEIVES, 2).
 
 -type transport_id() :: pos_integer().
 -type transport_info() :: #{
@@ -325,15 +328,19 @@ file_info(ID, FileID) ->
     end.
 
 -spec maybe_update_active_inbound_transport_counts(OldInfo :: transport_info() | undefined, NewInfo :: transport_info(), Counters :: counters:counters_ref()) -> ok.
-maybe_update_active_inbound_transport_counts(_OldInfo, #{meta := #{witness := true}}, _Counters) ->
-    ok;
-maybe_update_active_inbound_transport_counts(undefined, #{type := receiver, status := running}, Counters) ->
-    counters:add(Counters, ?RAFT_TRANSPORT_COUNTER_ACTIVE_RECEIVES, 1);
-maybe_update_active_inbound_transport_counts(#{type := receiver, status := OldStatus}, #{status := running}, Counters) when OldStatus =/= running ->
-    counters:add(Counters, ?RAFT_TRANSPORT_COUNTER_ACTIVE_RECEIVES, 1);
-maybe_update_active_inbound_transport_counts(#{type := receiver, status := running}, #{status := NewStatus}, Counters) when NewStatus =/= running ->
-    counters:sub(Counters, ?RAFT_TRANSPORT_COUNTER_ACTIVE_RECEIVES, 1);
-maybe_update_active_inbound_transport_counts(_, _, _) ->
+maybe_update_active_inbound_transport_counts(OldInfo, #{meta := #{witness := true}} = NewInfo, Counters) ->
+    maybe_update_active_inbound_transport_counts_impl(OldInfo, NewInfo, ?RAFT_TRANSPORT_COUNTER_ACTIVE_WITNESS_RECEIVES, Counters);
+maybe_update_active_inbound_transport_counts(OldInfo, NewInfo, Counters) ->
+    maybe_update_active_inbound_transport_counts_impl(OldInfo, NewInfo, ?RAFT_TRANSPORT_COUNTER_ACTIVE_RECEIVES, Counters).
+
+-spec maybe_update_active_inbound_transport_counts_impl(OldInfo :: transport_info() | undefined, NewInfo :: transport_info(), Counter :: non_neg_integer(), Counters :: counters:counters_ref()) -> ok.
+maybe_update_active_inbound_transport_counts_impl(undefined, #{type := receiver, status := running}, Counter, Counters) ->
+    counters:add(Counters, Counter, 1);
+maybe_update_active_inbound_transport_counts_impl(#{type := receiver, status := OldStatus}, #{status := running}, Counter, Counters) when OldStatus =/= running ->
+    counters:add(Counters, Counter, 1);
+maybe_update_active_inbound_transport_counts_impl(#{type := receiver, status := running}, #{status := NewStatus}, Counter, Counters) when NewStatus =/= running ->
+    counters:sub(Counters, Counter, 1);
+maybe_update_active_inbound_transport_counts_impl(_, _, _, _) ->
     ok.
 
 % This function should only be called from the "worker" process responsible for the
@@ -452,9 +459,12 @@ handle_call({start_wait, Peer, Meta, Root}, From, #state{counters = Counters} = 
     end;
 handle_call({transport, ID, Peer, Module, Meta, Files}, From, #state{counters = Counters} = State) ->
     try
-        MaxIncomingSnapshotTransfers = ?RAFT_MAX_CONCURRENT_INCOMING_SNAPSHOT_TRANSFERS(),
-        NumActiveReceives = counters:get(Counters, ?RAFT_TRANSPORT_COUNTER_ACTIVE_RECEIVES),
-        ShouldThrottle = not maps:get(witness, Meta, false) andalso NumActiveReceives >= MaxIncomingSnapshotTransfers,
+        IsWitness = maps:get(witness, Meta, false),
+        {MaxIncomingSnapshotTransfers, NumActiveReceives} = case IsWitness of
+            true  -> {?RAFT_MAX_CONCURRENT_INCOMING_WITNESS_SNAPSHOT_TRANSFERS(), counters:get(Counters, ?RAFT_TRANSPORT_COUNTER_ACTIVE_WITNESS_RECEIVES)};
+            false -> {?RAFT_MAX_CONCURRENT_INCOMING_SNAPSHOT_TRANSFERS(), counters:get(Counters, ?RAFT_TRANSPORT_COUNTER_ACTIVE_RECEIVES)}
+        end,
+        ShouldThrottle = NumActiveReceives >= MaxIncomingSnapshotTransfers,
         case {transport_info(ID), ShouldThrottle} of
             {{ok, _Info}, _} ->
                 ?LOG_WARNING("wa_raft_transport got duplicate transport receive start for ~p from ~p",
