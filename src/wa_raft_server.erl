@@ -2357,7 +2357,14 @@ heartbeat(?IDENTITY_REQUIRES_MIGRATION(_, FollowerId) = Sender,
         false ->
             MaxLogEntries = ?RAFT_HEARTBEAT_MAX_ENTRIES(App),
             MaxHeartbeatSize = ?RAFT_HEARTBEAT_MAX_BYTES(App),
-            {ok, Entries} = wa_raft_log:get(View, FollowerNextIndex, MaxLogEntries, MaxHeartbeatSize),
+            Witnesses = config_witnesses(config(State0)),
+            {ok, RawEntries} = wa_raft_log:get(View, FollowerNextIndex, MaxLogEntries, MaxHeartbeatSize),
+            Entries = case lists:member({Name, FollowerId}, Witnesses) of
+                true ->
+                    stub_entries_for_witness(RawEntries);
+                false ->
+                    RawEntries
+            end,
             {ok, PrevLogTerm} = PrevLogTermRes,
             ?RAFT_GATHER('raft.leader.heartbeat.size', length(Entries)),
             ?LOG_DEBUG("Server[~0p, term ~0p, leader] heartbeat to follower ~p from ~p(~p entries). Commit index ~p",
@@ -2378,6 +2385,23 @@ heartbeat(?IDENTITY_REQUIRES_MIGRATION(_, FollowerId) = Sender,
             LastFollowerHeartbeatTs =/= undefined andalso ?RAFT_GATHER('raft.leader.heartbeat.interval_ms', erlang:monotonic_time(millisecond) - LastFollowerHeartbeatTs),
             State1#raft_state{next_indices = NewNextIndices}
     end.
+
+-spec stub_entries_for_witness([wa_raft_log:log_entry()]) -> [wa_raft_log:log_entry()].
+stub_entries_for_witness(Entries) ->
+    [stub_entry(E) || E <- Entries].
+
+-spec stub_entry(wa_raft_log:log_entry()) -> wa_raft_log:log_entry().
+stub_entry({Term, undefined}) ->
+    {Term, undefined};
+stub_entry({Term, {Key, Cmd}}) ->
+    {Term, {Key, stub_command(Cmd)}};
+stub_entry({Term, {Key, Label, Cmd}}) ->
+    {Term, {Key, Label, stub_command(Cmd)}}.
+
+-spec stub_command(wa_raft_acceptor:command()) -> wa_raft_acceptor:command().
+stub_command(noop) -> noop;
+stub_command({config, _} = ConfigCmd) -> ConfigCmd;
+stub_command(_) -> noop_omitted.
 
 -spec compute_handover_candidates(State :: #raft_state{}) -> [node()].
 compute_handover_candidates(#raft_state{application = App, log_view = View} = State) ->
