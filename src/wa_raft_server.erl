@@ -1198,7 +1198,7 @@ leader(Type, ?ADJUST_MEMBERSHIP_COMMAND(Action, Peer, ExpectedConfigIndex),
         {error, Reason} ->
             ?LOG_NOTICE("Server[~0p, term ~0p, leader] refusing invalid membership adjustment ~0p on configuration ~0p due to ~0p.",
                 [Name, CurrentTerm, {Action, Peer}, Config, Reason], #{domain => [whatsapp, wa_raft]}),
-            reply(Type, {error, invalid}),
+            reply(Type, {error, Reason}),
             {keep_state, State0}
     end;
 
