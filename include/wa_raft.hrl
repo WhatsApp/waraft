@@ -156,9 +156,6 @@
 %% Maximum number of log entries to include in a single heartbeat
 -define(RAFT_HEARTBEAT_MAX_ENTRIES, raft_max_log_entries_per_heartbeat).
 -define(RAFT_HEARTBEAT_MAX_ENTRIES(App), ?RAFT_APP_CONFIG(App, ?RAFT_HEARTBEAT_MAX_ENTRIES, 15)).
-%% Maximum number of log entries to include in a single heartbeat to a witness
--define(RAFT_HEARTBEAT_MAX_ENTRIES_TO_WITNESS, raft_max_witness_log_entries_per_heartbeat).
--define(RAFT_HEARTBEAT_MAX_ENTRIES_TO_WITNESS(App), ?RAFT_APP_CONFIG(App, ?RAFT_HEARTBEAT_MAX_ENTRIES_TO_WITNESS, 250)).
 %% Maximum bytes of log entries to include in a single heartbeat
 -define(RAFT_HEARTBEAT_MAX_BYTES, raft_max_heartbeat_size).
 -define(RAFT_HEARTBEAT_MAX_BYTES(App), ?RAFT_APP_CONFIG(App, ?RAFT_HEARTBEAT_MAX_BYTES, 1 * 1024 * 1024)).
