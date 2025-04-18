@@ -263,6 +263,11 @@
 -define(RAFT_SNAPSHOT_CATCHUP_FAILED_BACKOFF_MS, raft_snapshot_catchup_failed_backoff_ms).
 -define(RAFT_SNAPSHOT_CATCHUP_FAILED_BACKOFF_MS(App), ?RAFT_APP_CONFIG(App, ?RAFT_SNAPSHOT_CATCHUP_FAILED_BACKOFF_MS, 10 * 1000)).
 
+%% Number of omitted log entries to skip actually applying to storage when
+%% operating as a witness.
+-define(RAFT_STORAGE_WITNESS_APPLY_INTERVAL, raft_storage_witness_apply_interval).
+-define(RAFT_STORAGE_WITNESS_APPLY_INTERVAL(App), ?RAFT_APP_CONFIG(App, ?RAFT_STORAGE_WITNESS_APPLY_INTERVAL, 100)).
+
 %% Time in seconds to retain transport destination directories after use
 -define(RAFT_TRANSPORT_RETAIN_INTERVAL, transport_retain_min_secs).
 -define(RAFT_TRANSPORT_RETAIN_INTERVAL(App), ?RAFT_APP_CONFIG(App, ?RAFT_TRANSPORT_RETAIN_INTERVAL, 300)).

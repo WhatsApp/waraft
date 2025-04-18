@@ -283,6 +283,7 @@
     | ModuleSpecificStatus :: {atom(), term()}.
 
 -record(state, {
+    application :: atom(),
     name :: atom(),
     table :: wa_raft:table(),
     partition :: wa_raft:partition(),
@@ -293,7 +294,8 @@
     handle :: storage_handle(),
     position :: wa_raft_log:log_pos(),
     config :: undefined | {ok, wa_raft_log:log_pos(), wa_raft_server:config()},
-    witness = false :: boolean()
+    witness = false :: boolean(),
+    skipped = 0 :: non_neg_integer()
 }).
 
 %%-----------------------------------------------------------------------------
@@ -469,7 +471,7 @@ registered_name(Table, Partition) ->
 %%-------------------------------------------------------------------
 
 -spec init(Options :: #raft_options{}) -> {ok, #state{}}.
-init(#raft_options{table = Table, partition = Partition, self = Self, database = Path, storage_name = Name, storage_module = Module} = Options) ->
+init(#raft_options{application = Application, table = Table, partition = Partition, self = Self, database = Path, storage_name = Name, storage_module = Module} = Options) ->
     process_flag(trap_exit, true),
 
     ?LOG_NOTICE("Storage[~0p] starting for partition ~0p/~0p at ~0p using ~0p",
@@ -482,6 +484,7 @@ init(#raft_options{table = Table, partition = Partition, self = Self, database =
         [Name, Position], #{domain => [whatsapp, wa_raft]}),
 
     State = #state{
+        application = Application,
         name = Name,
         table = Table,
         partition = Partition,
@@ -664,16 +667,31 @@ handle_apply(LogPosition, _Reference, _Label, _Command, _EffectiveTerm, #state{n
     Position :: wa_raft_log:log_pos(),
     State :: #state{}
 ) -> {Result :: term(), #state{}}.
+handle_command(Label, noop = Command, Position, #state{} = State) ->
+    handle_command_impl(Label, Command, Position, State);
 handle_command(_Label, {config, Config}, Position, #state{name = Name, module = Module, handle = Handle} = State) ->
     ?LOG_INFO("Storage[~0p] is applying a new configuration ~0p at ~0p.",
         [Name, Config, Position], #{domain => [whatsapp, wa_raft]}),
     {Reply, NewHandle} = Module:storage_apply_config(Config, Position, Handle),
     {Reply, refresh_config(State#state{handle = NewHandle, position = Position})};
-handle_command(Label, RawCommand, Position, #state{module = Module, handle = Handle, witness = Witness} = State) ->
-    Command = case Witness andalso RawCommand =/= noop of
-        true -> noop_omitted;
-        false -> RawCommand
-    end,
+handle_command(Label, _Command, Position, #state{application = Application, witness = true, skipped = Skipped} = State) ->
+    case Skipped >= ?RAFT_STORAGE_WITNESS_APPLY_INTERVAL(Application) of
+        true ->
+            {Reply, NewState} = handle_command_impl(Label, noop_omitted, Position, State),
+            {Reply, NewState#state{skipped = 0}};
+        false ->
+            {ok, State#state{skipped = Skipped + 1}}
+    end;
+handle_command(Label, Command, Position, #state{} = State) ->
+    handle_command_impl(Label, Command, Position, State).
+
+-spec handle_command_impl(
+    Label :: wa_raft_label:label(),
+    Command :: wa_raft_acceptor:command(),
+    Position :: wa_raft_log:log_pos(),
+    State :: #state{}
+) -> {Result :: term(), #state{}}.
+handle_command_impl(Label, Command, Position, #state{module = Module, handle = Handle} = State) ->
     {Reply, NewHandle} = case Label of
         undefined -> Module:storage_apply(Command, Position, Handle);
         _         -> Module:storage_apply(Command, Position, Label, Handle)
