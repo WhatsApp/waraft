@@ -266,7 +266,7 @@
 %% Number of omitted log entries to skip actually applying to storage when
 %% operating as a witness.
 -define(RAFT_STORAGE_WITNESS_APPLY_INTERVAL, raft_storage_witness_apply_interval).
--define(RAFT_STORAGE_WITNESS_APPLY_INTERVAL(App), ?RAFT_APP_CONFIG(App, ?RAFT_STORAGE_WITNESS_APPLY_INTERVAL, 100)).
+-define(RAFT_STORAGE_WITNESS_APPLY_INTERVAL(App), ?RAFT_APP_CONFIG(App, ?RAFT_STORAGE_WITNESS_APPLY_INTERVAL, 5000)).
 
 %% Time in seconds to retain transport destination directories after use
 -define(RAFT_TRANSPORT_RETAIN_INTERVAL, transport_retain_min_secs).
