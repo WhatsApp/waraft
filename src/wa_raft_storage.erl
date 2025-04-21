@@ -680,7 +680,7 @@ handle_command(Label, _Command, Position, #state{application = Application, witn
             {Reply, NewState} = handle_command_impl(Label, noop_omitted, Position, State),
             {Reply, NewState#state{skipped = 0}};
         false ->
-            {ok, State#state{skipped = Skipped + 1}}
+            {ok, State#state{position = Position, skipped = Skipped + 1}}
     end;
 handle_command(Label, Command, Position, #state{} = State) ->
     handle_command_impl(Label, Command, Position, State).
