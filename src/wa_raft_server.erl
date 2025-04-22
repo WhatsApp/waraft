@@ -2504,7 +2504,8 @@ open_snapshot(Root, Position, #raft_state{storage = Storage} = Data) ->
     TrimIndex :: wa_raft_log:log_index(),
     Data :: #raft_state{}
 ) -> gen_statem:event_handler_result(state(), #raft_state{}).
-handle_heartbeat(State, Event, Leader, PrevLogIndex, PrevLogTerm, Entries, CommitIndex, TrimIndex, #raft_state{application = App, name = Name, current_term = CurrentTerm, log_view = View, last_applied = LastApplied} = Data0) ->
+handle_heartbeat(State, Event, Leader, PrevLogIndex, PrevLogTerm, Entries, CommitIndex, TrimIndex,
+                 #raft_state{application = App, name = Name, table = Table, partition = Partition, current_term = CurrentTerm, log_view = View, last_applied = LastApplied} = Data0) ->
     EntryCount = length(Entries),
 
     ?RAFT_GATHER({raft, State, 'heartbeat.size'}, EntryCount),
@@ -2513,7 +2514,8 @@ handle_heartbeat(State, Event, Leader, PrevLogIndex, PrevLogTerm, Entries, Commi
 
     case append_entries(State, PrevLogIndex, PrevLogTerm, Entries, EntryCount, Data0) of
         {ok, Accepted, NewMatchIndex, Data1} ->
-            send_rpc(Leader, ?APPEND_ENTRIES_RESPONSE(PrevLogIndex, Accepted, NewMatchIndex, LastApplied), Data1),
+            AdjustedLastApplied = max(0, LastApplied - wa_raft_queue:apply_queue_size(Table, Partition)),
+            send_rpc(Leader, ?APPEND_ENTRIES_RESPONSE(PrevLogIndex, Accepted, NewMatchIndex, AdjustedLastApplied), Data1),
             reply_rpc(Event, ?LEGACY_APPEND_ENTRIES_RESPONSE_RPC(CurrentTerm, node(), PrevLogIndex, Accepted, NewMatchIndex), Data1),
 
             LocalTrimIndex = case ?RAFT_LOG_ROTATION_BY_TRIM_INDEX(App) of
