@@ -2419,8 +2419,8 @@ compute_handover_candidates(#raft_state{application = App, log_view = View} = St
 is_eligible_for_handover(?IDENTITY_REQUIRES_MIGRATION(_, CandidateId), MatchCutoffIndex, ApplyCutoffIndex, #raft_state{match_indices = MatchIndices, last_applied_indices = LastAppliedIndices}) ->
     % A peer whose matching index is unknown should not be eligible for handovers.
     MatchIndex = maps:get(CandidateId, MatchIndices, 0),
-    % A peer whose last applied index is unknown will be allowed to receive handovers.
-    LastAppliedIndex = maps:get(CandidateId, LastAppliedIndices, ApplyCutoffIndex),
+    % A peer whose last applied index is unknown should not be eligible for handovers.
+    LastAppliedIndex = maps:get(CandidateId, LastAppliedIndices, 0),
     MatchIndex >= MatchCutoffIndex andalso LastAppliedIndex >= ApplyCutoffIndex.
 
 -spec adjust_config(Action :: {add, peer()} | {remove, peer()} | {add_witness, peer()} | {remove_witness, peer()} | {refresh, undefined},
