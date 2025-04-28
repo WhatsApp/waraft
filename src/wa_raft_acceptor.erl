@@ -162,6 +162,7 @@ call(ServerRef, Request, Timeout) ->
         exit:{timeout, _}       -> {error, timeout};
         exit:{noproc, _}        -> {error, unreachable};
         exit:{{nodedown, _}, _} -> {error, unreachable};
+        exit:{shutdown, _}      -> {error, unreachable};
         exit:{Other, _}         -> {error, {call_error, Other}}
     end.
 
