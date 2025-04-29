@@ -655,7 +655,7 @@ handle_rpc_impl(Type, Event, Key, Term, Sender, undefined, State, Data) ->
 handle_rpc_impl(_Type, _Event, Key, Term, Sender, _Payload, State, #raft_state{name = Name, current_term = CurrentTerm} = Data) when Term < CurrentTerm ->
     ?LOG_NOTICE("Server[~0p, term ~0p, ~0p] received stale ~0p from ~0p with old term ~0p. Dropping.",
         [Name, CurrentTerm, State, Key, Sender, Term], #{domain => [whatsapp, wa_raft]}),
-    send_rpc(Sender, ?NOTIFY_TERM(), Data),
+    State =/= disabled andalso send_rpc(Sender, ?NOTIFY_TERM(), Data),
     keep_state_and_data;
 %% [RequestVote RPC] RAFT servers should ignore vote requests with reason `normal`
 %%                   if it knows about a currently active leader even if the vote
