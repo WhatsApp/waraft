@@ -474,6 +474,11 @@ registered_name(Table, Partition) ->
 init(#raft_options{application = Application, table = Table, partition = Partition, self = Self, database = Path, storage_name = Name, storage_module = Module} = Options) ->
     process_flag(trap_exit, true),
 
+    % This increases the potential overhead of sending log entries to storage
+    % to be applied; however, can protect the storage server from GC overhead
+    % and other memory-related issues.
+    process_flag(message_queue_data, off_heap),
+
     ?LOG_NOTICE("Storage[~0p] starting for partition ~0p/~0p at ~0p using ~0p",
         [Name, Table, Partition, Path, Module], #{domain => [whatsapp, wa_raft]}),
 
