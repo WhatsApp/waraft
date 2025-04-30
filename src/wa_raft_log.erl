@@ -172,7 +172,7 @@
                Start :: log_index(),
                End :: log_index(),
                SizeLimit :: non_neg_integer() | infinity,
-               Func :: fun((Index :: log_index(), Entry :: log_entry(), Acc) -> Acc),
+               Func :: fun((Index :: log_index(), Size :: non_neg_integer(), Entry :: log_entry(), Acc) -> Acc),
                Acc) ->
     {ok, Acc} | wa_raft:error().
 
@@ -401,7 +401,9 @@ fold(LogOrView, First, Last, Func, Acc) ->
            First :: log_index(),
            Last :: log_index() | infinity,
            SizeLimit :: non_neg_integer() | infinity,
-           Func :: fun((Index :: log_index(), Entry :: log_entry(), Acc) -> Acc),
+           Func ::
+                fun((Index :: log_index(), Entry :: log_entry(), Acc) -> Acc) |
+                fun((Index :: log_index(), Size :: non_neg_integer(), Entry :: log_entry(), Acc) -> Acc),
            Acc) ->
     {ok, Acc} | wa_raft:error().
 fold(#log_view{log = Log, first = LogFirst, last = LogLast}, First, Last, SizeLimit, Func, Acc) ->
@@ -418,14 +420,21 @@ fold(Log, First, Last, SizeLimit, Func, Acc) ->
     First :: log_index(),
     Last :: log_index(),
     SizeLimit :: non_neg_integer() | infinity,
-    Func :: fun((Index :: log_index(), Entry :: log_entry(), Acc) -> Acc),
+    Func ::
+        fun((Index :: log_index(), Entry :: log_entry(), Acc) -> Acc) |
+        fun((Index :: log_index(), Size :: non_neg_integer(), Entry :: log_entry(), Acc) -> Acc),
     Acc :: term()
 ) -> {ok, Acc} | wa_raft:error().
 fold_impl(Log, First, Last, SizeLimit, Func, AccIn) ->
     ?RAFT_COUNT('raft.log.fold'),
     ?RAFT_COUNTV('raft.log.fold.total', Last - First + 1),
+    AdjFunc = case erlang:fun_info(Func, arity) of
+        % eqwalizer:ignore - function must be the variant with arity 3
+        {arity, 3} -> fun (Index, _Size, Entry, InnerAcc) -> Func(Index, Entry, InnerAcc) end;
+        {arity, 4} -> Func
+    end,
     Provider = provider(Log),
-    case Provider:fold(Log, First, Last, SizeLimit, Func, AccIn) of
+    case Provider:fold(Log, First, Last, SizeLimit, AdjFunc, AccIn) of
         {ok, AccOut} ->
             {ok, AccOut};
         {error, Reason} ->

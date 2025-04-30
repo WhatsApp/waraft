@@ -2166,9 +2166,9 @@ apply_log(#raft_state{application = App, name = Name, table = Table, partition =
             LimitedIndex = min(CommitIndex, LastApplied + ?RAFT_MAX_CONSECUTIVE_APPLY_ENTRIES(App)),
             LimitBytes = ?RAFT_MAX_CONSECUTIVE_APPLY_BYTES(App),
             {ok, {_, #raft_state{log_view = View1} = State1}} = wa_raft_log:fold(View, LastApplied + 1, LimitedIndex, LimitBytes,
-                fun (Index, Entry, {Index, State}) ->
-                    wa_raft_queue:reserve_apply(Table, Partition),
-                    {Index + 1, apply_op(Index, Entry, EffectiveTerm, State)}
+                fun (Index, Size, Entry, {Index, State}) ->
+                    wa_raft_queue:reserve_apply(Table, Partition, Size),
+                    {Index + 1, apply_op(Index, Size, Entry, EffectiveTerm, State)}
                 end, {LastApplied + 1, State0}),
 
             % Perform log trimming since we've now applied some log entries, only keeping
@@ -2193,23 +2193,29 @@ apply_log(#raft_state{application = App, name = Name, table = Table, partition =
 apply_log(State, _CommitIndex, _TrimIndex, _EffectiveTerm) ->
     State.
 
--spec apply_op(wa_raft_log:log_index(), wa_raft_log:log_entry() | undefined, wa_raft_log:log_term() | undefined, #raft_state{}) -> #raft_state{}.
-apply_op(LogIndex, _Entry, _EffectiveTerm, #raft_state{name = Name, last_applied = LastAppliedIndex, current_term = CurrentTerm} = State) when LogIndex =< LastAppliedIndex ->
+-spec apply_op(
+    Index :: wa_raft_log:log_index(),
+    Size :: non_neg_integer(),
+    Entry :: wa_raft_log:log_entry() | undefined,
+    EffectiveTerm :: wa_raft_log:log_term() | undefined,
+    Data :: #raft_state{}
+) -> #raft_state{}.
+apply_op(LogIndex, _Size, _Entry, _EffectiveTerm, #raft_state{name = Name, last_applied = LastAppliedIndex, current_term = CurrentTerm} = State) when LogIndex =< LastAppliedIndex ->
     ?LOG_WARNING("Server[~0p, term ~0p] is skipping applying log entry ~0p because log entries up to ~0p are already applied.",
         [Name, CurrentTerm, LogIndex, LastAppliedIndex], #{domain => [whatsapp, wa_raft]}),
     State;
-apply_op(LogIndex, {Term, {Ref, Command} = Op}, EffectiveTerm, #raft_state{storage = Storage} = State0) ->
-    wa_raft_storage:apply(Storage, {LogIndex, {Term, {Ref, undefined, Command}}}, EffectiveTerm),
+apply_op(LogIndex, Size, {Term, {Ref, Command} = Op}, EffectiveTerm, #raft_state{storage = Storage} = State0) ->
+    wa_raft_storage:apply(Storage, {LogIndex, {Term, {Ref, undefined, Command}}}, Size, EffectiveTerm),
     maybe_update_config(LogIndex, Term, Op, State0#raft_state{last_applied = LogIndex, commit_index = LogIndex});
-apply_op(LogIndex, {Term, {_Ref, _Label, _Command} = Op}, EffectiveTerm, #raft_state{storage = Storage} = State0) ->
-    wa_raft_storage:apply(Storage, {LogIndex, {Term, Op}}, EffectiveTerm),
+apply_op(LogIndex, Size, {Term, {_Ref, _Label, _Command} = Op}, EffectiveTerm, #raft_state{storage = Storage} = State0) ->
+    wa_raft_storage:apply(Storage, {LogIndex, {Term, Op}}, Size, EffectiveTerm),
     maybe_update_config(LogIndex, Term, Op, State0#raft_state{last_applied = LogIndex, commit_index = LogIndex});
-apply_op(LogIndex, undefined, _EffectiveTerm, #raft_state{name = Name, log_view = View, current_term = CurrentTerm}) ->
+apply_op(LogIndex, _Size, undefined, _EffectiveTerm, #raft_state{name = Name, log_view = View, current_term = CurrentTerm}) ->
     ?RAFT_COUNT('raft.server.missing.log.entry'),
     ?LOG_ERROR("Server[~0p, term ~0p] failed to apply ~0p because log entry is missing from log covering ~0p to ~0p.",
         [Name, CurrentTerm, LogIndex, wa_raft_log:first_index(View), wa_raft_log:last_index(View)], #{domain => [whatsapp, wa_raft]}),
     exit({invalid_op, LogIndex});
-apply_op(LogIndex, Entry, _EffectiveTerm, #raft_state{name = Name, current_term = CurrentTerm}) ->
+apply_op(LogIndex, _Size, Entry, _EffectiveTerm, #raft_state{name = Name, current_term = CurrentTerm}) ->
     ?RAFT_COUNT('raft.server.corrupted.log.entry'),
     ?LOG_ERROR("Server[~0p, term ~0p] failed to apply unrecognized entry ~p at ~p",
         [Name, CurrentTerm, Entry, LogIndex], #{domain => [whatsapp, wa_raft]}),

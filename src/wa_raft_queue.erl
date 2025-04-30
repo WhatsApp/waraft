@@ -42,9 +42,10 @@
 %% APPLY QUEUE API
 -export([
     apply_queue_size/2,
+    apply_queue_byte_size/2,
     apply_queue_full/2,
-    reserve_apply/2,
-    fulfill_apply/2
+    reserve_apply/3,
+    fulfill_apply/3
 ]).
 
 %% OTP SUPERVISION
@@ -69,13 +70,15 @@
 -define(RAFT_QUEUE_TABLE_OPTIONS, [named_table, public, {read_concurrency, true}, {write_concurrency, true}]).
 
 %% Total number of counters for RAFT partition specfic counters
--define(RAFT_NUMBER_OF_QUEUE_SIZE_COUNTERS, 3).
+-define(RAFT_NUMBER_OF_QUEUE_SIZE_COUNTERS, 4).
 %% Index into counter reference for counter tracking apply queue size
 -define(RAFT_APPLY_QUEUE_SIZE_COUNTER, 1).
+%% Index into counter reference for counter tracking apply total byte size
+-define(RAFT_APPLY_QUEUE_BYTE_SIZE_COUNTER, 2).
 %% Index into counter reference for counter tracking commit queue size
--define(RAFT_COMMIT_QUEUE_SIZE_COUNTER, 2).
+-define(RAFT_COMMIT_QUEUE_SIZE_COUNTER, 3).
 %% Index into counter reference for counter tracking read queue size
--define(RAFT_READ_QUEUE_SIZE_COUNTER, 3).
+-define(RAFT_READ_QUEUE_SIZE_COUNTER, 4).
 
 %%-------------------------------------------------------------------
 %% INTERNAL TYPES
@@ -294,22 +297,34 @@ apply_queue_size(Table, Partition) ->
         {_, Counters, _, _} -> counters:get(Counters, ?RAFT_APPLY_QUEUE_SIZE_COUNTER)
     end.
 
+-spec apply_queue_byte_size(wa_raft:table(), wa_raft:partition()) -> non_neg_integer().
+apply_queue_byte_size(Table, Partition) ->
+    case registered_info(Table, Partition) of
+        undefined           -> 0;
+        {_, Counters, _, _} -> counters:get(Counters, ?RAFT_APPLY_QUEUE_BYTE_SIZE_COUNTER)
+    end.
+
 -spec apply_queue_full(wa_raft:table(), wa_raft:partition()) -> boolean().
 apply_queue_full(Table, Partition) ->
     case registered_info(Table, Partition) of
-        undefined             -> false;
-        {App, Counters, _, _} -> counters:get(Counters, ?RAFT_APPLY_QUEUE_SIZE_COUNTER) >= ?RAFT_MAX_PENDING_APPLIES(App)
+        undefined ->
+            false;
+        {App, Counters, _, _} ->
+            counters:get(Counters, ?RAFT_APPLY_QUEUE_SIZE_COUNTER) >= ?RAFT_MAX_PENDING_APPLIES(App) orelse
+                counters:get(Counters, ?RAFT_APPLY_QUEUE_BYTE_SIZE_COUNTER) >= ?RAFT_MAX_PENDING_APPLY_BYTES(App)
     end.
 
--spec reserve_apply(wa_raft:table(), wa_raft:partition()) -> ok.
-reserve_apply(Table, Partition) ->
+-spec reserve_apply(wa_raft:table(), wa_raft:partition(), non_neg_integer()) -> ok.
+reserve_apply(Table, Partition, Size) ->
     {_, Counters, _, _} = require_info(Table, Partition),
-    counters:add(Counters, ?RAFT_APPLY_QUEUE_SIZE_COUNTER, 1).
+    counters:add(Counters, ?RAFT_APPLY_QUEUE_SIZE_COUNTER, 1),
+    counters:add(Counters, ?RAFT_APPLY_QUEUE_BYTE_SIZE_COUNTER, Size).
 
--spec fulfill_apply(wa_raft:table(), wa_raft:partition()) -> ok.
-fulfill_apply(Table, Partition) ->
+-spec fulfill_apply(wa_raft:table(), wa_raft:partition(), non_neg_integer()) -> ok.
+fulfill_apply(Table, Partition, Size) ->
     {_, Counters, _, _} = require_info(Table, Partition),
-    counters:sub(Counters, ?RAFT_APPLY_QUEUE_SIZE_COUNTER, 1).
+    counters:sub(Counters, ?RAFT_APPLY_QUEUE_SIZE_COUNTER, 1),
+    counters:sub(Counters, ?RAFT_APPLY_QUEUE_BYTE_SIZE_COUNTER, Size).
 
 %%-------------------------------------------------------------------
 %% OTP SUPERVISION

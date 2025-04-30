@@ -133,6 +133,9 @@
 %% Maximum number of pending applies for any single RAFT partition
 -define(RAFT_MAX_PENDING_APPLIES, raft_max_pending_applies).
 -define(RAFT_MAX_PENDING_APPLIES(App), ?RAFT_APP_CONFIG(App, {?RAFT_MAX_PENDING_APPLIES, raft_apply_queue_max_size}, 1000)).
+%% Maximum bytes of pending applies for any single RAFT partition
+-define(RAFT_MAX_PENDING_APPLY_BYTES, raft_max_pending_apply_bytes).
+-define(RAFT_MAX_PENDING_APPLY_BYTES(App), ?RAFT_APP_CONFIG(App, ?RAFT_MAX_PENDING_APPLY_BYTES, 32_000_000)).
 %% Maximum number of pending commits for any single RAFT partition
 -define(RAFT_MAX_PENDING_COMMITS, raft_max_pending_commits).
 -define(RAFT_MAX_PENDING_COMMITS(App), ?RAFT_APP_CONFIG(App, ?RAFT_MAX_PENDING_COMMITS, 1500)).

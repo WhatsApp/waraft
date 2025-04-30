@@ -66,7 +66,7 @@ last_index(#raft_log{name = Name}) ->
            Start :: wa_raft_log:log_index() | '$end_of_table',
            End :: wa_raft_log:log_index(),
            SizeLimit :: non_neg_integer() | infinity,
-           Func :: fun((Index :: wa_raft_log:log_index(), Entry :: wa_raft_log:log_entry(), Acc) -> Acc),
+           Func :: fun((Index :: wa_raft_log:log_index(), Size :: non_neg_integer(), Entry :: wa_raft_log:log_entry(), Acc) -> Acc),
            Acc) -> {ok, Acc}.
 fold(Log, Start, End, SizeLimit, Func, Acc) ->
     fold_impl(Log, Start, End, 0, SizeLimit, Func, Acc).
@@ -77,7 +77,7 @@ fold(Log, Start, End, SizeLimit, Func, Acc) ->
     End :: wa_raft_log:log_index(),
     Size :: non_neg_integer(),
     SizeLimit :: non_neg_integer() | infinity,
-    Func :: fun((Index :: wa_raft_log:log_index(), Entry :: wa_raft_log:log_entry(), Acc) -> Acc),
+    Func :: fun((Index :: wa_raft_log:log_index(), Size :: non_neg_integer(), Entry :: wa_raft_log:log_entry(), Acc) -> Acc),
     Acc
 ) -> {ok, Acc}.
 fold_impl(_Log, Start, End, Size, SizeLimit, _Func, Acc) when End < Start orelse Size >= SizeLimit ->
@@ -86,7 +86,7 @@ fold_impl(#raft_log{name = Name} = Log, Start, End, Size, SizeLimit, Func, Acc) 
     case ets:lookup(Name, Start) of
         [{Start, Entry}] ->
             EntrySize = erlang:external_size(Entry),
-            fold_impl(Log, ets:next(Name, Start), End, Size + EntrySize, SizeLimit, Func, Func(Start, Entry, Acc));
+            fold_impl(Log, ets:next(Name, Start), End, Size + EntrySize, SizeLimit, Func, Func(Start, EntrySize, Entry, Acc));
         [] ->
             fold_impl(Log, ets:next(Name, Start), End, Size, SizeLimit, Func, Acc)
     end.
