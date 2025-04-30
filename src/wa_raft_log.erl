@@ -428,10 +428,9 @@ fold(Log, First, Last, SizeLimit, Func, Acc) ->
 fold_impl(Log, First, Last, SizeLimit, Func, AccIn) ->
     ?RAFT_COUNT('raft.log.fold'),
     ?RAFT_COUNTV('raft.log.fold.total', Last - First + 1),
-    AdjFunc = case erlang:fun_info(Func, arity) of
-        % eqwalizer:ignore - function must be the variant with arity 3
-        {arity, 3} -> fun (Index, _Size, Entry, InnerAcc) -> Func(Index, Entry, InnerAcc) end;
-        {arity, 4} -> Func
+    AdjFunc = if
+        is_function(Func, 3) -> fun (Index, _Size, Entry, InnerAcc) -> Func(Index, Entry, InnerAcc) end;
+        is_function(Func, 4) -> Func
     end,
     Provider = provider(Log),
     case Provider:fold(Log, First, Last, SizeLimit, AdjFunc, AccIn) of
