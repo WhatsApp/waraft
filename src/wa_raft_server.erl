@@ -544,6 +544,13 @@ init(#raft_options{application = Application, table = Table, partition = Partiti
 
     ?LOG_NOTICE("Server[~0p] starting with options ~0p", [Name, Options], #{domain => [whatsapp, wa_raft]}),
 
+    % This increases the potential overhead of sending messages to server;
+    % however, can protect the server from GC overhead
+    % and other memory-related issues (most notably when receiving log entries
+    % when undergoing a fast log catchup).
+    ?RAFT_CONFIG(raft_server_message_queue_off_heap, false) andalso
+        process_flag(message_queue_data, off_heap),
+
     % Open storage and the log
     {ok, Last} = wa_raft_storage:open(Storage),
     {ok, View} = wa_raft_log:open(Log, Last),
