@@ -548,7 +548,7 @@ init(#raft_options{application = Application, table = Table, partition = Partiti
     % however, can protect the server from GC overhead
     % and other memory-related issues (most notably when receiving log entries
     % when undergoing a fast log catchup).
-    ?RAFT_CONFIG(raft_server_message_queue_off_heap, false) andalso
+    ?RAFT_CONFIG(raft_server_message_queue_off_heap, true) andalso
         process_flag(message_queue_data, off_heap),
 
     % Open storage and the log
