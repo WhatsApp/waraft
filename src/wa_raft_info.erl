@@ -17,7 +17,8 @@
     get_current_term_and_leader/2,
     get_membership/2,
     get_stale/2,
-    get_state/2
+    get_state/2,
+    get_message_queue_length/1
 ]).
 
 %% Internal API
@@ -36,6 +37,8 @@
 -define(RAFT_CURRENT_TERM_AND_LEADER_KEY(Table, Partition), {term, Table, Partition}).
 %% Local RAFT server's current stale flag - indicates if the server thinks its data is stale
 -define(RAFT_STALE_KEY(Table, Partition), {stale, Table, Partition}).
+%% Local RAFT server's message queue length
+-define(RAFT_MSG_QUEUE_LENGTH_KEY(Name), {msg_queue_length, Name}).
 %% Local RAFT server's most recently known membership
 -define(RAFT_MEMBERSHIP_KEY(Table, Partition), {membership, Table, Partition}).
 
@@ -78,6 +81,10 @@ get_state(Table, Partition) ->
 get_stale(Table, Partition) ->
     get(?RAFT_STALE_KEY(Table, Partition), true).
 
+-spec get_message_queue_length(atom()) -> undefined | non_neg_integer().
+get_message_queue_length(Name) ->
+    get(?RAFT_MSG_QUEUE_LENGTH_KEY(Name), undefined).
+
 -spec get_membership(wa_raft:table(), wa_raft:partition()) -> wa_raft_server:membership() | undefined.
 get_membership(Table, Partition) ->
     get(?RAFT_MEMBERSHIP_KEY(Table, Partition), undefined).
@@ -113,7 +120,9 @@ delete_state(Table, Partition) ->
 
 -spec set_stale(wa_raft:table(), wa_raft:partition(), boolean()) -> true.
 set_stale(Table, Partition, Stale) ->
-    set(?RAFT_STALE_KEY(Table, Partition), Stale).
+    set(?RAFT_STALE_KEY(Table, Partition), Stale),
+    {message_queue_len, MsgQLen} = process_info(self(), message_queue_len),
+    set(?RAFT_MSG_QUEUE_LENGTH_KEY(wa_raft_server:default_name(Table, Partition)), MsgQLen).
 
 -spec set_membership(wa_raft:table(), wa_raft:partition(), wa_raft_server:membership()) -> true.
 set_membership(Table, Partition, Membership) ->
