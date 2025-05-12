@@ -942,7 +942,7 @@ leader(
     #raft_state{
         name = Name,
         current_term = CurrentTerm,
-        commit_index = CommitIndex0,
+        commit_index = CommitIndex,
         next_indices = NextIndices,
         match_indices = MatchIndices,
         last_applied_indices = LastAppliedIndices,
@@ -952,7 +952,7 @@ leader(
 ) ->
     StartT = os:timestamp(),
     ?LOG_DEBUG("Server[~0p, term ~0p, leader] at commit index ~0p completed append to ~0p whose log now matches up to ~0p.",
-        [Name, CurrentTerm, CommitIndex0, Sender, FollowerMatchIndex], #{domain => [whatsapp, wa_raft]}),
+        [Name, CurrentTerm, CommitIndex, Sender, FollowerMatchIndex], #{domain => [whatsapp, wa_raft]}),
     HeartbeatResponse1 = HeartbeatResponse0#{FollowerId => erlang:monotonic_time(millisecond)},
     State1 = State0#raft_state{heartbeat_response_ts = HeartbeatResponse1},
 
@@ -974,9 +974,10 @@ leader(
         match_indices = NewMatchIndices,
         last_applied_indices = NewLastAppliedIndices
     },
-    State3 = maybe_apply(State2),
+    State3 = maybe_advance(State2),
+    State4 = apply_log_leader(State3),
     ?RAFT_GATHER('raft.leader.apply.func', timer:now_diff(os:timestamp(), StartT)),
-    {keep_state, maybe_heartbeat(State3), ?HEARTBEAT_TIMEOUT(State3)};
+    {keep_state, maybe_heartbeat(State4), ?HEARTBEAT_TIMEOUT(State4)};
 
 %% and failures.
 leader(
@@ -1015,7 +1016,7 @@ leader(
         next_indices = NewNextIndices,
         last_applied_indices = NewLastAppliedIndices
     },
-    State2 = maybe_apply(State1),
+    State2 = apply_log_leader(State1),
     {keep_state, maybe_heartbeat(State2), ?HEARTBEAT_TIMEOUT(State2)};
 
 %% [RequestVote RPC] Ignore any vote requests as leadership is aleady established (5.1, 5.2)
@@ -1147,17 +1148,18 @@ leader({call, From}, ?RESIGN_COMMAND, #raft_state{name = Name, log_view = View, 
 %% [Adjust Membership] Leader attempts to commit a single-node membership change.
 leader(Type, ?ADJUST_MEMBERSHIP_COMMAND(Action, Peer, ExpectedConfigIndex),
        #raft_state{name = Name, log_view = View0, storage = Storage,
-                   current_term = CurrentTerm, last_applied = LastApplied} = State0) ->
+                   current_term = CurrentTerm, commit_index = CommitIndex,
+                   first_current_term_log_index = TermStartIndex} = State0) ->
     % Try to adjust the configuration according to the current request.
     Config = config(State0),
     % eqwalizer:ignore Peer can be undefined
     case adjust_config({Action, Peer}, Config, State0) of
         {ok, NewConfig} ->
-            % Ensure that we have committed (applied entries are committed) at least one log entry
-            % from our current term before admitting any membership change operations.
-            case wa_raft_log:term(View0, LastApplied) of
-                {ok, CurrentTerm} ->
-                    % Ensure that this leader has no other pending config not yet applied.
+            % Ensure that we have committed at least one log entry in the current
+            % term before admitting any membership change operations.
+            case CommitIndex >= TermStartIndex of
+                true ->
+                    % Ensure that there is no as-of-yet uncomitted config.
                     StorageConfigIndex = case wa_raft_storage:config(Storage) of
                         {ok, #raft_log_pos{index = SI}, _} -> SI;
                         undefined                          -> 0
@@ -1167,16 +1169,16 @@ leader(Type, ?ADJUST_MEMBERSHIP_COMMAND(Action, Peer, ExpectedConfigIndex),
                         not_found   -> 0
                     end,
                     ConfigIndex = max(StorageConfigIndex, LogConfigIndex),
-                    case LogConfigIndex > StorageConfigIndex of
+                    case ConfigIndex > CommitIndex of
                         true ->
-                            ?LOG_NOTICE("Server[~0p, term ~0p, leader] rejecting request to ~p peer ~p because it has a pending reconfiguration (storage: ~p, log: ~p).",
-                                [Name, CurrentTerm, Action, Peer, StorageConfigIndex, LogConfigIndex], #{domain => [whatsapp, wa_raft]}),
+                            ?LOG_NOTICE("Server[~0p, term ~0p, leader] at ~0p rejects request to ~0p peer ~0p because it has a pending reconfiguration (storage: ~0p, log: ~0p).",
+                                [Name, CurrentTerm, CommitIndex, Action, Peer, StorageConfigIndex, LogConfigIndex], #{domain => [whatsapp, wa_raft]}),
                             reply(Type, {error, rejected}),
                             {keep_state, State0};
                         false ->
                             case ExpectedConfigIndex =/= undefined andalso ExpectedConfigIndex =/= ConfigIndex of
                                 true ->
-                                    ?LOG_NOTICE("Server[~0p, term ~0p, leader] rejecting request to ~p peer ~p because it has a different config index than expected (storage: ~p, log: ~p expected: ~p).",
+                                    ?LOG_NOTICE("Server[~0p, term ~0p, leader] rejecting request to ~0p peer ~0p because it has a different config index than expected (storage: ~0p, log: ~0p expected: ~0p).",
                                         [Name, CurrentTerm, Action, Peer, StorageConfigIndex, LogConfigIndex, ExpectedConfigIndex], #{domain => [whatsapp, wa_raft]}),
                                     reply(Type, {error, rejected}),
                                     {keep_state, State0};
@@ -1187,7 +1189,7 @@ leader(Type, ?ADJUST_MEMBERSHIP_COMMAND(Action, Peer, ExpectedConfigIndex),
                                     Op = {make_ref(), {config, NewConfig}},
                                     {State1, LogEntry} = get_log_entry(State0, Op),
                                     {ok, LogIndex, View1} = wa_raft_log:append(View0, [LogEntry]),
-                                    ?LOG_NOTICE("Server[~0p, term ~0p, leader] appended configuration change from ~0p to ~0p at log index ~p.",
+                                    ?LOG_NOTICE("Server[~0p, term ~0p, leader] appended configuration change from ~0p to ~0p at log index ~0p.",
                                         [Name, CurrentTerm, Config, NewConfig, LogIndex], #{domain => [whatsapp, wa_raft]}),
                                     State2 = State1#raft_state{log_view = View1},
                                     State3 = apply_single_node_cluster(State2),
@@ -1196,8 +1198,8 @@ leader(Type, ?ADJUST_MEMBERSHIP_COMMAND(Action, Peer, ExpectedConfigIndex),
                                     {keep_state, State4, ?HEARTBEAT_TIMEOUT(State4)}
                             end
                     end;
-                {ok, _OtherTerm} ->
-                    ?LOG_NOTICE("Server[~0p, term ~0p, leader] rejecting request to ~p peer ~p because it has not established current term commit quorum.",
+                false ->
+                    ?LOG_NOTICE("Server[~0p, term ~0p, leader] rejecting request to ~0p peer ~0p because it has not established current term commit quorum.",
                         [Name, CurrentTerm, Action, Peer], #{domain => [whatsapp, wa_raft]}),
                     reply(Type, {error, rejected}),
                     {keep_state, State0}
@@ -2083,49 +2085,39 @@ get_log_entry(#raft_state{current_term = CurrentTerm, label_module = LabelModule
     NewLabel = LabelModule:new_label(LastLabel, Command),
     {State0#raft_state{last_label = NewLabel}, {CurrentTerm, {Ref, NewLabel, Command}}}.
 
--spec apply_single_node_cluster(State0 :: #raft_state{}) -> State1 :: #raft_state{}.
-apply_single_node_cluster(#raft_state{self = Self, log_view = View} = State) ->
+-spec apply_single_node_cluster(Data :: #raft_state{}) -> #raft_state{}.
+apply_single_node_cluster(#raft_state{self = Self, log_view = View} = Data) ->
     % TODO(hsun324) T112326686: Review after RAFT RPC id changes.
-    case is_single_member(Self, config(State)) of
+    case is_single_member(Self, config(Data)) of
         true ->
             NewView = case wa_raft_log:sync(View) of
-                {ok, L} -> L;
-                _       -> View
+                {ok, Synced} -> Synced;
+                _            -> View
             end,
-            maybe_apply(State#raft_state{log_view = NewView});
+            apply_log_leader(maybe_advance(Data#raft_state{log_view = NewView}));
         false ->
-            State
+            Data
     end.
 
-%% Leader - check quorum and apply logs if necessary
--spec maybe_apply(Data :: #raft_state{}) -> #raft_state{}.
-maybe_apply(#raft_state{name = Name, log_view = View, current_term = CurrentTerm,
-                        commit_index = LastCommitIndex, last_applied = LastAppliedIndex,
-                        match_indices = MatchIndices} = State0) ->
-    % Raft paper section 5.4.3 - Only log entries from the leader’s current term are committed
-    % by counting replicas; once an entry from the current term has been committed in this way,
-    % then all prior entries are committed indirectly because of the View Matching Property
-    % NOTE: See comment in successful branch of AppendEntriesResponse RPC handling for leader for
-    %       precautions about changing match index handling.
-    Config = config(State0),
-    case max_index_to_apply(MatchIndices, wa_raft_log:last_index(View), Config) of
-        CommitIndex when CommitIndex > LastCommitIndex ->
-            case wa_raft_log:term(View, CommitIndex) of
-                {ok, CurrentTerm} ->
-                    % log entry is same term of current leader node
-                    TrimIndex = lists:min(to_member_list(MatchIndices#{node() => LastAppliedIndex}, 0, Config)),
-                    apply_log(State0, CommitIndex, TrimIndex, CurrentTerm);
-                {ok, Term} when Term < CurrentTerm ->
-                    % Raft paper section 5.4.3 - as a leader, don't commit entries from previous term if no log entry of current term has applied yet
-                    ?RAFT_COUNT('raft.apply.delay.old'),
-                    ?LOG_WARNING("Server[~0p, term ~0p, leader] delays commit of log up to ~0p due to old term ~0p.",
-                        [Name, CurrentTerm, CommitIndex, Term], #{domain => [whatsapp, wa_raft]}),
-                    State0;
-                _ ->
-                    State0
-            end;
-        _ ->
-            State0 %% no quorum yet
+%% Leader - check quorum and advance commit index if possible
+-spec maybe_advance(Data :: #raft_state{}) -> #raft_state{}.
+maybe_advance(#raft_state{name = Name, log_view = View, current_term = CurrentTerm,
+                          commit_index = CommitIndex,
+                          match_indices = MatchIndices, first_current_term_log_index = TermStartIndex} = Data) ->
+    LogLast = wa_raft_log:last_index(View),
+    case max_index_to_apply(MatchIndices, LogLast, config(Data)) of
+        % Raft paper section 5.4.3 - Only log entries from the leader’s current term are committed
+        % by counting replicas; once an entry from the current term has been committed in this way,
+        % then all prior entries are committed indirectly because of the View Matching Property
+        QuorumIndex when QuorumIndex < TermStartIndex ->
+            ?RAFT_COUNT('raft.apply.delay.old'),
+            ?LOG_WARNING("Server[~0p, term ~0p, leader] cannot establish quorum at ~0p before start of term at ~0p.",
+                [Name, CurrentTerm, QuorumIndex, TermStartIndex], #{domain => [whatsapp, wa_raft]}),
+            Data;
+        QuorumIndex when QuorumIndex > CommitIndex ->
+            Data#raft_state{commit_index = QuorumIndex};
+        _QuorumIndex ->
+            Data
     end.
 
 % Return the max index to potentially apply on the leader. This is the latest log index that
@@ -2163,30 +2155,47 @@ compute_quorum([_|_] = Values) ->
     Index = (length(Values) + 1) div 2,
     lists:nth(Index, lists:sort(Values)).
 
--spec apply_log(Data :: #raft_state{}, CommitIndex :: wa_raft_log:log_index(), TrimIndex :: wa_raft_log:log_index() | infinity, EffectiveTerm :: wa_raft_log:log_term() | undefined) -> NewData :: #raft_state{}.
-apply_log(#raft_state{application = App, name = Name, table = Table, partition = Partition, log_view = View,
-                      last_applied = LastApplied, current_term = CurrentTerm} = State0, CommitIndex, TrimIndex, EffectiveTerm) when CommitIndex > LastApplied ->
+-spec apply_log_leader(Data :: #raft_state{}) -> #raft_state{}.
+apply_log_leader(#raft_state{last_applied = LastApplied, current_term = CurrentTerm, match_indices = MatchIndices} = Data) ->
+    TrimIndex = lists:min(to_member_list(MatchIndices#{node() => LastApplied}, 0, config(Data))),
+    apply_log(CurrentTerm, TrimIndex, Data).
+
+-spec apply_log_follower(
+    TrimIndex :: wa_raft_log:log_index() | infinity,
+    Data :: #raft_state{}
+) -> #raft_state{}.
+apply_log_follower(TrimIndex, Data) ->
+    apply_log(undefined, TrimIndex, Data).
+
+-spec apply_log(
+    EffectiveTerm :: wa_raft_log:log_term() | undefined,
+    TrimIndex :: wa_raft_log:log_index() | infinity,
+    Data :: #raft_state{}
+) -> #raft_state{}.
+apply_log(EffectiveTerm, TrimIndex, #raft_state{application = App, name = Name, table = Table, partition = Partition,
+                                                log_view = View, commit_index = CommitIndex, last_applied = LastApplied,
+                                                current_term = CurrentTerm} = Data0) when CommitIndex > LastApplied ->
     StartT = os:timestamp(),
     case wa_raft_queue:apply_queue_full(Table, Partition) of
         false ->
             % Apply a limited number of log entries (both count and total byte size limited)
             LimitedIndex = min(CommitIndex, LastApplied + ?RAFT_MAX_CONSECUTIVE_APPLY_ENTRIES(App)),
             LimitBytes = ?RAFT_MAX_CONSECUTIVE_APPLY_BYTES(App),
-            {ok, {_, #raft_state{log_view = View1} = State1}} = wa_raft_log:fold(View, LastApplied + 1, LimitedIndex, LimitBytes,
-                fun (Index, Size, Entry, {Index, State}) ->
+            {ok, {_, #raft_state{log_view = View1, last_applied = NewLastApplied} = Data1}} = wa_raft_log:fold(View, LastApplied + 1, LimitedIndex, LimitBytes,
+                fun (Index, Size, Entry, {Index, AccData}) ->
                     wa_raft_queue:reserve_apply(Table, Partition, Size),
-                    {Index + 1, apply_op(Index, Size, Entry, EffectiveTerm, State)}
-                end, {LastApplied + 1, State0}),
+                    {Index + 1, apply_op(Index, Size, Entry, EffectiveTerm, AccData)}
+                end, {LastApplied + 1, Data0}),
 
             % Perform log trimming since we've now applied some log entries, only keeping
             % at maximum MaxRotateDelay log entries.
             MaxRotateDelay = ?RAFT_MAX_RETAINED_ENTRIES(App),
-            RotateIndex = max(LimitedIndex - MaxRotateDelay, min(State1#raft_state.last_applied, TrimIndex)),
+            RotateIndex = max(LimitedIndex - MaxRotateDelay, min(NewLastApplied, TrimIndex)),
             RotateIndex =/= infinity orelse error(bad_state),
             {ok, View2} = wa_raft_log:rotate(View1, RotateIndex),
-            State2 = State1#raft_state{log_view = View2},
+            Data2 = Data1#raft_state{log_view = View2},
             ?RAFT_GATHER('raft.apply_log.latency_us', timer:now_diff(os:timestamp(), StartT)),
-            State2;
+            Data2;
         true ->
             ApplyQueueSize = wa_raft_queue:apply_queue_size(Table, Partition),
             ?RAFT_COUNT('raft.apply.delay'),
@@ -2195,10 +2204,10 @@ apply_log(#raft_state{application = App, name = Name, table = Table, partition =
                 ?LOG_WARNING("Server[~0p, term ~0p] delays applying for long queue ~0p with last applied ~0p.",
                     [Name, CurrentTerm, ApplyQueueSize, LastApplied], #{domain => [whatsapp, wa_raft]}),
             ?RAFT_GATHER('raft.apply_log.latency_us', timer:now_diff(os:timestamp(), StartT)),
-            State0
+            Data0
     end;
-apply_log(State, _CommitIndex, _TrimIndex, _EffectiveTerm) ->
-    State.
+apply_log(_EffectiveTerm, _TrimIndex, Data) ->
+    Data.
 
 -spec apply_op(
     Index :: wa_raft_log:log_index(),
@@ -2213,10 +2222,10 @@ apply_op(LogIndex, _Size, _Entry, _EffectiveTerm, #raft_state{name = Name, last_
     State;
 apply_op(LogIndex, Size, {Term, {Ref, Command} = Op}, EffectiveTerm, #raft_state{storage = Storage} = State0) ->
     wa_raft_storage:apply(Storage, {LogIndex, {Term, {Ref, undefined, Command}}}, Size, EffectiveTerm),
-    maybe_update_config(LogIndex, Term, Op, State0#raft_state{last_applied = LogIndex, commit_index = LogIndex});
+    maybe_update_config(LogIndex, Term, Op, State0#raft_state{last_applied = LogIndex});
 apply_op(LogIndex, Size, {Term, {_Ref, _Label, _Command} = Op}, EffectiveTerm, #raft_state{storage = Storage} = State0) ->
     wa_raft_storage:apply(Storage, {LogIndex, {Term, Op}}, Size, EffectiveTerm),
-    maybe_update_config(LogIndex, Term, Op, State0#raft_state{last_applied = LogIndex, commit_index = LogIndex});
+    maybe_update_config(LogIndex, Term, Op, State0#raft_state{last_applied = LogIndex});
 apply_op(LogIndex, _Size, undefined, _EffectiveTerm, #raft_state{name = Name, log_view = View, current_term = CurrentTerm}) ->
     ?RAFT_COUNT('raft.server.missing.log.entry'),
     ?LOG_ERROR("Server[~0p, term ~0p] failed to apply ~0p because log entry is missing from log covering ~0p to ~0p.",
@@ -2517,8 +2526,9 @@ open_snapshot(Root, Position, #raft_state{storage = Storage} = Data) ->
     TrimIndex :: wa_raft_log:log_index(),
     Data :: #raft_state{}
 ) -> gen_statem:event_handler_result(state(), #raft_state{}).
-handle_heartbeat(State, Event, Leader, PrevLogIndex, PrevLogTerm, Entries, CommitIndex, TrimIndex,
-                 #raft_state{application = App, name = Name, table = Table, partition = Partition, current_term = CurrentTerm, log_view = View, last_applied = LastApplied} = Data0) ->
+handle_heartbeat(State, Event, Leader, PrevLogIndex, PrevLogTerm, Entries, LeaderCommitIndex, TrimIndex,
+                 #raft_state{application = App, name = Name, table = Table, partition = Partition, current_term = CurrentTerm,
+                             log_view = View, commit_index = CommitIndex, last_applied = LastApplied} = Data0) ->
     EntryCount = length(Entries),
 
     ?RAFT_GATHER({raft, State, 'heartbeat.size'}, EntryCount),
@@ -2531,14 +2541,17 @@ handle_heartbeat(State, Event, Leader, PrevLogIndex, PrevLogTerm, Entries, Commi
             send_rpc(Leader, ?APPEND_ENTRIES_RESPONSE(PrevLogIndex, Accepted, NewMatchIndex, AdjustedLastApplied), Data1),
             reply_rpc(Event, ?LEGACY_APPEND_ENTRIES_RESPONSE_RPC(CurrentTerm, node(), PrevLogIndex, Accepted, NewMatchIndex), Data1),
 
-            LocalTrimIndex = case ?RAFT_LOG_ROTATION_BY_TRIM_INDEX(App) of
-                true  -> TrimIndex;
-                false -> infinity
-            end,
             Data2 = Data1#raft_state{leader_heartbeat_ts = erlang:monotonic_time(millisecond)},
             Data3 = case Accepted of
-                true -> apply_log(Data2, min(CommitIndex, NewMatchIndex), LocalTrimIndex, undefined);
-                _    -> Data2
+                true ->
+                    LocalTrimIndex = case ?RAFT_LOG_ROTATION_BY_TRIM_INDEX(App) of
+                        true  -> TrimIndex;
+                        false -> infinity
+                    end,
+                    NewCommitIndex = max(CommitIndex, min(LeaderCommitIndex, NewMatchIndex)),
+                    apply_log_follower(LocalTrimIndex, Data2#raft_state{commit_index = NewCommitIndex});
+                _ ->
+                    Data2
             end,
             check_follower_lagging(CommitIndex, Data3),
             case follower_or_witness_state(Data3) of
@@ -2565,7 +2578,7 @@ handle_heartbeat(State, Event, Leader, PrevLogIndex, PrevLogTerm, Entries, Commi
     EntryCount :: non_neg_integer(),
     Data :: #raft_state{}
 ) -> {ok, Accepted :: boolean(), NewMatchIndex :: wa_raft_log:log_index(), NewData :: #raft_state{}} | {fatal, Reason :: term()}.
-append_entries(State, PrevLogIndex, PrevLogTerm, Entries, EntryCount, #raft_state{name = Name, log_view = View, last_applied = LastApplied, current_term = CurrentTerm, leader_id = LeaderId} = Data) ->
+append_entries(State, PrevLogIndex, PrevLogTerm, Entries, EntryCount, #raft_state{name = Name, log_view = View, commit_index = CommitIndex, current_term = CurrentTerm, leader_id = LeaderId} = Data) ->
     % Inspect the locally stored term associated with the previous log entry to discern if
     % appending the provided range of log entries is allowed.
     case wa_raft_log:term(View, PrevLogIndex) of
@@ -2582,18 +2595,18 @@ append_entries(State, PrevLogIndex, PrevLogTerm, Entries, EntryCount, #raft_stat
             ?RAFT_COUNT({raft, State, 'heartbeat.skip.log_term_mismatch'}),
             ?LOG_WARNING("Server[~0p, term ~0p, ~0p] rejects appending ~0p log entries in range ~0p to ~0p as previous log entry ~0p has term ~0p locally when leader ~0p expects it to have term ~0p.",
                 [Name, CurrentTerm, State, EntryCount, PrevLogIndex + 1, PrevLogIndex + EntryCount, PrevLogIndex, LocalPrevLogTerm, LeaderId, PrevLogTerm], #{domain => [whatsapp, wa_raft]}),
-            case PrevLogIndex =< LastApplied of
+            case PrevLogIndex =< CommitIndex of
                 true ->
-                    % We cannot validly delete log entries that have already been applied because doing
-                    % so means that we are erasing log entries that have already been committed. If we try
-                    % to do so, then disable this partition as we've violated a critical invariant.
+                    % We cannot validly delete log entries that have already been committed because doing
+                    % so means that we are erasing log entries that may be part of the minimum quorum. If
+                    % we try to do so, then disable this partition as we've violated a critical invariant.
                     ?RAFT_COUNT({raft, State, 'heartbeat.error.corruption.excessive_truncation'}),
-                    ?LOG_WARNING("Server[~0p, term ~0p, ~0p] fails as progress requires truncation of log entry at ~0p due to log mismatch when log entries up to ~0p were already applied.",
-                        [Name, CurrentTerm, State, PrevLogIndex, LastApplied], #{domain => [whatsapp, wa_raft]}),
+                    ?LOG_WARNING("Server[~0p, term ~0p, ~0p] fails as progress requires truncation of log entry at ~0p due to log mismatch when log entries up to ~0p were already committed.",
+                        [Name, CurrentTerm, State, PrevLogIndex, CommitIndex], #{domain => [whatsapp, wa_raft]}),
                     {fatal,
                         lists:flatten(
-                            io_lib:format("Leader ~0p of term ~0p requested truncation of log entry at ~0p due to log term mismatch (local ~0p, leader ~0p) when log entries up to ~0p were already applied.",
-                                [LeaderId, CurrentTerm, PrevLogIndex, LocalPrevLogTerm, PrevLogTerm, LastApplied]))};
+                            io_lib:format("Leader ~0p of term ~0p requested truncation of log entry at ~0p due to log term mismatch (local ~0p, leader ~0p) when log entries up to ~0p were already committed.",
+                                [LeaderId, CurrentTerm, PrevLogIndex, LocalPrevLogTerm, PrevLogTerm, CommitIndex]))};
                 false ->
                     % We are not deleting already applied log entries, so proceed with truncation.
                     ?LOG_NOTICE("Server[~0p, term ~0p, ~0p] truncating local log ending at ~0p to past ~0p due to log mismatch.",
