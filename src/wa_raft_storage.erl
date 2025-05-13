@@ -290,6 +290,7 @@
     self :: #raft_identity{},
     options :: #raft_options{},
     path :: file:filename(),
+    server :: atom(),
     module :: module(),
     handle :: storage_handle(),
     position :: wa_raft_log:log_pos(),
@@ -476,7 +477,7 @@ registered_name(Table, Partition) ->
 %%-------------------------------------------------------------------
 
 -spec init(Options :: #raft_options{}) -> {ok, #state{}}.
-init(#raft_options{application = Application, table = Table, partition = Partition, self = Self, database = Path, storage_name = Name, storage_module = Module} = Options) ->
+init(#raft_options{application = Application, table = Table, partition = Partition, self = Self, database = Path, server_name = Server, storage_name = Name, storage_module = Module} = Options) ->
     process_flag(trap_exit, true),
 
     % This increases the potential overhead of sending log entries to storage
@@ -501,6 +502,7 @@ init(#raft_options{application = Application, table = Table, partition = Partiti
         self = Self,
         options = Options,
         path = Path,
+        server = Server,
         module = Module,
         handle = Handle,
         position = Position
@@ -653,7 +655,8 @@ handle_apply(
     Label,
     Command,
     EffectiveTerm,
-    #state{name = Name, table = Table, partition = Partition, position = #raft_log_pos{index = Index}} = State
+    #state{application = Application, name = Name, table = Table, partition = Partition,
+           server = Server, position = #raft_log_pos{index = Index}} = State
 ) when LogIndex =:= Index + 1 ->
     ?RAFT_COUNT('raft.storage.apply'),
     StartT = os:timestamp(),
@@ -661,6 +664,8 @@ handle_apply(
     LogTerm =:= EffectiveTerm andalso
         wa_raft_queue:fulfill_commit(Table, Partition, Reference, Reply),
     handle_delayed_reads(NewState),
+    wa_raft_queue:apply_queue_size(Table, Partition) =:= 0 andalso ?RAFT_STORAGE_NOTIFY_COMPLETE(Application) andalso
+        wa_raft_server:notify_complete(Server),
     ?LOG_DEBUG("Storage[~0p] finishes applying ~0p.",
         [Name, LogPosition], #{domain => [whatsapp, wa_raft]}),
     ?RAFT_GATHER('raft.storage.apply.func', timer:now_diff(os:timestamp(), StartT)),

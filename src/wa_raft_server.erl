@@ -101,7 +101,8 @@
     handover_candidates/1,
     disable/2,
     enable/1,
-    bootstrap/4
+    bootstrap/4,
+    notify_complete/1
 ]).
 
 %%------------------------------------------------------------------------------
@@ -230,7 +231,7 @@
 -type command() :: commit_command() | read_command() | status_command() | trigger_election_command() |
                    promote_command() | resign_command() | adjust_membership_command() |
                    snapshot_available_command() | handover_candidates_command() | handover_command() |
-                   enable_command() | disable_command() | bootstrap_command().
+                   enable_command() | disable_command() | bootstrap_command() | notify_complete_command().
 
 -type commit_command()              :: ?COMMIT_COMMAND(wa_raft_acceptor:op()).
 -type read_command()                :: ?READ_COMMAND(wa_raft_acceptor:read_op()).
@@ -245,6 +246,7 @@
 -type enable_command()              :: ?ENABLE_COMMAND.
 -type disable_command()             :: ?DISABLE_COMMAND(term()).
 -type bootstrap_command()           :: ?BOOTSTRAP_COMMAND(wa_raft_log:log_pos(), config(), dynamic()).
+-type notify_complete_command()     :: ?NOTIFY_COMPLETE_COMMAND().
 
 -type internal_event() :: advance_term_event() | force_election_event().
 -type advance_term_event() :: ?ADVANCE_TERM(wa_raft_log:log_term()).
@@ -531,6 +533,10 @@ enable(Server) ->
 -spec bootstrap(Server :: gen_statem:server_ref(), Position :: wa_raft_log:log_pos(), Config :: config(), Data :: dynamic()) -> ok | wa_raft:error().
 bootstrap(Server, Position, Config, Data) ->
     gen_statem:call(Server, ?BOOTSTRAP_COMMAND(Position, Config, Data), ?RAFT_STORAGE_CALL_TIMEOUT()).
+
+-spec notify_complete(Server :: gen_statem:server_ref()) -> ok.
+notify_complete(Server) ->
+    gen_statem:cast(Server, ?NOTIFY_COMPLETE_COMMAND()).
 
 %%------------------------------------------------------------------------------
 %% RAFT Server - State Machine Implementation - General Callbacks
@@ -1709,6 +1715,20 @@ command(StateName, cast, ?READ_COMMAND({From, _}),
     ?LOG_WARNING("Server[~0p, term ~0p, ~0p] strong read fails. Leader is ~p.",
         [Name, CurrentTerm, StateName, LeaderId], #{domain => [whatsapp, wa_raft]}),
     wa_raft_queue:fulfill_incomplete_read(Table, Partition, From, {error, not_leader}),
+    keep_state_and_data;
+%% [Notify Complete] Attempt to send more log entries to storage if applicable.
+command(StateName, cast, ?NOTIFY_COMPLETE_COMMAND(), #raft_state{table = Table, partition = Partition} = State) when StateName =:= leader; StateName =:= follower; StateName =:= witness ->
+    case wa_raft_queue:apply_queue_size(Table, Partition) of
+        0 ->
+            NewState = case StateName of
+                leader -> apply_log_leader(State);
+                _ -> apply_log_follower(infinity, State)
+            end,
+            {keep_state, NewState};
+        _ ->
+            keep_state_and_data
+    end;
+command(_StateName, cast, ?NOTIFY_COMPLETE_COMMAND(), _State) ->
     keep_state_and_data;
 %% [Status] Get status of node.
 command(StateName, {call, From}, ?STATUS_COMMAND, State) ->
