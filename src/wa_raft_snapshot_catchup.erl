@@ -13,7 +13,7 @@
 -include_lib("kernel/include/logger.hrl").
 -include("wa_raft.hrl").
 
-% erlint-ignore dialyzer_override: improper list expected by gen interface
+% elp:ignore W0048 (no_dialyzer_attribute): improper list expected by gen interface
 -dialyzer({no_improper_lists, [handle_cast/2]}).
 
 %% Supervisor callbacks
