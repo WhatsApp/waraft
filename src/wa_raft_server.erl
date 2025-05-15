@@ -34,6 +34,8 @@
 -export([
     get_config_version/1,
     get_config_members/1,
+    get_config_full_members/1,
+    get_config_witness_members/1,
     get_config_witnesses/1,
     is_data_replica/2,
     is_witness/2
@@ -296,6 +298,19 @@ get_config_members(#{version := 1, membership := Members}) ->
 get_config_members(_Config) ->
     [].
 
+-spec get_config_full_members(Config :: config() | config_all()) -> [#raft_identity{}].
+get_config_full_members(#{version := 1, membership := Members, witness := Witnesses}) ->
+    [#raft_identity{name = Name, node = Node} || {Name, Node} <- Members -- Witnesses];
+get_config_full_members(Config) ->
+    get_config_members(Config).
+
+-spec get_config_witness_members(Config :: config() | config_all()) -> [#raft_identity{}].
+get_config_witness_members(#{version := 1, membership := Members, witness := Witnesses}) ->
+    MembersMap = maps:from_keys(Members, []),
+    [#raft_identity{name = Name, node = Node} || {Name, Node} = Witness <- Witnesses, maps:is_key(Witness, MembersMap)];
+get_config_witness_members(_Config) ->
+    [].
+
 -spec get_config_witnesses(Config :: config() | config_all()) -> [#raft_identity{}].
 get_config_witnesses(#{version := 1, witness := Witnesses}) ->
     [#raft_identity{name = Name, node = Node} || {Name, Node} <- Witnesses];
@@ -363,7 +378,9 @@ normalize_config(#{version := 1} = Config) ->
 normalize_config(#{version := Version}) ->
     % All valid configurations will contain at least their own version; however,
     % we do not know how to handle configurations with newer versions.
-    error({unsupported_version, Version}).
+    error({unsupported_version, Version});
+normalize_config(#{}) ->
+    error(no_version).
 
 %%------------------------------------------------------------------------------
 %% RAFT Server - Public APIs
