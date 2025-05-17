@@ -208,8 +208,6 @@ handle_info(timeout, #state{name = Name} = State) ->
             % Select a random log catchup request to process.
             ?CATCHUP_REQUEST(Peer, FollowerLastIndex, LeaderTerm, LeaderCommitIndex) = lists:nth(rand:uniform(length(Requests)), Requests),
             NewState = send_logs(Peer, FollowerLastIndex, LeaderTerm, LeaderCommitIndex, State),
-            % elp:ignore W0047 (no_garbage_collect)
-            erlang:garbage_collect(),
             {noreply, NewState, ?CONTINUE_TIMEOUT}
     end;
 handle_info(Info, #state{name = Name} = State) ->
