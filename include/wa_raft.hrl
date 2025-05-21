@@ -391,72 +391,89 @@
 
 %% Raft runtime state
 -record(raft_state, {
-    %% Application
+    %% Owning application
     application :: atom(),
-    %% Service name
+    %% RAFT server name
     name :: atom(),
-    %% Self identity
+    %% RAFT server's cluster identity
     self :: #raft_identity{},
-    %% Raft instance identifier
+    %% RAFT replica's local identifier
     identifier :: #raft_identifier{},
     %% Table name
     table :: wa_raft:table(),
-    %% Partition
+    %% Partition number
     partition :: wa_raft:partition(),
-    %% Data dir
-    data_dir :: string(),
-    %% Log handle and view
+    %% Local path to partition data
+    partition_path :: string(),
+
+    %% Current view into this RAFT replica's log state
     log_view :: wa_raft_log:view(),
-    %% Module for distribution
+
+    %% Active module for distribution of RPCs
     distribution_module :: module(),
-    %% Module for log labeling
+    %% Active module for labeling of log entries
     label_module :: module() | undefined,
-    %% Storage service name
+
+    %% Name of this RAFT replica's storage server
     storage :: atom(),
-    %% Catchup service name
+    %% Name of this RAFT replica's catchup server
     catchup :: atom(),
 
-    %% The index of the latest log entry that is committed by the cluster
+    %% The index of the latest log entry in the local log that is known to
+    %% match the log entries committed by the cluster
     commit_index = 0 :: non_neg_integer(),
-
-    %% The index of the latest log entry that has been sent to storage to be applied
+    %% The index of the latest log entry that has been sent to storage to be
+    %% applied
     last_applied = 0 :: non_neg_integer(),
 
-    %% currently cached RAFT configuration and its index
-    %%  * at least the most recently applied RAFT configuration
+    %% The most recently written RAFT configuration and the index at which it
+    %% was written if a configuration exists in storage
     cached_config :: undefined | {wa_raft_log:log_index(), wa_raft_server:config()},
-    % Log label from the last log entry submitted (pending) / appended (persisted)
-    % to RAFT log (the field is only relevant in leader state).
+    %% [Leader] The label of the last log entry in the current log
     last_label :: undefined | term(),
-    % Timestamp of last heartbeat from leader
+    %% The timestamp (milliseconds monotonic clock) of the most recently
+    %% received (follower) or sent (leader) heartbeat.
     leader_heartbeat_ts :: undefined | integer(),
 
-    %% The current RAFT term as locally determined
+    %% The largest RAFT term that has been observed in the cluster or reached
+    %% by this RAFT replica
     current_term = 0 :: non_neg_integer(),
-    %% The peer that got my vote in the current term
+    %% The peer that this RAFT replica voted for in the current term
     voted_for :: undefined | node(),
-    %% The affirmative votes this replica received from the cluster in the current term
+    %% The affirmative votes for leadership this RAFT replica has received from
+    %% the cluster in the current term
     votes = #{} :: #{node() => true},
     %% The leader of the current RAFT term if known
     leader_id :: undefined | node(),
 
-    %% Timestamp in milliseconds (monotonic) of the start of the current state
+    %% The timestamp (milliseconds monotonic clock) that the current state of
+    %% this RAFT replica was reached
     state_start_ts :: non_neg_integer(),
 
-    %% [Leader] Mapping from peer to the index of the first log entry to send in the next heartbeat
+    %% [Leader] The index of the next log entry to send in the next heartbeat
+    %%          to each peer
     next_indices = #{} :: #{node() => wa_raft_log:log_index()},
-    %% [Leader] Mapping from peer to the index of the latest log entry in the peer's log known to match the leader's log
+    %% [Leader] The index of the latest log entry in each peer's log that is
+    %%          confirmed by a heartbeat response to match the local log
     match_indices = #{} :: #{node() => wa_raft_log:log_index()},
-    %% [Leader] Mapping from peer to the index of the latest log entry that the peer has applied
+    %% [Leader] The index of the latest log entry that has been applied to
+    %%          each peer's underlying storage state
     last_applied_indices = #{} :: #{node() => wa_raft_log:log_index()},
 
-    %% last timestamp in ms when we send heartbeat
+    %% [Leader] The timestamp (milliseconds monotonic clock) of the last time
+    %%          each peer was sent a heartbeat
     last_heartbeat_ts = #{} :: #{node() => integer()},
-    %% Timestamps in milliseconds of last time each follower responded successfully to a heartbeat
+    %% [Leader] The timestamp (milliseconds monotonic clock) of the last time
+    %%          each peer responded to this RAFT replica with a heartbeat
+    %%          response
     heartbeat_response_ts = #{} :: #{node() => integer()},
+    %% [Leader] The log index of the first log entry appended to the log that
+    %%          has a log term matching the current term
     first_current_term_log_index = 0 :: wa_raft_log:log_index(),
+    %% [Leader] Information about a currently pending handover of leadership to
+    %%          a peer
     handover :: undefined | {node(), reference(), integer()},
 
-    %% disabled
+    %% [Disabled] The reason for which this RAFT replica was disabled
     disable_reason :: term()
 }).

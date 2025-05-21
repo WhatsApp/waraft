@@ -202,7 +202,7 @@
     | {id, atom()}
     | {peers, [{atom(), {node(), atom()}}]}
     | {partition, wa_raft:partition()}
-    | {data_dir, file:filename_all()}
+    | {partition_path, file:filename_all()}
     | {current_term, wa_raft_log:log_term()}
     | {voted_for, node()}
     | {commit_index, wa_raft_log:log_index()}
@@ -560,7 +560,7 @@ notify_complete(Server) ->
 %%------------------------------------------------------------------------------
 
 -spec init(Options :: #raft_options{}) -> gen_statem:init_result(state()).
-init(#raft_options{application = Application, table = Table, partition = Partition, self = Self, identifier = Identifier, database = DataDir,
+init(#raft_options{application = Application, table = Table, partition = Partition, self = Self, identifier = Identifier, database = PartitionPath,
                    label_module = LabelModule, distribution_module = DistributionModule, log_name = Log, log_catchup_name = Catchup,
                    server_name = Name, storage_name = Storage} = Options) ->
     process_flag(trap_exit, true),
@@ -586,7 +586,7 @@ init(#raft_options{application = Application, table = Table, partition = Partiti
         identifier = Identifier,
         table = Table,
         partition = Partition,
-        data_dir = DataDir,
+        partition_path = PartitionPath,
         log_view = View,
         label_module = LabelModule,
         last_label = undefined,
@@ -805,7 +805,7 @@ stalled({call, From}, ?PROMOTE_COMMAND(_, _), #raft_state{name = Name, current_t
     {keep_state_and_data, {reply, From, {error, invalid_state}}};
 
 stalled({call, From}, ?BOOTSTRAP_COMMAND(#raft_log_pos{index = Index, term = Term} = Position, Config, Data),
-        #raft_state{name = Name, self = Self, data_dir = PartitionPath, storage = Storage, current_term = CurrentTerm, last_applied = LastApplied} = State0) ->
+        #raft_state{name = Name, self = Self, partition_path = PartitionPath, storage = Storage, current_term = CurrentTerm, last_applied = LastApplied} = State0) ->
     case LastApplied =:= 0 of
         true ->
             ?LOG_NOTICE("Server[~0p, term ~0p, stalled] attempting bootstrap at ~0p:~0p with config ~0p and data ~0P.",
@@ -1754,7 +1754,7 @@ command(StateName, {call, From}, ?STATUS_COMMAND, State) ->
         {id, State#raft_state.self#raft_identity.node},
         {table, State#raft_state.table},
         {partition, State#raft_state.partition},
-        {data_dir, State#raft_state.data_dir},
+        {partition_path, State#raft_state.partition_path},
         {current_term, State#raft_state.current_term},
         {voted_for, State#raft_state.voted_for},
         {commit_index, State#raft_state.commit_index},

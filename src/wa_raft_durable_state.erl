@@ -18,13 +18,13 @@
 ]).
 
 -spec load(StateIn :: #raft_state{}) -> {ok, StateOut :: #raft_state{}} | no_state | wa_raft:error().
-load(#raft_state{name = Name, data_dir = RootDir} = State) ->
+load(#raft_state{name = Name, partition_path = PartitionPath} = State) ->
     StateItems = [
         {current_term,   fun is_integer/1, fun (V, S) -> S#raft_state{current_term = V} end,   required},
         {voted_for,      fun is_atom/1,    fun (V, S) -> S#raft_state{voted_for = V} end,      required},
         {disable_reason, undefined,        fun (V, S) -> S#raft_state{disable_reason = V} end, undefined}
     ],
-    StateFile = filename:join(RootDir, ?STATE_FILE_NAME),
+    StateFile = filename:join(PartitionPath, ?STATE_FILE_NAME),
     case file:consult(StateFile) of
         {ok, [{crc, CRC} | StateTerms]} ->
             case erlang:crc32(term_to_binary(StateTerms, [{minor_version, 1}, deterministic])) of
@@ -70,7 +70,7 @@ load(#raft_state{name = Name, data_dir = RootDir} = State) ->
     end.
 
 -spec store(#raft_state{}) -> ok | wa_raft:error().
-store(#raft_state{name = Name, data_dir = RootDir, current_term = CurrentTerm, voted_for = VotedFor, disable_reason = DisableReason}) ->
+store(#raft_state{name = Name, partition_path = PartitionPath, current_term = CurrentTerm, voted_for = VotedFor, disable_reason = DisableReason}) ->
     StateList = [
         {current_term, CurrentTerm},
         {voted_for, VotedFor},
@@ -78,7 +78,7 @@ store(#raft_state{name = Name, data_dir = RootDir, current_term = CurrentTerm, v
     ],
     StateListWithCRC = [{crc, erlang:crc32(term_to_binary(StateList, [{minor_version, 1}, deterministic]))} | StateList],
     StateIO = [io_lib:format("~p.~n", [Term]) || Term <- StateListWithCRC],
-    StateFile = filename:join(RootDir, ?STATE_FILE_NAME),
+    StateFile = filename:join(PartitionPath, ?STATE_FILE_NAME),
     StateFileTemp = [StateFile, ".temp"],
     case filelib:ensure_dir(StateFile) of
         ok ->
@@ -104,8 +104,8 @@ store(#raft_state{name = Name, data_dir = RootDir, current_term = CurrentTerm, v
     end.
 
 -spec sync(StateIn :: #raft_state{}) -> ok.
-sync(#raft_state{data_dir = RootDir}) ->
-    StateFile = filename:join(RootDir, ?STATE_FILE_NAME),
+sync(#raft_state{partition_path = PartitionPath}) ->
+    StateFile = filename:join(PartitionPath, ?STATE_FILE_NAME),
     case prim_file:open(StateFile, [read, binary]) of
         {ok, Fd} ->
             prim_file:sync(Fd),
