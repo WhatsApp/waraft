@@ -316,7 +316,7 @@ get_config_version(#{version := Version}) ->
 -spec get_config_members(Config :: config() | config_all()) -> [#raft_identity{}].
 get_config_members(#{version := 1, membership := Members}) ->
     [#raft_identity{name = Name, node = Node} || {Name, Node} <- Members];
-get_config_members(_Config) ->
+get_config_members(_) ->
     [].
 
 -spec get_config_full_members(Config :: config() | config_all()) -> [#raft_identity{}].
@@ -329,13 +329,13 @@ get_config_full_members(Config) ->
 get_config_witness_members(#{version := 1, membership := Members, witness := Witnesses}) ->
     MembersMap = maps:from_keys(Members, []),
     [#raft_identity{name = Name, node = Node} || {Name, Node} = Witness <- Witnesses, maps:is_key(Witness, MembersMap)];
-get_config_witness_members(_Config) ->
+get_config_witness_members(_) ->
     [].
 
 -spec get_config_witnesses(Config :: config() | config_all()) -> [#raft_identity{}].
 get_config_witnesses(#{version := 1, witness := Witnesses}) ->
     [#raft_identity{name = Name, node = Node} || {Name, Node} <- Witnesses];
-get_config_witnesses(_Config) ->
+get_config_witnesses(_) ->
     [].
 
 -spec is_data_replica(Identity :: #raft_identity{}, Config :: config() | config_all()) -> boolean().
@@ -343,13 +343,13 @@ is_data_replica(#raft_identity{name = Name, node = Node}, #{version := 1, member
     lists:member({Name, Node}, Membership) and not lists:member({Name, Node}, Witnesses);
 is_data_replica(#raft_identity{name = Name, node = Node}, #{version := 1, membership := Membership}) ->
     lists:member({Name, Node}, Membership);
-is_data_replica(_Identity, _Config) ->
+is_data_replica(_, _) ->
     false.
 
 -spec is_witness(Identity :: #raft_identity{}, Config :: config() | config_all()) -> boolean().
 is_witness(#raft_identity{name = Name, node = Node}, #{version := 1, witness := Witnesses}) ->
     lists:member({Name, Node}, Witnesses);
-is_witness(_Identity, _Config) ->
+is_witness(_, _) ->
     false.
 
 %% Create a new cluster configuration with no members.
@@ -407,17 +407,17 @@ normalize_config(#{}) ->
 %% RAFT Server - Public APIs
 %%------------------------------------------------------------------------------
 
--spec status(ServerRef :: gen_statem:server_ref()) -> status().
-status(ServerRef) ->
-    gen_statem:call(ServerRef, ?STATUS_COMMAND, ?RAFT_RPC_CALL_TIMEOUT()).
+-spec status(Server :: gen_statem:server_ref()) -> status().
+status(Server) ->
+    gen_statem:call(Server, ?STATUS_COMMAND, ?RAFT_RPC_CALL_TIMEOUT()).
 
 -spec status
-    (ServerRef :: gen_statem:server_ref(), Key :: atom()) -> Value :: dynamic();
-    (ServerRef :: gen_statem:server_ref(), Keys :: [atom()]) -> Value :: [dynamic()].
-status(ServerRef, Key) when is_atom(Key) ->
-    hd(status(ServerRef, [Key]));
-status(ServerRef, Keys) when is_list(Keys) ->
-    case status(ServerRef) of
+    (Server :: gen_statem:server_ref(), Key :: atom()) -> Value :: dynamic();
+    (Server :: gen_statem:server_ref(), Keys :: [atom()]) -> Value :: [dynamic()].
+status(Server, Key) when is_atom(Key) ->
+    hd(status(Server, [Key]));
+status(Server, Keys) when is_list(Keys) ->
+    case status(Server) of
         [_|_] = Status ->
             [proplists:get_value(Key, Status, undefined) || Key <- Keys];
         _ ->
@@ -464,7 +464,7 @@ make_rpc(#raft_identity{name = Name, node = Node}, Term, ?PROCEDURE(Procedure, P
     ?RAFT_NAMED_RPC(Procedure, Term, Name, Node, PayloadOrUndefined).
 
 -spec parse_rpc(Self :: #raft_identity{}, RPC :: rpc()) -> {Term :: wa_raft_log:log_term(), Sender :: #raft_identity{}, Procedure :: procedure()}.
-parse_rpc(_Self, ?RAFT_NAMED_RPC(Key, Term, SenderName, SenderNode, PayloadOrUndefined)) ->
+parse_rpc(_, ?RAFT_NAMED_RPC(Key, Term, SenderName, SenderNode, PayloadOrUndefined)) ->
     Payload = case PayloadOrUndefined of
         undefined -> {};
         _         -> PayloadOrUndefined
@@ -507,8 +507,7 @@ snapshot_available(Server, Root, Position) ->
     Server :: gen_statem:server_ref(),
     Action :: add | remove | add_witness | remove_witness,
     Peer :: peer()
-) ->
-    {ok, Pos :: wa_raft_log:log_pos()} | wa_raft:error().
+) -> {ok, Position :: wa_raft_log:log_pos()} | wa_raft:error().
 adjust_membership(Server, Action, Peer) ->
     adjust_membership(Server, Action, Peer, undefined).
 
@@ -517,7 +516,7 @@ adjust_membership(Server, Action, Peer) ->
     Action :: add | remove | add_witness | remove_witness,
     Peer :: peer(),
     ConfigIndex :: wa_raft_log:log_index() | undefined
-) -> {ok, Pos :: wa_raft_log:log_pos()} | wa_raft:error().
+) -> {ok, Position :: wa_raft_log:log_pos()} | wa_raft:error().
 adjust_membership(Server, Action, Peer, ConfigIndex) ->
     gen_statem:call(Server, ?ADJUST_MEMBERSHIP_COMMAND(Action, Peer, ConfigIndex), ?RAFT_RPC_CALL_TIMEOUT()).
 
@@ -568,7 +567,12 @@ disable(Server, Reason) ->
 enable(Server) ->
     gen_statem:call(Server, ?ENABLE_COMMAND, ?RAFT_RPC_CALL_TIMEOUT()).
 
--spec bootstrap(Server :: gen_statem:server_ref(), Position :: wa_raft_log:log_pos(), Config :: config(), Data :: dynamic()) -> ok | wa_raft:error().
+-spec bootstrap(
+    Server :: gen_statem:server_ref(),
+    Position :: wa_raft_log:log_pos(),
+    Config :: config(),
+    Data :: dynamic()
+) -> ok | wa_raft:error().
 bootstrap(Server, Position, Config, Data) ->
     gen_statem:call(Server, ?BOOTSTRAP_COMMAND(Position, Config, Data), ?RAFT_STORAGE_CALL_TIMEOUT()).
 
@@ -581,9 +585,22 @@ notify_complete(Server) ->
 %%------------------------------------------------------------------------------
 
 -spec init(Options :: #raft_options{}) -> gen_statem:init_result(state()).
-init(#raft_options{application = Application, table = Table, partition = Partition, self = Self, identifier = Identifier, database = PartitionPath,
-                   label_module = LabelModule, distribution_module = DistributionModule, log_name = Log, log_catchup_name = Catchup,
-                   server_name = Name, storage_name = Storage} = Options) ->
+init(
+    #raft_options{
+        application = Application,
+        table = Table,
+        partition = Partition,
+        self = Self,
+        identifier = Identifier,
+        database = PartitionPath,
+        label_module = LabelModule,
+        distribution_module = DistributionModule,
+        log_name = Log,
+        log_catchup_name = Catchup,
+        server_name = Name,
+        storage_name = Storage
+    } = Options
+) ->
     process_flag(trap_exit, true),
 
     ?LOG_NOTICE("Server[~0p] starting with options ~0p", [Name, Options], ?RAFT_LOG_OPTS),
@@ -685,23 +702,38 @@ protocol() ->
         ?HANDOVER_FAILED         => ?HANDOVER_FAILED(undefined)
     }.
 
--spec handle_rpc(Type :: gen_statem:event_type(), RPC :: rpc(), State :: state(), Data :: #raft_state{}) -> gen_statem:event_handler_result(state(), #raft_state{}).
-handle_rpc(Type, ?RAFT_NAMED_RPC(Procedure, Term, SenderName, SenderNode, Payload) = Event, State, Data) ->
+-spec handle_rpc(
+    Type :: gen_statem:event_type(),
+    RPC :: rpc(),
+    State :: state(),
+    Data :: #raft_state{}
+) -> gen_statem:event_handler_result(state(), #raft_state{}).
+
+handle_rpc(Type, ?RAFT_NAMED_RPC(Procedure, Term, SenderName, SenderNode, Payload) = Event, State, #raft_state{} = Data) ->
     handle_rpc_impl(Type, Event, Procedure, Term, #raft_identity{name = SenderName, node = SenderNode}, Payload, State, Data);
 handle_rpc(Type, ?LEGACY_RAFT_RPC(Procedure, Term, SenderId, Payload) = Event, State, #raft_state{name = Name} = Data) ->
     handle_rpc_impl(Type, Event, Procedure, Term, #raft_identity{name = Name, node = SenderId}, Payload, State, Data);
-handle_rpc(_Type, RPC, State, #raft_state{} = Data) ->
+handle_rpc(_, RPC, State, #raft_state{} = Data) ->
     ?RAFT_COUNT({'raft', State, 'rpc.unrecognized'}),
     ?RAFT_LOG_NOTICE(State, Data, "receives unknown RPC format ~0P", [RPC, 20]),
     keep_state_and_data.
 
--spec handle_rpc_impl(Type :: gen_statem:event_type(), Event :: rpc(), Key :: atom(), Term :: wa_raft_log:log_term(), Sender :: #raft_identity{},
-                      Payload :: undefined | tuple(), State :: state(), Data :: #raft_state{}) -> gen_statem:event_handler_result(state(), #raft_state{}).
+-spec handle_rpc_impl(
+    Type :: gen_statem:event_type(),
+    Event :: rpc(),
+    Key :: atom(),
+    Term :: wa_raft_log:log_term(),
+    Sender :: #raft_identity{},
+    Payload :: undefined | tuple(),
+    State :: state(),
+    Data :: #raft_state{}
+) -> gen_statem:event_handler_result(state(), #raft_state{}).
+
 %% [Protocol] Undefined payload should be treated as an empty tuple
 handle_rpc_impl(Type, Event, Key, Term, Sender, undefined, State, Data) ->
     handle_rpc_impl(Type, Event, Key, Term, Sender, {}, State, Data);
 %% [General Rules] Discard any incoming RPCs with a term older than the current term
-handle_rpc_impl(_Type, _Event, Key, Term, Sender, _Payload, State, #raft_state{current_term = CurrentTerm} = Data) when Term < CurrentTerm ->
+handle_rpc_impl(_, _, Key, Term, Sender, _, State, #raft_state{current_term = CurrentTerm} = Data) when Term < CurrentTerm ->
     ?RAFT_LOG_NOTICE(State, Data, "dropping stale ~0p from ~0p with old term ~0p.", [Key, Sender, Term]),
     State =/= disabled andalso send_rpc(Sender, ?NOTIFY_TERM(), Data),
     keep_state_and_data;
@@ -732,13 +764,13 @@ handle_rpc_impl(Type, Event, ?REQUEST_VOTE, Term, Sender, Payload, State,
             keep_state_and_data
     end;
 %% [General Rules] Advance to the newer term and reset state when seeing a newer term in an incoming RPC
-handle_rpc_impl(Type, Event, _Key, Term, _Sender, _Payload, _State, #raft_state{current_term = CurrentTerm}) when Term > CurrentTerm ->
+handle_rpc_impl(Type, Event, _, Term, _, _, _, #raft_state{current_term = CurrentTerm}) when Term > CurrentTerm ->
     {keep_state_and_data, [{next_event, internal, ?ADVANCE_TERM(Term)}, {next_event, Type, Event}]};
 %% [NotifyTerm RPC] Drop NotifyTerm RPCs with matching term
-handle_rpc_impl(_Type, _Event, ?NOTIFY_TERM, _Term, _Sender, _Payload, _State, _Data) ->
+handle_rpc_impl(_, _, ?NOTIFY_TERM, _, _, _, _, #raft_state{}) ->
     keep_state_and_data;
 %% [Protocol] Convert any valid remote procedure call to the appropriate local procedure call.
-handle_rpc_impl(Type, _Event, Key, _Term, Sender, Payload, State, #raft_state{} = Data) when is_tuple(Payload) ->
+handle_rpc_impl(Type, _, Key, _, Sender, Payload, State, #raft_state{} = Data) when is_tuple(Payload) ->
     case protocol() of
         #{Key := ?PROCEDURE(Procedure, Defaults)} ->
             handle_procedure(Type, ?REMOTE(Sender, ?PROCEDURE(Procedure, defaultize_payload(Defaults, Payload))), State, Data);
@@ -748,22 +780,28 @@ handle_rpc_impl(Type, _Event, Key, _Term, Sender, Payload, State, #raft_state{} 
             keep_state_and_data
     end.
 
--spec handle_procedure(Type :: gen_statem:event_type(), ProcedureCall :: remote(procedure()), State :: state(), Data :: #raft_state{}) -> gen_statem:event_handler_result(state(), #raft_state{}).
+-spec handle_procedure(
+    Type :: gen_statem:event_type(),
+    ProcedureCall :: remote(procedure()),
+    State :: state(),
+    Data :: #raft_state{}
+) -> gen_statem:event_handler_result(state(), #raft_state{}).
+
 %% [AppendEntries RPC] If we haven't discovered leader for this term, record it
 handle_procedure(Type, ?REMOTE(Sender, ?APPEND_ENTRIES(_, _, _, _, _)) = Procedure, State, #raft_state{leader_id = undefined} = Data) ->
     {keep_state, set_leader(State, Sender, Data), {next_event, Type, Procedure}};
 %% [Handover][Handover RPC] If we haven't discovered leader for this term, record it
 handle_procedure(Type, ?REMOTE(Sender, ?HANDOVER(_, _, _, _)) = Procedure, State, #raft_state{leader_id = undefined} = Data) ->
     {keep_state, set_leader(State, Sender, Data), {next_event, Type, Procedure}};
-handle_procedure(Type, Procedure, _State, _Data) ->
+handle_procedure(Type, Procedure, _, #raft_state{}) ->
     {keep_state_and_data, {next_event, Type, Procedure}}.
 
--spec defaultize_payload(tuple(), tuple()) -> tuple().
+-spec defaultize_payload(Defaults :: tuple(), Payload :: tuple()) -> tuple().
 defaultize_payload(Defaults, Payload) ->
     defaultize_payload(Defaults, Payload, tuple_size(Defaults), tuple_size(Payload)).
 
 -spec defaultize_payload(tuple(), tuple(), non_neg_integer(), non_neg_integer()) -> tuple().
-defaultize_payload(_Defaults, Payload, N, N) ->
+defaultize_payload(_, Payload, N, N) ->
     Payload;
 defaultize_payload(Defaults, Payload, N, M) when N > M ->
     defaultize_payload(Defaults, erlang:insert_element(M + 1, Payload, element(M + 1, Defaults)), N, M + 1);
@@ -788,8 +826,18 @@ defaultize_payload(Defaults, Payload, N, M) when N < M ->
 %% operation.
 %%------------------------------------------------------------------------------
 
--spec stalled(Type :: enter, PreviousStateName :: state(), Data :: #raft_state{}) -> gen_statem:state_enter_result(state(), #raft_state{});
-             (Type :: gen_statem:event_type(), Event :: event(), Data :: #raft_state{}) -> gen_statem:event_handler_result(state(), #raft_state{}).
+-spec stalled
+    (
+        Type :: enter,
+        PreviousStateName :: state(),
+        Data :: #raft_state{}
+    ) -> gen_statem:state_enter_result(state(), #raft_state{});
+    (
+        Type :: gen_statem:event_type(),
+        Event :: event(),
+        Data :: #raft_state{}
+    ) -> gen_statem:event_handler_result(state(), #raft_state{}).
+
 stalled(enter, PreviousStateName, #raft_state{} = State) ->
     ?RAFT_COUNT('raft.stalled.enter'),
     ?RAFT_LOG_NOTICE(State, "becomes stalled from state ~0p.", [PreviousStateName]),
@@ -802,11 +850,11 @@ stalled(internal, ?ADVANCE_TERM(NewTerm), #raft_state{current_term = CurrentTerm
     {repeat_state, advance_term(?FUNCTION_NAME, NewTerm, undefined, State)};
 
 %% [Protocol] Parse any RPCs in network formats
-stalled(Type, Event, State) when is_tuple(Event), element(1, Event) =:= rpc ->
+stalled(Type, Event, #raft_state{} = State) when is_tuple(Event), element(1, Event) =:= rpc ->
     handle_rpc(Type, Event, ?FUNCTION_NAME, State);
 
 %% [AppendEntries RPC] Stalled nodes always discard heartbeats
-stalled(_Type, ?REMOTE(Sender, ?APPEND_ENTRIES(PrevLogIndex, _PrevLogTerm, _Entries, _LeaderCommit, _TrimIndex)), State) ->
+stalled(_, ?REMOTE(Sender, ?APPEND_ENTRIES(PrevLogIndex, _, _, _, _)), #raft_state{} = State) ->
     NewState = State#raft_state{leader_heartbeat_ts = erlang:monotonic_time(millisecond)},
     send_rpc(Sender, ?APPEND_ENTRIES_RESPONSE(PrevLogIndex, false, 0, 0), NewState),
     {keep_state, NewState};
@@ -819,8 +867,17 @@ stalled({call, From}, ?PROMOTE_COMMAND(_, _), #raft_state{} = State) ->
     ?RAFT_LOG_WARNING(State, "cannot be promoted to leader.", []),
     {keep_state_and_data, {reply, From, {error, invalid_state}}};
 
-stalled({call, From}, ?BOOTSTRAP_COMMAND(#raft_log_pos{index = Index, term = Term} = Position, Config, Data),
-        #raft_state{self = Self, partition_path = PartitionPath, storage = Storage, current_term = CurrentTerm, last_applied = LastApplied} = State0) ->
+stalled(
+    {call, From},
+    ?BOOTSTRAP_COMMAND(#raft_log_pos{index = Index, term = Term} = Position, Config, Data),
+    #raft_state{
+        self = Self,
+        partition_path = PartitionPath,
+        storage = Storage,
+        current_term = CurrentTerm,
+        last_applied = LastApplied
+    } = State0
+) ->
     case LastApplied =:= 0 of
         true ->
             ?RAFT_LOG_NOTICE(State0, "attempting bootstrap at ~0p:~0p with config ~0p and data ~0P.", [Index, Term, Config, Data, 30]),
@@ -857,8 +914,14 @@ stalled({call, From}, ?BOOTSTRAP_COMMAND(#raft_log_pos{index = Index, term = Ter
             {keep_state_and_data, {reply, From, {error, rejected}}}
     end;
 
-stalled(Type, ?SNAPSHOT_AVAILABLE_COMMAND(Root, #raft_log_pos{index = SnapshotIndex, term = SnapshotTerm} = SnapshotPos),
-        #raft_state{current_term = CurrentTerm, last_applied = LastApplied} = State0) ->
+stalled(
+    Type,
+    ?SNAPSHOT_AVAILABLE_COMMAND(Root, #raft_log_pos{index = SnapshotIndex, term = SnapshotTerm} = SnapshotPos),
+    #raft_state{
+        current_term = CurrentTerm,
+        last_applied = LastApplied
+    } = State0
+) ->
     case SnapshotIndex > LastApplied orelse LastApplied =:= 0 of
         true ->
             try
@@ -885,7 +948,7 @@ stalled(Type, ?SNAPSHOT_AVAILABLE_COMMAND(Root, #raft_log_pos{index = SnapshotIn
     end;
 
 %% [Command] Defer to common handling for generic RAFT server commands
-stalled(Type, ?RAFT_COMMAND(_COMMAND, _Payload) = Event, State) ->
+stalled(Type, ?RAFT_COMMAND(_, _) = Event, #raft_state{} = State) ->
     command(?FUNCTION_NAME, Type, Event, State);
 
 %% [Fallback] Report unhandled events
@@ -902,8 +965,18 @@ stalled(Type, Event, #raft_state{} = State) ->
 %% accepting and replicating new log entries to progress the state of the FSM.
 %%------------------------------------------------------------------------------
 
--spec leader(Type :: enter, PreviousStateName :: state(), Data :: #raft_state{}) -> gen_statem:state_enter_result(state(), #raft_state{});
-            (Type :: gen_statem:event_type(), Event :: event(), Data :: #raft_state{}) -> gen_statem:event_handler_result(state(), #raft_state{}).
+-spec leader
+    (
+        Type :: enter,
+        PreviousStateName :: state(),
+        Data :: #raft_state{}
+    ) -> gen_statem:state_enter_result(state(), #raft_state{});
+    (
+        Type :: gen_statem:event_type(),
+        Event :: event(),
+        Data :: #raft_state{}
+    ) -> gen_statem:event_handler_result(state(), #raft_state{}).
+
 leader(enter, PreviousStateName, #raft_state{self = Self, log_view = View0} = State0) ->
     ?RAFT_COUNT('raft.leader.enter'),
     ?RAFT_COUNT('raft.leader.elected'),
@@ -916,14 +989,14 @@ leader(enter, PreviousStateName, #raft_state{self = Self, log_view = View0} = St
     % Attempt to refresh the label state as necessary for new log entries
     LastLogIndex = wa_raft_log:last_index(View0),
     State3 = case wa_raft_log:get(View0, LastLogIndex) of
-        {ok, {_Term, {_Key, LastLabel, _Command}}} ->
+        {ok, {_, {_, LastLabel, _}}} ->
             State2#raft_state{last_label = LastLabel};
-        {ok, {_Term, undefined}} ->
+        {ok, {_, undefined}} ->
             % The RAFT log could have been reset (i.e. after snapshot installation).
             % In such case load the log label state from storage.
             LastLabel = load_label_state(State2),
             State2#raft_state{last_label = LastLabel};
-        {ok, _Entry} ->
+        {ok, _} ->
             State2#raft_state{last_label = undefined}
     end,
 
@@ -941,20 +1014,24 @@ leader(enter, PreviousStateName, #raft_state{self = Self, log_view = View0} = St
     {keep_state, State7, ?HEARTBEAT_TIMEOUT(State7)};
 
 %% [Internal] Advance to newer term when requested
-leader(internal, ?ADVANCE_TERM(NewTerm), #raft_state{log_view = View, current_term = CurrentTerm} = State) when NewTerm > CurrentTerm ->
+leader(
+    internal,
+    ?ADVANCE_TERM(NewTerm),
+    #raft_state{log_view = View, current_term = CurrentTerm} = State
+) when NewTerm > CurrentTerm ->
     ?RAFT_COUNT('raft.leader.advance_term'),
     ?RAFT_LOG_NOTICE(State, "advancing to new term ~0p.", [NewTerm]),
     %% Drop any pending log entries queued in the log view before advancing
-    {ok, _Pending, NewView} = wa_raft_log:cancel(View),
+    {ok, _, NewView} = wa_raft_log:cancel(View),
     State1 = advance_term(?FUNCTION_NAME, NewTerm, undefined, State#raft_state{log_view = NewView}),
     {next_state, follower_or_witness_state(State1), State1};
 
 %% [Protocol] Parse any RPCs in network formats
-leader(Type, Event, State) when is_tuple(Event), element(1, Event) =:= rpc ->
+leader(Type, Event, #raft_state{} = State) when is_tuple(Event), element(1, Event) =:= rpc ->
     handle_rpc(Type, Event, ?FUNCTION_NAME, State);
 
 %% [AppendEntries RPC] Leaders should not act upon any incoming heartbeats (5.1, 5.2)
-leader(_Type, ?REMOTE(_, ?APPEND_ENTRIES(_, _, _, _, _)), _State) ->
+leader(_, ?REMOTE(_, ?APPEND_ENTRIES(_, _, _, _, _)), #raft_state{}) ->
     keep_state_and_data;
 
 %% [Leader] Handle AppendEntries RPC responses (5.2, 5.3, 7).
@@ -963,7 +1040,7 @@ leader(
     cast,
     ?REMOTE(
         ?IDENTITY_REQUIRES_MIGRATION(_, FollowerId) = Sender,
-        ?APPEND_ENTRIES_RESPONSE(_PrevIndex, true, FollowerMatchIndex, FollowerLastAppliedIndex)
+        ?APPEND_ENTRIES_RESPONSE(_, true, FollowerMatchIndex, FollowerLastAppliedIndex)
     ),
     #raft_state{
         commit_index = CommitIndex,
@@ -1008,7 +1085,7 @@ leader(
     cast,
     ?REMOTE(
         ?IDENTITY_REQUIRES_MIGRATION(_, FollowerId) = Sender,
-        ?APPEND_ENTRIES_RESPONSE(_PrevLogIndex, false, FollowerEndIndex, FollowerLastAppliedIndex)
+        ?APPEND_ENTRIES_RESPONSE(_, false, FollowerEndIndex, FollowerLastAppliedIndex)
     ),
     #raft_state{
         commit_index = CommitIndex,
@@ -1042,30 +1119,35 @@ leader(
     {keep_state, maybe_heartbeat(State2), ?HEARTBEAT_TIMEOUT(State2)};
 
 %% [RequestVote RPC] Ignore any vote requests as leadership is aleady established (5.1, 5.2)
-leader(_Type, ?REMOTE(_, ?REQUEST_VOTE(_, _, _)), #raft_state{}) ->
+leader(_, ?REMOTE(_, ?REQUEST_VOTE(_, _, _)), #raft_state{}) ->
     keep_state_and_data;
 
 %% [Vote RPC] We are already leader, so we don't need to consider any more votes (5.1)
-leader(_Type, ?REMOTE(_, ?VOTE(_)), #raft_state{}) ->
+leader(_, ?REMOTE(_, ?VOTE(_)), #raft_state{}) ->
     keep_state_and_data;
 
 %% [Handover][Handover RPC] We are already leader so ignore any handover requests.
-leader(_Type, ?REMOTE(Sender, ?HANDOVER(Reference, _, _, _)), #raft_state{} = State) ->
+leader(_, ?REMOTE(Sender, ?HANDOVER(Reference, _, _, _)), #raft_state{} = State) ->
     send_rpc(Sender, ?HANDOVER_FAILED(Reference), State),
     keep_state_and_data;
 
 %% [Handover][HandoverFailed RPC] Our handover failed, so clear the handover status.
-leader(_Type, ?REMOTE(?IDENTITY_REQUIRES_MIGRATION(_, NodeId) = Sender, ?HANDOVER_FAILED(Ref)),
-       #raft_state{handover = {NodeId, Ref, _Timeout}} = State) ->
+leader(
+    _,
+    ?REMOTE(?IDENTITY_REQUIRES_MIGRATION(_, NodeId) = Sender, ?HANDOVER_FAILED(Reference)),
+    #raft_state{
+        handover = {NodeId, Reference, _}
+    } = State
+) ->
     ?RAFT_LOG_NOTICE(State, "resuming normal operations after failed handover to ~0p.", [Sender]),
     {keep_state, State#raft_state{handover = undefined}};
 
 %% [Handover][HandoverFailed RPC] Got a handover failed with an unknown ID. Ignore.
-leader(_Type, ?REMOTE(_, ?HANDOVER_FAILED(_)), #raft_state{}) ->
+leader(_, ?REMOTE(_, ?HANDOVER_FAILED(_)), #raft_state{}) ->
     keep_state_and_data;
 
 %% [Timeout] Suspend periodic heartbeat to followers while handover is active
-leader(state_timeout = Type, Event, #raft_state{handover = {Peer, _Ref, Timeout}} = State) ->
+leader(state_timeout = Type, Event, #raft_state{handover = {Peer, _, Timeout}} = State) ->
     NowMillis = erlang:monotonic_time(millisecond),
     case NowMillis > Timeout of
         true ->
@@ -1086,18 +1168,35 @@ leader(state_timeout, _, #raft_state{application = App, log_view = View} = State
         false ->
             ?RAFT_LOG_NOTICE(State0, "resigns from leadership because this node is ineligible.", []),
             %% Drop any pending log entries queued in the log view before resigning
-            {ok, _Pending, NewView} = wa_raft_log:cancel(View),
+            {ok, _, NewView} = wa_raft_log:cancel(View),
             State1 = clear_leader(?FUNCTION_NAME, State0#raft_state{log_view = NewView}),
             {next_state, follower_or_witness_state(State1), State1}
     end;
 
 %% [Commit] If a handover is in progress, then try to redirect to handover target
-leader(cast, ?COMMIT_COMMAND({Reference, _Op}), #raft_state{table = Table, partition = Partition, handover = {Peer, _, _}} = State) ->
+leader(
+    cast,
+    ?COMMIT_COMMAND({Reference, _}),
+    #raft_state{
+        table = Table,
+        partition = Partition,
+        handover = {Peer, _, _}
+    } = State
+) ->
     ?RAFT_COUNT('raft.commit.handover'),
     wa_raft_queue:fulfill_incomplete_commit(Table, Partition, Reference, {error, {notify_redirect, Peer}}), % Optimistically redirect to handover peer
     {keep_state, State};
+
 %% [Commit] Otherwise, add a new commit to the RAFT log
-leader(cast, ?COMMIT_COMMAND(Op), #raft_state{application = App, log_view = View0, next_indices = NextIndices} = State0) ->
+leader(
+    cast,
+    ?COMMIT_COMMAND(Op),
+    #raft_state{
+        application = App,
+        log_view = View0,
+        next_indices = NextIndices
+    } = State0
+) ->
     ?RAFT_COUNT('raft.commit'),
     {State1, LogEntry} = get_log_entry(State0, Op),
     {ok, View1} = wa_raft_log:submit(View0, LogEntry),
@@ -1115,14 +1214,34 @@ leader(cast, ?COMMIT_COMMAND(Op), #raft_state{application = App, log_view = View
     end;
 
 %% [Strong Read] If a handover is in progress, then try to redirect to handover target
-leader(cast, ?READ_COMMAND({From, _Command}), #raft_state{table = Table, partition = Partition, handover = {Peer, _Ref, _Timeout}} = State) ->
+leader(
+    cast,
+    ?READ_COMMAND({From, _}),
+    #raft_state{
+        table = Table,
+        partition = Partition,
+        handover = {Peer, _, _}
+    } = State
+) ->
     ?RAFT_COUNT('raft.read.handover'),
     wa_raft_queue:fulfill_incomplete_read(Table, Partition, From, {error, {notify_redirect, Peer}}), % Optimistically redirect to handover peer
     {keep_state, State};
+
 %% [Strong Read] Leader is eligible to serve strong reads.
-leader(cast, ?READ_COMMAND({From, Command}),
-       #raft_state{self = Self, table = Table, partition = Partition, log_view = View0, storage = Storage,
-                   commit_index = CommitIndex, last_applied = LastApplied, first_current_term_log_index = FirstLogIndex} = State0) ->
+leader(
+    cast,
+    ?READ_COMMAND({From, Command}),
+    #raft_state{
+        self = Self,
+        table = Table,
+        partition = Partition,
+        log_view = View0,
+        storage = Storage,
+        commit_index = CommitIndex,
+        last_applied = LastApplied,
+        first_current_term_log_index = FirstLogIndex
+    } = State0
+) ->
     LastLogIndex = wa_raft_log:last_index(View0),
     Pending = wa_raft_log:pending(View0),
     ReadIndex = max(CommitIndex, FirstLogIndex),
@@ -1151,15 +1270,22 @@ leader({call, From}, ?RESIGN_COMMAND, #raft_state{log_view = View} = State) ->
     ?RAFT_LOG_NOTICE(State, "resigns.", []),
 
     %% Drop any pending log entries queued in the log view before resigning
-    {ok, _Pending, NewView} = wa_raft_log:cancel(View),
+    {ok, _, NewView} = wa_raft_log:cancel(View),
     State1 = clear_leader(?FUNCTION_NAME, State#raft_state{log_view = NewView}),
     {next_state, follower_or_witness_state(State1), State1, {reply, From, ok}};
 
 %% [Adjust Membership] Leader attempts to commit a single-node membership change.
-leader(Type, ?ADJUST_MEMBERSHIP_COMMAND(Action, Peer, ExpectedConfigIndex),
-       #raft_state{log_view = View0, storage = Storage,
-                   current_term = CurrentTerm, commit_index = CommitIndex,
-                   first_current_term_log_index = TermStartIndex} = State0) ->
+leader(
+    Type,
+    ?ADJUST_MEMBERSHIP_COMMAND(Action, Peer, ExpectedConfigIndex),
+    #raft_state{
+        log_view = View0,
+        storage = Storage,
+        current_term = CurrentTerm,
+        commit_index = CommitIndex,
+        first_current_term_log_index = TermStartIndex
+    } = State0
+) ->
     % Try to adjust the configuration according to the current request.
     Config = config(State0),
     % eqwalizer:ignore Peer can be undefined
@@ -1219,7 +1345,7 @@ leader(Type, ?ADJUST_MEMBERSHIP_COMMAND(Action, Peer, ExpectedConfigIndex),
     end;
 
 %% [Handover Candidates] Return list of handover candidates (peers that are not lagging too much)
-leader({call, From}, ?HANDOVER_CANDIDATES_COMMAND, State) ->
+leader({call, From}, ?HANDOVER_CANDIDATES_COMMAND, #raft_state{} = State) ->
     {keep_state_and_data, {reply, From, {ok, compute_handover_candidates(State)}}};
 
 %% [Handover] With peer 'undefined' randomly select a valid candidate to handover to
@@ -1241,9 +1367,17 @@ leader(Type, ?HANDOVER_COMMAND(Peer), #raft_state{} = State) when Peer =:= node(
     {keep_state, State};
 
 %% [Handover] Attempt to start a handover to the specified peer
-leader(Type, ?HANDOVER_COMMAND(Peer),
-       #raft_state{application = App, name = Name, log_view = View,
-                   match_indices = MatchIndices, handover = undefined} = State0) ->
+leader(
+    Type,
+    ?HANDOVER_COMMAND(Peer),
+    #raft_state{
+        application = App,
+        name = Name,
+        log_view = View,
+        match_indices = MatchIndices,
+        handover = undefined
+    } = State0
+) ->
     % TODO(hsun324): For the time being, assume that all members of the cluster use the same server name.
     case member({Name, Peer}, config(State0)) of
         false ->
@@ -1294,12 +1428,12 @@ leader(Type, ?HANDOVER_COMMAND(Peer),
     end;
 
 %% [Handover] Reject starting a handover when a handover is still in progress
-leader({call, From}, ?HANDOVER_COMMAND(Peer), #raft_state{handover = {Node, _Ref, _Timeout}} = State) ->
+leader({call, From}, ?HANDOVER_COMMAND(Peer), #raft_state{handover = {Node, _, _}} = State) ->
     ?RAFT_LOG_WARNING(State, "rejecting duplicate handover to ~0p with running handover to ~0p.", [Peer, Node]),
     {keep_state_and_data, {reply, From, {error, duplicate}}};
 
 %% [Command] Defer to common handling for generic RAFT server commands
-leader(Type, ?RAFT_COMMAND(_COMMAND, _Payload) = Event, State) ->
+leader(Type, ?RAFT_COMMAND(_, _) = Event, #raft_state{} = State) ->
     command(?FUNCTION_NAME, Type, Event, State);
 
 %% [Fallback] Report unhandled events
@@ -1316,8 +1450,18 @@ leader(Type, Event, #raft_state{} = State) ->
 %% entries to its own local copy of the RAFT log.
 %%------------------------------------------------------------------------------
 
--spec follower(Type :: enter, PreviousStateName :: state(), Data :: #raft_state{}) -> gen_statem:state_enter_result(state(), #raft_state{});
-              (Type :: gen_statem:event_type(), Event :: event(), Data :: #raft_state{}) -> gen_statem:event_handler_result(state(), #raft_state{}).
+-spec follower
+    (
+        Type :: enter,
+        PreviousStateName :: state(),
+        Data :: #raft_state{}
+    ) -> gen_statem:state_enter_result(state(), #raft_state{});
+    (
+        Type :: gen_statem:event_type(),
+        Event :: event(),
+        Data :: #raft_state{}
+    ) -> gen_statem:event_handler_result(state(), #raft_state{}).
+
 follower(enter, PreviousStateName, #raft_state{} = State) ->
     ?RAFT_COUNT('raft.follower.enter'),
     ?RAFT_LOG_NOTICE(State, "becomes follower from state ~0p.", [PreviousStateName]),
@@ -1330,33 +1474,46 @@ follower(internal, ?ADVANCE_TERM(NewTerm), #raft_state{current_term = CurrentTer
     {repeat_state, advance_term(?FUNCTION_NAME, NewTerm, undefined, State)};
 
 %% [Protocol] Parse any RPCs in network formats
-follower(Type, Event, State) when is_tuple(Event), element(1, Event) =:= rpc ->
+follower(Type, Event, #raft_state{} = State) when is_tuple(Event), element(1, Event) =:= rpc ->
     handle_rpc(Type, Event, ?FUNCTION_NAME, State);
 
 %% [AppendEntries RPC] Handle incoming heartbeats (5.2, 5.3)
-follower(Type, ?REMOTE(Leader, ?APPEND_ENTRIES(PrevLogIndex, PrevLogTerm, Entries, CommitIndex, TrimIndex)), State) ->
+follower(
+    Type,
+    ?REMOTE(Leader, ?APPEND_ENTRIES(PrevLogIndex, PrevLogTerm, Entries, CommitIndex, TrimIndex)),
+    #raft_state{} = State
+) ->
     handle_heartbeat(?FUNCTION_NAME, Type, Leader, PrevLogIndex, PrevLogTerm, Entries, CommitIndex, TrimIndex, State);
 
 %% [AppendEntriesResponse RPC] Followers should not act upon any incoming heartbeat responses (5.2)
-follower(_Type, ?REMOTE(_, ?APPEND_ENTRIES_RESPONSE(_, _, _, _)), _State) ->
+follower(_, ?REMOTE(_, ?APPEND_ENTRIES_RESPONSE(_, _, _, _)), #raft_state{}) ->
     keep_state_and_data;
 
 %% [RequestVote RPC] Handle incoming vote requests (5.2)
-follower(_Type, ?REMOTE(Candidate, ?REQUEST_VOTE(_, CandidateIndex, CandidateTerm)), State) ->
+follower(_, ?REMOTE(Candidate, ?REQUEST_VOTE(_, CandidateIndex, CandidateTerm)), #raft_state{} = State) ->
     request_vote_impl(?FUNCTION_NAME, Candidate, CandidateIndex, CandidateTerm, State);
 
 %% [Handover][Handover RPC] The leader is requesting this follower to take over leadership in a new term
-follower(_Type, ?REMOTE(?IDENTITY_REQUIRES_MIGRATION(_, LeaderId) = Sender, ?HANDOVER(Ref, PrevLogIndex, PrevLogTerm, LogEntries)),
-         #raft_state{application = App, current_term = CurrentTerm, leader_id = LeaderId} = State0) ->
+follower(
+    _,
+    ?REMOTE(
+        ?IDENTITY_REQUIRES_MIGRATION(_, LeaderId) = Sender,
+        ?HANDOVER(Ref, PrevLogIndex, PrevLogTerm, LogEntries)
+    ),
+    #raft_state{
+        application = App,
+        leader_id = LeaderId
+    } = State0
+) ->
     ?RAFT_COUNT('wa_raft.follower.handover'),
     ?RAFT_LOG_NOTICE(State0, "evaluating handover RPC from ~0p.", [Sender]),
     case ?RAFT_LEADER_ELIGIBLE(App) of
         true ->
             case append_entries(?FUNCTION_NAME, PrevLogIndex, PrevLogTerm, LogEntries, length(LogEntries), State0) of
-                {ok, true, _NewLastIndex, State1} ->
+                {ok, true, _, State1} ->
                     ?RAFT_LOG_NOTICE(State1, "immediately starting new election due to append success during handover RPC.", []),
-                    candidate_or_witness_state_transition(State1, CurrentTerm);
-                {ok, false, _NewLastIndex, State1} ->
+                    candidate_or_witness_state_transition(State1);
+                {ok, false, _, State1} ->
                     ?RAFT_COUNT('raft.follower.handover.rejected'),
                     ?RAFT_LOG_WARNING(State1, "failing handover request because append was rejected.", []),
                     send_rpc(Sender, ?HANDOVER_FAILED(Ref), State1),
@@ -1374,12 +1531,21 @@ follower(_Type, ?REMOTE(?IDENTITY_REQUIRES_MIGRATION(_, LeaderId) = Sender, ?HAN
     end;
 
 %% [Handover][HandoverFailed RPC] Followers should not act upon any incoming failed handover
-follower(_Type, ?REMOTE(_, ?HANDOVER_FAILED(_)), _State) ->
+follower(_, ?REMOTE(_, ?HANDOVER_FAILED(_)), #raft_state{}) ->
     keep_state_and_data;
 
 %% [Follower] handle timeout
 %% follower doesn't receive any heartbeat. starting a new election
-follower(state_timeout, _, #raft_state{application = App, leader_id = LeaderId, log_view = View, leader_heartbeat_ts = HeartbeatTs} = State) ->
+follower(
+    state_timeout,
+    _,
+    #raft_state{
+        application = App,
+        leader_id = LeaderId,
+        log_view = View,
+        leader_heartbeat_ts = HeartbeatTs
+    } = State
+) ->
     WaitingMs = case HeartbeatTs of
         undefined -> undefined;
         _         -> erlang:monotonic_time(millisecond) - HeartbeatTs
@@ -1396,7 +1562,7 @@ follower(state_timeout, _, #raft_state{application = App, leader_id = LeaderId, 
     end;
 
 %% [Command] Defer to common handling for generic RAFT server commands
-follower(Type, ?RAFT_COMMAND(_COMMAND, _Payload) = Event, State) ->
+follower(Type, ?RAFT_COMMAND(_, _) = Event, #raft_state{} = State) ->
     command(?FUNCTION_NAME, Type, Event, State);
 
 %% [Fallback] Report unhandled events
@@ -1413,10 +1579,28 @@ follower(Type, Event, #raft_state{} = State) ->
 %% leadership of the RAFT term.
 %%------------------------------------------------------------------------------
 
--spec candidate(Type :: enter, PreviousStateName :: state(), Data :: #raft_state{}) -> gen_statem:state_enter_result(state(), #raft_state{});
-               (Type :: gen_statem:event_type(), Event :: event(), Data :: #raft_state{}) -> gen_statem:event_handler_result(state(), #raft_state{}).
+-spec candidate
+    (
+        Type :: enter,
+        PreviousStateName :: state(),
+        Data :: #raft_state{}
+    ) -> gen_statem:state_enter_result(state(), #raft_state{});
+    (
+        Type :: gen_statem:event_type(),
+        Event :: event(),
+        Data :: #raft_state{}
+    ) -> gen_statem:event_handler_result(state(), #raft_state{}).
+
 %% [Enter] Node starts a new election upon entering the candidate state.
-candidate(enter, PreviousStateName, #raft_state{self = Self, current_term = CurrentTerm, log_view = View} = State0) ->
+candidate(
+    enter,
+    PreviousStateName,
+    #raft_state{
+        self = Self,
+        current_term = CurrentTerm,
+        log_view = View
+    } = State0
+) ->
     ?RAFT_COUNT('raft.leader.election_started'),
     ?RAFT_COUNT('raft.candidate.enter'),
     ?RAFT_LOG_NOTICE(State0, "becomes candidate from state ~0p.", [PreviousStateName]),
@@ -1442,14 +1626,27 @@ candidate(enter, PreviousStateName, #raft_state{self = Self, current_term = Curr
     {keep_state, State2, ?ELECTION_TIMEOUT(State2)};
 
 %% [Internal] Advance to newer term when requested
-candidate(internal, ?ADVANCE_TERM(NewTerm), #raft_state{current_term = CurrentTerm} = State) when NewTerm > CurrentTerm ->
+candidate(
+    internal,
+    ?ADVANCE_TERM(NewTerm),
+    #raft_state{
+        current_term = CurrentTerm
+    } = State
+) when NewTerm > CurrentTerm ->
     ?RAFT_COUNT('raft.candidate.advance_term'),
     ?RAFT_LOG_NOTICE(State, "advancing to new term ~0p.", [NewTerm]),
     State1 = advance_term(?FUNCTION_NAME, NewTerm, undefined, State),
     {next_state, follower_or_witness_state(State1), State1};
 
 %% [ForceElection] Resend vote requests with the 'force' type to force an election even if an active leader is available.
-candidate(internal, ?FORCE_ELECTION(Term), #raft_state{log_view = View, current_term = CurrentTerm} = State) when Term + 1 =:= CurrentTerm ->
+candidate(
+    internal,
+    ?FORCE_ELECTION(Term),
+    #raft_state{
+        log_view = View,
+        current_term = CurrentTerm
+    } = State
+) when Term + 1 =:= CurrentTerm ->
     ?RAFT_LOG_NOTICE(State, "accepts request to force election issued by the immediately prior term ~0p.", [Term]),
     % No changes to the log are expected during an election so we can just reload these values from the log view.
     LastLogIndex = wa_raft_log:last_index(View),
@@ -1458,7 +1655,7 @@ candidate(internal, ?FORCE_ELECTION(Term), #raft_state{log_view = View, current_
     keep_state_and_data;
 
 %% [Protocol] Parse any RPCs in network formats
-candidate(Type, Event, State) when is_tuple(Event), element(1, Event) =:= rpc ->
+candidate(Type, Event, #raft_state{} = State) when is_tuple(Event), element(1, Event) =:= rpc ->
     handle_rpc(Type, Event, ?FUNCTION_NAME, State);
 
 %% [AppendEntries RPC] Switch to follower because current term now has a leader (5.2, 5.3)
@@ -1467,13 +1664,20 @@ candidate(Type, ?REMOTE(Sender, ?APPEND_ENTRIES(_, _, _, _, _)) = Event, #raft_s
     {next_state, follower_or_witness_state(State), State, {next_event, Type, Event}};
 
 %% [RequestVote RPC] Candidates should ignore incoming vote requests as they always vote for themselves (5.2)
-candidate(_Type, ?REMOTE(_, ?REQUEST_VOTE(_, _, _)), _State) ->
+candidate(_, ?REMOTE(_, ?REQUEST_VOTE(_, _, _)), #raft_state{}) ->
     keep_state_and_data;
 
 %% [Vote RPC] Candidate receives an affirmative vote (5.2)
-candidate(cast, ?REMOTE(?IDENTITY_REQUIRES_MIGRATION(_, NodeId), ?VOTE(true)),
-          #raft_state{log_view = View, state_start_ts = StateStartTs,
-                      heartbeat_response_ts = HeartbeatResponse0, votes = Votes0} = State0) ->
+candidate(
+    cast,
+    ?REMOTE(?IDENTITY_REQUIRES_MIGRATION(_, NodeId), ?VOTE(true)),
+    #raft_state{
+        log_view = View,
+        state_start_ts = StateStartTs,
+        heartbeat_response_ts = HeartbeatResponse0,
+        votes = Votes0
+    } = State0
+) ->
     HeartbeatResponse1 = HeartbeatResponse0#{NodeId => erlang:monotonic_time(millisecond)},
     Votes1 = Votes0#{NodeId => true},
     State1 = State0#raft_state{heartbeat_response_ts = HeartbeatResponse1, votes = Votes1},
@@ -1492,7 +1696,7 @@ candidate(cast, ?REMOTE(?IDENTITY_REQUIRES_MIGRATION(_, NodeId), ?VOTE(true)),
     end;
 
 %% [Vote RPC] Candidates should ignore negative votes (5.2)
-candidate(cast, ?REMOTE(_, ?VOTE(_)), _State) ->
+candidate(cast, ?REMOTE(_, ?VOTE(_)), #raft_state{}) ->
     keep_state_and_data;
 
 %% [Handover][Handover RPC] Switch to follower because current term now has a leader (5.2, 5.3)
@@ -1501,7 +1705,7 @@ candidate(Type, ?REMOTE(_, ?HANDOVER(_, _, _, _)) = Event, #raft_state{} = State
     {next_state, follower_or_witness_state(State), State, {next_event, Type, Event}};
 
 %% [Handover][HandoverFailed RPC] Candidates should not act upon any incoming failed handover
-candidate(_Type, ?REMOTE(_, ?HANDOVER_FAILED(_)), _State) ->
+candidate(_, ?REMOTE(_, ?HANDOVER_FAILED(_)), #raft_state{}) ->
     keep_state_and_data;
 
 %% [Candidate] Handle Election Timeout (5.2)
@@ -1511,7 +1715,7 @@ candidate(state_timeout, _, #raft_state{votes = Votes} = State) ->
     {repeat_state, State};
 
 %% [Command] Defer to common handling for generic RAFT server commands
-candidate(Type, ?RAFT_COMMAND(_COMMAND, _Payload) = Event, State) ->
+candidate(Type, ?RAFT_COMMAND(_, _) = Event, #raft_state{} = State) ->
     command(?FUNCTION_NAME, Type, Event, State);
 
 %% [Fallback] Report unhandled events
@@ -1531,8 +1735,18 @@ candidate(Type, Event, #raft_state{} = State) ->
 %% in persistent so that the replica will remain disabled even when restarted.
 %%------------------------------------------------------------------------------
 
--spec disabled(Type :: enter, PreviousStateName :: state(), Data :: #raft_state{}) -> gen_statem:state_enter_result(state(), #raft_state{});
-              (Type :: gen_statem:event_type(), Event :: event(), Data :: #raft_state{}) -> gen_statem:event_handler_result(state(), #raft_state{}).
+-spec disabled
+    (
+        Type :: enter,
+        PreviousStateName :: state(),
+        Data :: #raft_state{}
+    ) -> gen_statem:state_enter_result(state(), #raft_state{});
+    (
+        Type :: gen_statem:event_type(),
+        Event :: event(),
+        Data :: #raft_state{}
+    ) -> gen_statem:event_handler_result(state(), #raft_state{}).
+
 disabled(enter, PreviousStateName, #raft_state{disable_reason = DisableReason} = State0) ->
     ?RAFT_COUNT('raft.disabled.enter'),
     ?RAFT_LOG_NOTICE(State0, "becomes disabled from state ~0p with reason ~0p.", [PreviousStateName, DisableReason]),
@@ -1543,23 +1757,29 @@ disabled(enter, PreviousStateName, #raft_state{disable_reason = DisableReason} =
     {keep_state, enter_state(?FUNCTION_NAME, State1)};
 
 %% [Internal] Advance to newer term when requested
-disabled(internal, ?ADVANCE_TERM(NewTerm), #raft_state{current_term = CurrentTerm} = State) when NewTerm > CurrentTerm ->
+disabled(
+    internal,
+    ?ADVANCE_TERM(NewTerm),
+    #raft_state{
+        current_term = CurrentTerm
+    } = State
+) when NewTerm > CurrentTerm ->
     ?RAFT_COUNT('raft.disabled.advance_term'),
     ?RAFT_LOG_NOTICE(State, "advancing to new term ~0p.", [NewTerm]),
     {keep_state, advance_term(?FUNCTION_NAME, NewTerm, undefined, State)};
 
 %% [Protocol] Parse any RPCs in network formats
-disabled(Type, Event, State) when is_tuple(Event), element(1, Event) =:= rpc ->
+disabled(Type, Event, #raft_state{} = State) when is_tuple(Event), element(1, Event) =:= rpc ->
     handle_rpc(Type, Event, ?FUNCTION_NAME, State);
 
 %% [AppendEntries RPC] Disabled servers should not act upon any incoming heartbeats as they should
 %%                     behave as if dead to the cluster
-disabled(_Type, ?REMOTE(_, ?APPEND_ENTRIES(_, _, _, _, _)), _State) ->
+disabled(_, ?REMOTE(_, ?APPEND_ENTRIES(_, _, _, _, _)), #raft_state{}) ->
     keep_state_and_data;
 
 %% [RequestVote RPC] Disabled servers should not act upon any vote requests as they should behave
 %%                   as if dead to the cluster
-disabled(_Type, ?REMOTE(_, ?REQUEST_VOTE(_, _, _)), _State) ->
+disabled(_, ?REMOTE(_, ?REQUEST_VOTE(_, _, _)), #raft_state{}) ->
     keep_state_and_data;
 
 disabled({call, From}, ?TRIGGER_ELECTION_COMMAND(_), #raft_state{}) ->
@@ -1575,7 +1795,7 @@ disabled({call, From}, ?ENABLE_COMMAND, #raft_state{} = State0) ->
     {next_state, stalled, State1, {reply, From, ok}};
 
 %% [Command] Defer to common handling for generic RAFT server commands
-disabled(Type, ?RAFT_COMMAND(_COMMAND, _Payload) = Event, State) ->
+disabled(Type, ?RAFT_COMMAND(_, _) = Event, #raft_state{} = State) ->
     command(?FUNCTION_NAME, Type, Event, State);
 
 %% [Fallback] Report unhandled events
@@ -1596,38 +1816,58 @@ disabled(Type, Event, #raft_state{} = State) ->
 %% unexpected replica loss.
 %%------------------------------------------------------------------------------
 
--spec witness(Type :: enter, PreviousStateName :: state(), Data :: #raft_state{}) -> gen_statem:state_enter_result(state(), #raft_state{});
-             (Type :: gen_statem:event_type(), Event :: event(), Data :: #raft_state{}) -> gen_statem:event_handler_result(state(), #raft_state{}).
+-spec witness
+    (
+        Type :: enter,
+        PreviousStateName :: state(),
+        Data :: #raft_state{}
+    ) -> gen_statem:state_enter_result(state(), #raft_state{});
+    (
+        Type :: gen_statem:event_type(),
+        Event :: event(),
+        Data :: #raft_state{}
+    ) -> gen_statem:event_handler_result(state(), #raft_state{}).
+
 witness(enter, PreviousStateName, #raft_state{} = State) ->
     ?RAFT_COUNT('raft.witness.enter'),
     ?RAFT_LOG_NOTICE(State, "becomes witness from state ~0p.", [PreviousStateName]),
     {keep_state, enter_state(?FUNCTION_NAME, State)};
 
 %% [Internal] Advance to newer term when requested
-witness(internal, ?ADVANCE_TERM(NewTerm), #raft_state{current_term = CurrentTerm} = State) when NewTerm > CurrentTerm ->
+witness(
+    internal,
+    ?ADVANCE_TERM(NewTerm),
+    #raft_state{
+        current_term = CurrentTerm
+    } = State
+) when NewTerm > CurrentTerm ->
     ?RAFT_COUNT('raft.witness.advance_term'),
     ?RAFT_LOG_NOTICE(State, "advancing to new term ~0p.", [NewTerm]),
     {keep_state, advance_term(?FUNCTION_NAME, NewTerm, undefined, State)};
 
 %% [Protocol] Parse any RPCs in network formats
-witness(Type, Event, State) when is_tuple(Event), element(1, Event) =:= rpc ->
+witness(Type, Event, #raft_state{} = State) when is_tuple(Event), element(1, Event) =:= rpc ->
     handle_rpc(Type, Event, ?FUNCTION_NAME, State);
 
 %% [AppendEntries RPC] Handle incoming heartbeats (5.2, 5.3)
-witness(Type, ?REMOTE(Leader, ?APPEND_ENTRIES(PrevLogIndex, PrevLogTerm, Entries, CommitIndex, TrimIndex)), State) ->
+witness(
+    Type,
+    ?REMOTE(Leader, ?APPEND_ENTRIES(PrevLogIndex, PrevLogTerm, Entries, CommitIndex, TrimIndex)),
+    #raft_state{} = State
+) ->
     handle_heartbeat(?FUNCTION_NAME, Type, Leader, PrevLogIndex, PrevLogTerm, Entries, CommitIndex, TrimIndex, State);
 
 %% [AppendEntriesResponse RPC] Witnesses should not act upon any incoming heartbeat responses (5.2)
-witness(_Type, ?REMOTE(_, ?APPEND_ENTRIES_RESPONSE(_, _, _, _)), _State) ->
+witness(_, ?REMOTE(_, ?APPEND_ENTRIES_RESPONSE(_, _, _, _)), #raft_state{}) ->
     keep_state_and_data;
 
 %% [Handover][Handover RPC] Witnesses should not receive handover requests
-witness(_Type, ?REMOTE(Sender, ?HANDOVER(Reference, _, _, _)), #raft_state{} = State) ->
+witness(_, ?REMOTE(Sender, ?HANDOVER(Reference, _, _, _)), #raft_state{} = State) ->
     send_rpc(Sender, ?HANDOVER_FAILED(Reference), State),
     keep_state_and_data;
 
 %% [Handover][HandoverFailed RPC] Witnesses should not act upon any incoming failed handover
-witness(_Type, ?REMOTE(_, ?HANDOVER_FAILED(_)), _State) ->
+witness(_, ?REMOTE(_, ?HANDOVER_FAILED(_)), #raft_state{}) ->
     keep_state_and_data;
 
 witness({call, From}, ?TRIGGER_ELECTION_COMMAND(_), #raft_state{}) ->
@@ -1637,15 +1877,15 @@ witness({call, From}, ?PROMOTE_COMMAND(_, _), #raft_state{}) ->
     {keep_state_and_data, {reply, From, {error, invalid_state}}};
 
 %% [RequestVote RPC] Handle incoming vote requests (5.2)
-witness(_Type, ?REMOTE(Candidate, ?REQUEST_VOTE(_, CandidateIndex, CandidateTerm)), State) ->
+witness(_, ?REMOTE(Candidate, ?REQUEST_VOTE(_, CandidateIndex, CandidateTerm)), #raft_state{} = State) ->
     request_vote_impl(?FUNCTION_NAME, Candidate, CandidateIndex, CandidateTerm, State);
 
 %% [Vote RPC] Witnesses should not act upon any incoming votes as they cannot become leader
-witness(_Type, ?REMOTE(_, ?VOTE(_)), _State) ->
+witness(_, ?REMOTE(_, ?VOTE(_)), #raft_state{}) ->
     keep_state_and_data;
 
 %% [Command] Defer to common handling for generic RAFT server commands
-witness(Type, ?RAFT_COMMAND(_COMMAND, _Payload) = Event, State) ->
+witness(Type, ?RAFT_COMMAND(_, _) = Event, #raft_state{} = State) ->
     command(?FUNCTION_NAME, Type, Event, State);
 
 %% [Fallback] Report unhandled events
@@ -1660,67 +1900,103 @@ witness(Type, Event, #raft_state{} = State) ->
 %% handling for a command defined within the state-specific callback itself.
 %%------------------------------------------------------------------------------
 
--spec command(state(), gen_statem:event_type(), command(), #raft_state{}) -> gen_statem:event_handler_result(state(), #raft_state{}).
+-spec command(
+    State :: state(),
+    Type :: gen_statem:event_type(),
+    Command :: command(),
+    Data :: #raft_state{}
+) -> gen_statem:event_handler_result(state(), #raft_state{}).
+
 %% [Commit] Non-leader nodes should fail commits with {error, not_leader}.
-command(StateName, cast, ?COMMIT_COMMAND({Key, _}),
-        #raft_state{table = Table, partition = Partition, leader_id = LeaderId} = State) when StateName =/= leader ->
-    ?RAFT_LOG_WARNING(StateName, State, "commit with key ~0p fails. Leader is ~0p.", [Key, LeaderId]),
+command(
+    State,
+    cast,
+    ?COMMIT_COMMAND({Key, _}),
+    #raft_state{
+        table = Table,
+        partition = Partition,
+        leader_id = LeaderId
+    } = Data
+) when State =/= leader ->
+    ?RAFT_LOG_WARNING(State, Data, "commit with key ~0p fails. Leader is ~0p.", [Key, LeaderId]),
     wa_raft_queue:fulfill_incomplete_commit(Table, Partition, Key, {error, not_leader}),
     keep_state_and_data;
+
 %% [Strong Read] Non-leader nodes are not eligible for strong reads.
-command(StateName, cast, ?READ_COMMAND({From, _}),
-        #raft_state{table = Table, partition = Partition, leader_id = LeaderId} = State) when StateName =/= leader ->
-    ?RAFT_LOG_WARNING(StateName, State, "strong read fails. Leader is ~p.", [LeaderId]),
+command(
+    State,
+    cast,
+    ?READ_COMMAND({From, _}),
+    #raft_state{
+        table = Table,
+        partition = Partition,
+        leader_id = LeaderId
+    } = Data
+) when State =/= leader ->
+    ?RAFT_LOG_WARNING(State, Data, "strong read fails. Leader is ~p.", [LeaderId]),
     wa_raft_queue:fulfill_incomplete_read(Table, Partition, From, {error, not_leader}),
     keep_state_and_data;
+
 %% [Notify Complete] Attempt to send more log entries to storage if applicable.
-command(StateName, cast, ?NOTIFY_COMPLETE_COMMAND(), #raft_state{table = Table, partition = Partition} = State) when StateName =:= leader; StateName =:= follower; StateName =:= witness ->
+command(
+    State,
+    cast,
+    ?NOTIFY_COMPLETE_COMMAND(),
+    #raft_state{
+        table = Table,
+        partition = Partition
+    } = Data
+) when State =:= leader; State =:= follower; State =:= witness ->
     case wa_raft_queue:apply_queue_size(Table, Partition) of
         0 ->
-            NewState = case StateName of
-                leader -> apply_log_leader(State);
-                _ -> apply_log_follower(StateName, infinity, State)
+            NewState = case State of
+                leader -> apply_log_leader(Data);
+                _ -> apply_log_follower(State, infinity, Data)
             end,
             {keep_state, NewState};
         _ ->
             keep_state_and_data
     end;
-command(_StateName, cast, ?NOTIFY_COMPLETE_COMMAND(), _State) ->
+command(_, cast, ?NOTIFY_COMPLETE_COMMAND(), #raft_state{}) ->
     keep_state_and_data;
+
 %% [Status] Get status of node.
-command(StateName, {call, From}, ?STATUS_COMMAND, State) ->
+command(State, {call, From}, ?STATUS_COMMAND, #raft_state{} = Data) ->
     Status = [
-        {state, StateName},
-        {id, State#raft_state.self#raft_identity.node},
-        {table, State#raft_state.table},
-        {partition, State#raft_state.partition},
-        {partition_path, State#raft_state.partition_path},
-        {current_term, State#raft_state.current_term},
-        {voted_for, State#raft_state.voted_for},
-        {commit_index, State#raft_state.commit_index},
-        {last_applied, State#raft_state.last_applied},
-        {leader_id, State#raft_state.leader_id},
-        {next_indices, State#raft_state.next_indices},
-        {match_indices, State#raft_state.match_indices},
-        {log_module, wa_raft_log:provider(State#raft_state.log_view)},
-        {log_first, wa_raft_log:first_index(State#raft_state.log_view)},
-        {log_last, wa_raft_log:last_index(State#raft_state.log_view)},
-        {votes, State#raft_state.votes},
-        {inflight_applies, wa_raft_queue:apply_queue_size(State#raft_state.table, State#raft_state.partition)},
-        {disable_reason, State#raft_state.disable_reason},
-        {config, config(State)},
-        {config_index, config_index(State)},
-        {witness, is_self_witness(State)}
+        {state, State},
+        {id, Data#raft_state.self#raft_identity.node},
+        {table, Data#raft_state.table},
+        {partition, Data#raft_state.partition},
+        {partition_path, Data#raft_state.partition_path},
+        {current_term, Data#raft_state.current_term},
+        {voted_for, Data#raft_state.voted_for},
+        {commit_index, Data#raft_state.commit_index},
+        {last_applied, Data#raft_state.last_applied},
+        {leader_id, Data#raft_state.leader_id},
+        {next_indices, Data#raft_state.next_indices},
+        {match_indices, Data#raft_state.match_indices},
+        {log_module, wa_raft_log:provider(Data#raft_state.log_view)},
+        {log_first, wa_raft_log:first_index(Data#raft_state.log_view)},
+        {log_last, wa_raft_log:last_index(Data#raft_state.log_view)},
+        {votes, Data#raft_state.votes},
+        {inflight_applies, wa_raft_queue:apply_queue_size(Data#raft_state.table, Data#raft_state.partition)},
+        {disable_reason, Data#raft_state.disable_reason},
+        {config, config(Data)},
+        {config_index, config_index(Data)},
+        {witness, is_self_witness(Data)}
     ],
     {keep_state_and_data, {reply, From, Status}};
 
 %% [Promote] Request full replica nodes to start a new election.
 command(
-    StateName,
+    State,
     {call, From},
     ?TRIGGER_ELECTION_COMMAND(TermOrOffset),
-    #raft_state{application = App, current_term = CurrentTerm} = State
-) when StateName =/= stalled, StateName =/= witness, StateName =/= disabled ->
+    #raft_state{
+        application = App,
+        current_term = CurrentTerm
+    } = Data
+) when State =/= stalled, State =/= witness, State =/= disabled ->
     Term = case TermOrOffset of
         current -> CurrentTerm;
         next -> CurrentTerm + 1;
@@ -1731,31 +2007,36 @@ command(
         true ->
             case ?RAFT_LEADER_ELIGIBLE(App) of
                 true ->
-                    ?RAFT_LOG_NOTICE(StateName, State, "switching to candidate after promotion request.", []),
+                    ?RAFT_LOG_NOTICE(State, Data, "switching to candidate after promotion request.", []),
                     NewState = case Term > CurrentTerm of
-                        true -> advance_term(StateName, Term, undefined, State);
-                        false -> State
+                        true -> advance_term(State, Term, undefined, Data);
+                        false -> Data
                     end,
-                    case StateName of
+                    case State of
                         candidate -> {repeat_state, NewState, {reply, From, ok}};
-                        _Other    -> {next_state, candidate, NewState, {reply, From, ok}}
+                        _         -> {next_state, candidate, NewState, {reply, From, ok}}
                     end;
                 false ->
-                    ?RAFT_LOG_WARNING(StateName, State, "cannot be promoted as candidate while ineligible.", []),
+                    ?RAFT_LOG_WARNING(State, Data, "cannot be promoted as candidate while ineligible.", []),
                     {keep_state_and_data, {reply, From, {error, ineligible}}}
             end;
         false ->
-            ?RAFT_LOG_WARNING(StateName, State, "refusing to promote to current, older, or invalid term ~0p.", [Term]),
+            ?RAFT_LOG_WARNING(State, Data, "refusing to promote to current, older, or invalid term ~0p.", [Term]),
             {keep_state_and_data, {reply, From, {error, rejected}}}
     end;
 
 %% [Promote] Non-disabled nodes check if eligible to promote and then promote to leader.
 command(
-    StateName,
+    State,
     {call, From},
     ?PROMOTE_COMMAND(TermOrOffset, Force),
-    #raft_state{application = App, current_term = CurrentTerm, leader_heartbeat_ts = HeartbeatTs, leader_id = LeaderId} = State
-) when StateName =/= stalled; StateName =/= witness; StateName =/= disabled ->
+    #raft_state{
+        application = App,
+        current_term = CurrentTerm,
+        leader_heartbeat_ts = HeartbeatTs,
+        leader_id = LeaderId
+    } = Data
+) when State =/= stalled; State =/= witness; State =/= disabled ->
     Now = erlang:monotonic_time(millisecond),
     Eligible = ?RAFT_LEADER_ELIGIBLE(App),
     HeartbeatGracePeriodMs = ?RAFT_PROMOTION_GRACE_PERIOD(App) * 1000,
@@ -1765,25 +2046,25 @@ command(
         {next, Offset} -> CurrentTerm + Offset;
         _ -> TermOrOffset
     end,
-    Membership = get_config_members(config(State)),
+    Membership = get_config_members(config(Data)),
     Allowed = if
         % Prevent promotions to older or invalid terms
         not is_integer(Term) orelse Term < CurrentTerm ->
-            ?RAFT_LOG_WARNING(StateName, State, "cannot attempt promotion to current, older, or invalid term ~0p.", [Term]),
+            ?RAFT_LOG_WARNING(State, Data, "cannot attempt promotion to current, older, or invalid term ~0p.", [Term]),
             invalid_term;
         Term =:= CurrentTerm andalso LeaderId =/= undefined ->
-            ?RAFT_LOG_WARNING(StateName, State, "refusing to promote to leader of current term already led by ~0p.", [LeaderId]),
+            ?RAFT_LOG_WARNING(State, Data, "refusing to promote to leader of current term already led by ~0p.", [LeaderId]),
             invalid_term;
         % Prevent promotions that will immediately result in a resignation.
         not Eligible ->
-            ?RAFT_LOG_WARNING(StateName, State, "cannot promote to leader as the node is ineligible.", []),
+            ?RAFT_LOG_WARNING(State, Data, "cannot promote to leader as the node is ineligible.", []),
             ineligible;
-        StateName =:= witness ->
-            ?RAFT_LOG_WARNING(StateName, State, "cannot promote a witness node.", []),
+        State =:= witness ->
+            ?RAFT_LOG_WARNING(State, Data, "cannot promote a witness node.", []),
             invalid_state;
         % Prevent promotions to any operational state when there is no cluster membership configuration.
         Membership =:= [] ->
-            ?RAFT_LOG_WARNING(StateName, State, "cannot promote to leader with no existing membership.", []),
+            ?RAFT_LOG_WARNING(State, Data, "cannot promote to leader with no existing membership.", []),
             invalid_configuration;
         Force ->
             true;
@@ -1792,73 +2073,104 @@ command(
         Now - HeartbeatTs >= HeartbeatGracePeriodMs ->
             true;
         true ->
-            ?RAFT_LOG_WARNING(StateName, State, "rejecting request to promote to leader as a valid heartbeat was recently received.", []),
+            ?RAFT_LOG_WARNING(State, Data, "rejecting request to promote to leader as a valid heartbeat was recently received.", []),
             rejected
     end,
     case Allowed of
         true ->
-            ?RAFT_LOG_NOTICE(StateName, State, "is promoting to leader of term ~0p.", [Term]),
+            ?RAFT_LOG_NOTICE(State, Data, "is promoting to leader of term ~0p.", [Term]),
             NewState = case Term > CurrentTerm of
-                true -> advance_term(StateName, Term, node(), State);
-                false -> State
+                true -> advance_term(State, Term, node(), Data);
+                false -> Data
             end,
-            case StateName of
+            case State of
                 leader -> {repeat_state, NewState, {reply, From, ok}};
                 _      -> {next_state, leader, NewState, {reply, From, ok}}
             end;
         Reason ->
             {keep_state_and_data, {reply, From, {error, Reason}}}
     end;
+
 %% [Resign] Non-leader nodes cannot resign.
-command(StateName, {call, From}, ?RESIGN_COMMAND, #raft_state{} = State) when StateName =/= leader ->
-    ?RAFT_LOG_NOTICE(StateName, State, "not resigning because we are not leader.", []),
+command(State, {call, From}, ?RESIGN_COMMAND, #raft_state{} = Data) when State =/= leader ->
+    ?RAFT_LOG_NOTICE(State, Data, "not resigning because we are not leader.", []),
     {keep_state_and_data, {reply, From, {error, not_leader}}};
+
 %% [AdjustMembership] Non-leader nodes cannot adjust their config.
-command(StateName, Type, ?ADJUST_MEMBERSHIP_COMMAND(Action, Peer, _), #raft_state{} = State) when StateName =/= leader ->
-    ?RAFT_LOG_NOTICE(StateName, State, "cannot ~0p peer ~0p because we are not leader.", [Action, Peer]),
+command(
+    State,
+    Type,
+    ?ADJUST_MEMBERSHIP_COMMAND(Action, Peer, _),
+    #raft_state{} = Data
+) when State =/= leader ->
+    ?RAFT_LOG_NOTICE(State, Data, "cannot ~0p peer ~0p because we are not leader.", [Action, Peer]),
     reply(Type, {error, not_leader}),
-    {keep_state, State};
+    {keep_state, Data};
+
 %% [Snapshot Available] Follower and candidate nodes might switch to stalled to install snapshot.
-command(StateName, Type, ?SNAPSHOT_AVAILABLE_COMMAND(_, #raft_log_pos{index = SnapshotIndex}) = Event,
-        #raft_state{last_applied = LastAppliedIndex} = State)
-            when StateName =:= follower orelse StateName =:= candidate orelse StateName =:= witness ->
+command(
+    State,
+    Type,
+    ?SNAPSHOT_AVAILABLE_COMMAND(_, #raft_log_pos{index = SnapshotIndex}) = Event,
+    #raft_state{
+        last_applied = LastAppliedIndex
+    } = Data
+) when State =:= follower; State =:= candidate; State =:= witness ->
     case SnapshotIndex > LastAppliedIndex of
         true ->
-            ?RAFT_LOG_NOTICE(StateName, State, "at ~0p is notified of a newer snapshot at ~0p.", [LastAppliedIndex, SnapshotIndex]),
-            {next_state, stalled, State, {next_event, Type, Event}};
+            ?RAFT_LOG_NOTICE(State, Data, "at ~0p is notified of a newer snapshot at ~0p.", [LastAppliedIndex, SnapshotIndex]),
+            {next_state, stalled, Data, {next_event, Type, Event}};
         false ->
-            ?RAFT_LOG_NOTICE(StateName, State, "at ~0p is ignoring an older snapshot at ~0p.", [LastAppliedIndex, SnapshotIndex]),
+            ?RAFT_LOG_NOTICE(State, Data, "at ~0p is ignoring an older snapshot at ~0p.", [LastAppliedIndex, SnapshotIndex]),
             reply(Type, {error, rejected}),
             keep_state_and_data
     end;
+
 %% [Snapshot Available] Leader and disabled nodes should not install snapshots.
-command(StateName, Type, ?SNAPSHOT_AVAILABLE_COMMAND(_Root, _Position), _State) when StateName =:= leader; StateName =:= disabled ->
+command(
+    State,
+    Type,
+    ?SNAPSHOT_AVAILABLE_COMMAND(_, _),
+    #raft_state{}
+) when State =:= leader; State =:= disabled ->
     reply(Type, {error, rejected}),
     keep_state_and_data;
 
 %% [Handover Candidates] Non-leader nodes cannot serve handovers.
-command(StateName, {call, From}, ?HANDOVER_CANDIDATES_COMMAND, #raft_state{}) when StateName =/= leader ->
+command(State, {call, From}, ?HANDOVER_CANDIDATES_COMMAND, #raft_state{}) when State =/= leader ->
     {keep_state_and_data, {reply, From, {error, not_leader}}};
+
 %% [Handover] Non-leader nodes cannot serve handovers.
-command(StateName, Type, ?HANDOVER_COMMAND(_Peer), #raft_state{}) when StateName =/= leader ->
+command(State, Type, ?HANDOVER_COMMAND(_), #raft_state{}) when State =/= leader ->
     reply(Type, {error, not_leader}),
     keep_state_and_data;
+
 %% [Enable] Non-disabled nodes are already enabled.
-command(StateName, {call, From}, ?ENABLE_COMMAND, #raft_state{}) when StateName =/= disabled ->
+command(State, {call, From}, ?ENABLE_COMMAND, #raft_state{}) when State =/= disabled ->
     {keep_state_and_data, {reply, From, {error, already_enabled}}};
+
 %% [Disable] All nodes should disable by setting RAFT state disable_reason.
-command(StateName, {call, From}, ?DISABLE_COMMAND(Reason), #raft_state{self = ?IDENTITY_REQUIRES_MIGRATION(_, NodeId), leader_id = LeaderId} = State0) ->
-    ?RAFT_LOG_NOTICE(StateName, State0, "disabling due to ~0p.", [Reason]),
-    State1 = State0#raft_state{disable_reason = Reason},
-    State2 = case NodeId =:= LeaderId of
-        true  -> clear_leader(StateName, State1);
-        false -> State1
+command(
+    State,
+    {call, From},
+    ?DISABLE_COMMAND(Reason),
+    #raft_state{
+        self = ?IDENTITY_REQUIRES_MIGRATION(_, NodeId),
+        leader_id = LeaderId
+    } = Data0
+) ->
+    ?RAFT_LOG_NOTICE(State, Data0, "disabling due to ~0p.", [Reason]),
+    Data1 = Data0#raft_state{disable_reason = Reason},
+    Data2 = case NodeId =:= LeaderId of
+        true  -> clear_leader(State, Data1);
+        false -> Data1
     end,
-    wa_raft_durable_state:store(State2),
-    {next_state, disabled, State2, {reply, From, ok}};
+    wa_raft_durable_state:store(Data2),
+    {next_state, disabled, Data2, {reply, From, ok}};
+
 %% [Fallback] Drop unknown command calls.
-command(StateName, Type, Event, #raft_state{} = State) ->
-    ?RAFT_LOG_NOTICE(StateName, State, "dropping unhandled ~0p command ~0P", [Type, Event, 20]),
+command(State, Type, Event, #raft_state{} = Data) ->
+    ?RAFT_LOG_NOTICE(State, Data, "dropping unhandled ~0p command ~0P", [Type, Event, 20]),
     keep_state_and_data.
 
 %%------------------------------------------------------------------------------
@@ -1873,9 +2185,9 @@ member(Peer, Config) ->
     member(Peer, Config, false).
 
 -spec member(Peer :: peer(), Config :: config(), Default :: boolean()) -> boolean().
-member(Peer, #{membership := Membership}, _Default) ->
+member(Peer, #{membership := Membership}, _) ->
     lists:member(Peer, Membership);
-member(_Peer, _Config, Default) ->
+member(_, _, Default) ->
     Default.
 
 %% Returns true only if the membership of the current configuration contains exactly
@@ -1887,7 +2199,7 @@ is_single_member(Peer, #{membership := Membership, witness := Witnesses}) ->
     Membership =:= [Peer] andalso not lists:member(Peer, Witnesses);
 is_single_member(Peer, #{membership := Membership}) ->
     Membership =:= [Peer];
-is_single_member(_Peer, #{}) ->
+is_single_member(_, #{}) ->
     false.
 
 %% Get the non-empty membership list from the provided config. Raises an error
@@ -1895,13 +2207,13 @@ is_single_member(_Peer, #{}) ->
 -spec config_membership(Config :: config()) -> Membership :: membership().
 config_membership(#{membership := Membership}) when Membership =/= [] ->
     Membership;
-config_membership(_Config) ->
+config_membership(_) ->
     error(membership_not_set).
 
 -spec config_witnesses(Config :: config()) -> Witnesses :: [peer()].
 config_witnesses(#{witness := Witnesses}) ->
     Witnesses;
-config_witnesses(_Config) ->
+config_witnesses(_) ->
     [].
 
 -spec is_self_witness(#raft_state{}) -> boolean().
@@ -1911,7 +2223,7 @@ is_self_witness(#raft_state{self = #raft_identity{name = Name, node = Node}} = R
 -spec config_identities(Config :: config()) -> Peers :: [#raft_identity{}].
 config_identities(#{membership := Membership}) ->
     [#raft_identity{name = Name, node = Node} || {Name, Node} <- Membership];
-config_identities(_Config) ->
+config_identities(_) ->
     error(membership_not_set).
 
 -spec config_replica_identities(Config :: config()) -> Replicas :: [#raft_identity{}].
@@ -1919,7 +2231,7 @@ config_replica_identities(#{membership := Membership, witness := Witnesses}) ->
     [#raft_identity{name = Name, node = Node} || {Name, Node} <- Membership -- Witnesses];
 config_replica_identities(#{membership := Membership}) ->
     [#raft_identity{name = Name, node = Node} || {Name, Node} <- Membership];
-config_replica_identities(_Config) ->
+config_replica_identities(_) ->
     error(membership_not_set).
 
 %% Returns the current effective RAFT configuration. This is the most recent configuration
@@ -1929,7 +2241,7 @@ config(#raft_state{log_view = View, cached_config = {ConfigIndex, Config}}) ->
     case wa_raft_log:config(View) of
         {ok, LogConfigIndex, LogConfig} when LogConfigIndex > ConfigIndex ->
             LogConfig;
-        {ok, _LogConfigIndex, _LogConfig} ->
+        {ok, _, _} ->
             % This case will normally only occur when the log has leftover log entries from
             % previous incarnations of the RAFT server that have been applied but not yet
             % trimmed this incarnation.
@@ -1939,14 +2251,14 @@ config(#raft_state{log_view = View, cached_config = {ConfigIndex, Config}}) ->
     end;
 config(#raft_state{log_view = View}) ->
     case wa_raft_log:config(View) of
-        {ok, _LogConfigIndex, LogConfig} -> LogConfig;
+        {ok, _, LogConfig} -> LogConfig;
         not_found -> make_config()
     end.
 
 -spec config_index(State :: #raft_state{}) -> ConfigIndex :: wa_raft_log:log_index().
-config_index(#raft_state{log_view = View, cached_config = {ConfigIndex, _Config}}) ->
+config_index(#raft_state{log_view = View, cached_config = {ConfigIndex, _}}) ->
     case wa_raft_log:config(View) of
-        {ok, LogConfigIndex, _LogConfig} ->
+        {ok, LogConfigIndex, _} ->
             % The case where the log contains a config that is already applied generally
             % only occurs after a restart as any log entries whose trim was deferred
             % will become visible again.
@@ -1956,7 +2268,7 @@ config_index(#raft_state{log_view = View, cached_config = {ConfigIndex, _Config}
     end;
 config_index(#raft_state{log_view = View}) ->
     case wa_raft_log:config(View) of
-        {ok, LogConfigIndex, _LogConfig} -> LogConfigIndex;
+        {ok, LogConfigIndex, _} -> LogConfigIndex;
         not_found -> 0
     end.
 
@@ -1984,20 +2296,24 @@ load_label_state(#raft_state{storage = Storage, label_module = LabelModule}) whe
         {error, Reason} ->
             error({failed_to_load_label_state, Reason})
     end;
-load_label_state(_State) ->
+load_label_state(_) ->
     undefined.
 
 %% After an apply is sent to storage, check to see if it is a new configuration
 %% being applied. If it is, then update the cached configuration.
--spec maybe_update_config(Index :: wa_raft_log:log_index(), Term :: wa_raft_log:log_term(),
-                          Op :: wa_raft_log:log_op() | undefined, State :: #raft_state{}) -> NewState :: #raft_state{}.
-maybe_update_config(Index, _Term, {_Ref, {config, Config}}, #raft_state{table = Table, partition = Partition} = State) ->
+-spec maybe_update_config(
+    Index :: wa_raft_log:log_index(),
+    Term :: wa_raft_log:log_term(),
+    Op :: wa_raft_log:log_op() | undefined,
+    State :: #raft_state{}
+) -> NewState :: #raft_state{}.
+maybe_update_config(Index, _, {_, {config, Config}}, #raft_state{table = Table, partition = Partition} = State) ->
     wa_raft_info:set_membership(Table, Partition, maps:get(membership, Config, [])),
     State#raft_state{cached_config = {Index, Config}};
-maybe_update_config(Index, _Term, {_Ref, _Label, {config, Config}}, #raft_state{table = Table, partition = Partition} = State) ->
+maybe_update_config(Index, _, {_, _, {config, Config}}, #raft_state{table = Table, partition = Partition} = State) ->
     wa_raft_info:set_membership(Table, Partition, maps:get(membership, Config, [])),
     State#raft_state{cached_config = {Index, Config}};
-maybe_update_config(_Index, _Term, _Op, State) ->
+maybe_update_config(_, _, _, #raft_state{} = State) ->
     State.
 
 %%------------------------------------------------------------------------------
@@ -2024,13 +2340,13 @@ random_election_timeout(#raft_state{application = App}) ->
 -spec get_log_entry(State0 :: #raft_state{}, Op :: wa_raft_acceptor:op()) -> {State1 :: #raft_state{}, LogEntry :: wa_raft_log:log_entry()}.
 get_log_entry(#raft_state{current_term = CurrentTerm, label_module = undefined} = State0, Op) ->
     {State0, {CurrentTerm, Op}};
-get_log_entry(#raft_state{current_term = CurrentTerm, last_label = undefined} = State0, {_Ref, noop} = Op) ->
+get_log_entry(#raft_state{current_term = CurrentTerm, last_label = undefined} = State0, {_, noop} = Op) ->
     {State0, {CurrentTerm, Op}};
 get_log_entry(#raft_state{current_term = CurrentTerm, last_label = LastLabel} = State0, {Ref, noop}) ->
     {State0, {CurrentTerm, {Ref, LastLabel, noop}}};
-get_log_entry(#raft_state{current_term = CurrentTerm, last_label = undefined} = State0, {_Ref, {config, _Config}} = Op) ->
+get_log_entry(#raft_state{current_term = CurrentTerm, last_label = undefined} = State0, {_, {config, _}} = Op) ->
     {State0, {CurrentTerm, Op}};
-get_log_entry(#raft_state{current_term = CurrentTerm, last_label = LastLabel} = State0, {Ref, {config, _Config} = Command}) ->
+get_log_entry(#raft_state{current_term = CurrentTerm, last_label = LastLabel} = State0, {Ref, {config, _} = Command}) ->
     {State0, {CurrentTerm, {Ref, LastLabel, Command}}};
 get_log_entry(#raft_state{current_term = CurrentTerm, label_module = LabelModule, last_label = LastLabel} = State0, {Ref, Command}) ->
     NewLabel = LabelModule:new_label(LastLabel, Command),
@@ -2052,8 +2368,14 @@ apply_single_node_cluster(#raft_state{self = Self, log_view = View} = Data) ->
 
 %% Leader - check quorum and advance commit index if possible
 -spec maybe_advance(Data :: #raft_state{}) -> #raft_state{}.
-maybe_advance(#raft_state{log_view = View, commit_index = CommitIndex,
-                          match_indices = MatchIndices, first_current_term_log_index = TermStartIndex} = Data) ->
+maybe_advance(
+    #raft_state{
+        log_view = View,
+        commit_index = CommitIndex,
+        match_indices = MatchIndices,
+        first_current_term_log_index = TermStartIndex
+    } = Data
+) ->
     LogLast = wa_raft_log:last_index(View),
     case max_index_to_apply(MatchIndices, LogLast, config(Data)) of
         % Raft paper section 5.4.3 - Only log entries from the leader’s current term are committed
@@ -2066,7 +2388,7 @@ maybe_advance(#raft_state{log_view = View, commit_index = CommitIndex,
             Data;
         QuorumIndex when QuorumIndex > CommitIndex ->
             Data#raft_state{commit_index = QuorumIndex};
-        _QuorumIndex ->
+        _ ->
             Data
     end.
 
@@ -2076,14 +2398,22 @@ maybe_advance(#raft_state{log_view = View, commit_index = CommitIndex,
 %       terms here (5.4.2) because we only update the CommitIndex broadcast by the leader
 %       when we actually apply the log entry on the leader. (See `apply_log` for information
 %       about how this rule is enforced there.)
--spec max_index_to_apply(#{node() => wa_raft_log:log_index()}, wa_raft_log:log_index(), Config :: config()) -> wa_raft_log:log_index().
-max_index_to_apply(MatchIndex, LastIndex, Config) ->
-    compute_quorum(MatchIndex#{node() => LastIndex}, 0, Config).
+-spec max_index_to_apply(
+    MatchIndices :: #{node() => wa_raft_log:log_index()},
+    LastIndex :: wa_raft_log:log_index(),
+    Config :: config()
+) -> wa_raft_log:log_index().
+max_index_to_apply(MatchIndices, LastIndex, Config) ->
+    compute_quorum(MatchIndices#{node() => LastIndex}, 0, Config).
 
 %% Create a new list with exactly one element for each member in the membership
 %% defined in the provided configuration taking the value mapped to each member in
 %% the provided map or a provided default if a pairing is not available.
--spec to_member_list(Mapping :: #{node() => Value}, Default :: Value, Config :: config()) -> Normalized :: [Value].
+-spec to_member_list(
+    Mapping :: #{node() => Value},
+    Default :: Value,
+    Config :: config()
+) -> Normalized :: [Value].
 to_member_list(Mapping, Default, Config) ->
     [maps:get(Node, Mapping, Default) || {_, Node} <- config_membership(Config)].
 
@@ -2091,7 +2421,11 @@ to_member_list(Mapping, Default, Config) ->
 %% the values represented by the given a mapping of peers (see note on config about
 %% RAFT RPC ids) to values assuming a default value for peers who are not represented
 %% in the mapping.
--spec compute_quorum(Mapping :: #{node() => Value}, Default :: Value, Config :: config()) -> Quorum :: Value.
+-spec compute_quorum(
+    Mapping :: #{node() => Value},
+    Default :: Value,
+    Config :: config()
+ ) -> Quorum :: Value.
 compute_quorum(Mapping, Default, Config) ->
     compute_quorum(to_member_list(Mapping, Default, Config)).
 
@@ -2106,7 +2440,13 @@ compute_quorum([_|_] = Values) ->
     lists:nth(Index, lists:sort(Values)).
 
 -spec apply_log_leader(Data :: #raft_state{}) -> #raft_state{}.
-apply_log_leader(#raft_state{last_applied = LastApplied, current_term = CurrentTerm, match_indices = MatchIndices} = Data) ->
+apply_log_leader(
+    #raft_state{
+        last_applied = LastApplied,
+        current_term = CurrentTerm,
+        match_indices = MatchIndices
+    } = Data
+) ->
     TrimIndex = lists:min(to_member_list(MatchIndices#{node() => LastApplied}, 0, config(Data))),
     apply_log(leader, CurrentTerm, TrimIndex, Data).
 
@@ -2124,9 +2464,19 @@ apply_log_follower(State, TrimIndex, Data) ->
     TrimIndex :: wa_raft_log:log_index() | infinity,
     Data :: #raft_state{}
 ) -> #raft_state{}.
-apply_log(State, EffectiveTerm, TrimIndex, #raft_state{application = App, table = Table, partition = Partition,
-                                                       log_view = View, commit_index = CommitIndex,
-                                                       last_applied = LastApplied} = Data0) when CommitIndex > LastApplied ->
+apply_log(
+    State,
+    EffectiveTerm,
+    TrimIndex,
+    #raft_state{
+        application = App,
+        table = Table,
+        partition = Partition,
+        log_view = View,
+        commit_index = CommitIndex,
+        last_applied = LastApplied
+    } = Data0
+) when CommitIndex > LastApplied ->
     StartT = os:timestamp(),
     case wa_raft_queue:apply_queue_full(Table, Partition) of
         false ->
@@ -2157,7 +2507,7 @@ apply_log(State, EffectiveTerm, TrimIndex, #raft_state{application = App, table 
             ?RAFT_GATHER('raft.apply_log.latency_us', timer:now_diff(os:timestamp(), StartT)),
             Data0
     end;
-apply_log(_State, _EffectiveTerm, _TrimIndex, Data) ->
+apply_log(_, _, _, #raft_state{} = Data) ->
     Data.
 
 -spec apply_op(
@@ -2168,21 +2518,21 @@ apply_log(_State, _EffectiveTerm, _TrimIndex, Data) ->
     EffectiveTerm :: wa_raft_log:log_term() | undefined,
     Data :: #raft_state{}
 ) -> #raft_state{}.
-apply_op(State, LogIndex, _Size, _Entry, _EffectiveTerm, #raft_state{last_applied = LastAppliedIndex} = Data) when LogIndex =< LastAppliedIndex ->
-    ?RAFT_LOG_WARNING(State, Data, "is skipping applying log entry ~0p because log entries up to ~0p are already applied.", [LogIndex, LastAppliedIndex]),
+apply_op(State, LogIndex, _, _, _, #raft_state{last_applied = LastApplied} = Data) when LogIndex =< LastApplied ->
+    ?RAFT_LOG_WARNING(State, Data, "is skipping applying log entry ~0p because log entries up to ~0p are already applied.", [LogIndex, LastApplied]),
     Data;
-apply_op(_State, LogIndex, Size, {Term, {Ref, Command} = Op}, EffectiveTerm, #raft_state{storage = Storage} = Data) ->
+apply_op(_, LogIndex, Size, {Term, {Ref, Command} = Op}, EffectiveTerm, #raft_state{storage = Storage} = Data) ->
     wa_raft_storage:apply(Storage, {LogIndex, {Term, {Ref, undefined, Command}}}, Size, EffectiveTerm),
     maybe_update_config(LogIndex, Term, Op, Data#raft_state{last_applied = LogIndex});
-apply_op(_State, LogIndex, Size, {Term, {_Ref, _Label, _Command} = Op}, EffectiveTerm, #raft_state{storage = Storage} = Data) ->
+apply_op(_, LogIndex, Size, {Term, {_, _, _} = Op}, EffectiveTerm, #raft_state{storage = Storage} = Data) ->
     wa_raft_storage:apply(Storage, {LogIndex, {Term, Op}}, Size, EffectiveTerm),
     maybe_update_config(LogIndex, Term, Op, Data#raft_state{last_applied = LogIndex});
-apply_op(State, LogIndex, _Size, undefined, _EffectiveTerm, #raft_state{log_view = View} = Data) ->
+apply_op(State, LogIndex, _, undefined, _, #raft_state{log_view = View} = Data) ->
     ?RAFT_COUNT('raft.server.missing.log.entry'),
     ?RAFT_LOG_ERROR(State, Data, "failed to apply ~0p because log entry is missing from log covering ~0p to ~0p.",
         [LogIndex, wa_raft_log:first_index(View), wa_raft_log:last_index(View)]),
     exit({invalid_op, LogIndex});
-apply_op(State, LogIndex, _Size, Entry, _EffectiveTerm, #raft_state{} = Data) ->
+apply_op(State, LogIndex, _, Entry, _, #raft_state{} = Data) ->
     ?RAFT_COUNT('raft.server.corrupted.log.entry'),
     ?RAFT_LOG_ERROR(State, Data, "failed to apply unrecognized entry ~0P at ~0p.", [Entry, 20, LogIndex]),
     exit({invalid_op, LogIndex, Entry}).
@@ -2197,9 +2547,9 @@ append_entries_to_followers(#raft_state{table = Table, partition = Partition, lo
             ?RAFT_COUNT('raft.server.sync.skipped'),
             ?RAFT_LOG_WARNING(leader, State0, "skipped pre-heartbeat sync for ~0p log entr(ies).", [length(Pending)]),
             lists:foreach(
-                fun({_Term, {Reference, _Command}}) ->
+                fun({_, {Reference, _}}) ->
                     wa_raft_queue:fulfill_incomplete_commit(Table, Partition, Reference, {error, commit_stalled});
-                   ({_Term, {Reference, _Label, _Command}}) ->
+                   ({_, {Reference, _, _}}) ->
                     wa_raft_queue:fulfill_incomplete_commit(Table, Partition, Reference, {error, commit_stalled})
                 end,
                 Pending),
@@ -2211,52 +2561,68 @@ append_entries_to_followers(#raft_state{table = Table, partition = Partition, lo
     end,
     lists:foldl(
         fun (Self, #raft_state{self = Self} = StateN) -> StateN;
-            (Peer, StateN)                            -> heartbeat(Peer, StateN)
+            (Peer, #raft_state{} = StateN)            -> heartbeat(Peer, StateN)
         end, State1, config_identities(config(State1))).
 
 %%------------------------------------------------------------------------------
 %% RAFT Server - State Machine Implementation - State Management
 %%------------------------------------------------------------------------------
 
--spec set_leader(StateName :: state(), Leader :: #raft_identity{}, State :: #raft_state{}) -> #raft_state{}.
-set_leader(_StateName, ?IDENTITY_REQUIRES_MIGRATION(_, Node), #raft_state{leader_id = Node} = State) ->
-    State;
-set_leader(StateName, ?IDENTITY_REQUIRES_MIGRATION(_, Node), #raft_state{table = Table, partition = Partition, current_term = CurrentTerm} = State) ->
-    ?RAFT_LOG_NOTICE(StateName, State, "changes leader to ~0p.", [Node]),
+-spec set_leader(State :: state(), Leader :: #raft_identity{}, Data :: #raft_state{}) -> #raft_state{}.
+set_leader(_, ?IDENTITY_REQUIRES_MIGRATION(_, Node), #raft_state{leader_id = Node} = Data) ->
+    Data;
+set_leader(
+    State,
+    ?IDENTITY_REQUIRES_MIGRATION(_, Node),
+    #raft_state{
+        table = Table,
+        partition = Partition,
+        current_term = CurrentTerm
+    } = Data
+) ->
+    ?RAFT_LOG_NOTICE(State, Data, "changes leader to ~0p.", [Node]),
     wa_raft_info:set_current_term_and_leader(Table, Partition, CurrentTerm, Node),
-    State#raft_state{leader_id = Node}.
+    Data#raft_state{leader_id = Node}.
 
 -spec clear_leader(state(), #raft_state{}) -> #raft_state{}.
-clear_leader(_StateName, #raft_state{leader_id = undefined} = State) ->
-    State;
-clear_leader(StateName, #raft_state{table = Table, partition = Partition, current_term = CurrentTerm} = State) ->
-    ?RAFT_LOG_NOTICE(StateName, State, "clears leader record.", []),
+clear_leader(_, #raft_state{leader_id = undefined} = Data) ->
+    Data;
+clear_leader(State, #raft_state{table = Table, partition = Partition, current_term = CurrentTerm} = Data) ->
+    ?RAFT_LOG_NOTICE(State, Data, "clears leader record.", []),
     wa_raft_info:set_current_term_and_leader(Table, Partition, CurrentTerm, undefined),
-    State#raft_state{leader_id = undefined}.
+    Data#raft_state{leader_id = undefined}.
 
 %% Setup the RAFT state upon entry into a new RAFT server state.
--spec enter_state(StateName :: state(), State :: #raft_state{}) -> #raft_state{}.
-enter_state(StateName, #raft_state{table = Table, partition = Partition, storage = Storage} = State0) ->
+-spec enter_state(State :: state(), Data :: #raft_state{}) -> #raft_state{}.
+enter_state(State, #raft_state{table = Table, partition = Partition, storage = Storage} = Data0) ->
     Now = erlang:monotonic_time(millisecond),
-    State1 = State0#raft_state{state_start_ts = Now},
-    true = wa_raft_info:set_state(Table, Partition, StateName),
-    ok = check_stale_upon_entry(StateName, Now, State1),
+    Data1 = Data0#raft_state{state_start_ts = Now},
+    true = wa_raft_info:set_state(Table, Partition, State),
+    ok = check_stale_upon_entry(State, Now, Data1),
     ok = wa_raft_storage:cancel(Storage),
-    State1.
+    Data1.
 
--spec check_stale_upon_entry(StateName :: state(), Now :: integer(), State :: #raft_state{}) -> ok.
+-spec check_stale_upon_entry(State :: state(), Now :: integer(), Data :: #raft_state{}) -> ok.
 %% Followers and candidates may be stale upon entry due to not receiving a timely heartbeat from an active leader.
-check_stale_upon_entry(StateName, Now, #raft_state{application = Application, table = Table, partition = Partition,
-                                                   leader_heartbeat_ts = LeaderHeartbeatTs} = State) when StateName =:= follower; StateName =:= candidate ->
+check_stale_upon_entry(
+    State,
+    Now,
+    #raft_state{
+        application = Application,
+        table = Table,
+        partition = Partition,
+        leader_heartbeat_ts = LeaderHeartbeatTs
+    } = Data
+) when State =:= follower; State =:= candidate ->
     Stale = case LeaderHeartbeatTs of
         undefined ->
-            ?RAFT_LOG_NOTICE(StateName, State, "is stale upon entry due to having no prior leader heartbeat.", []),
+            ?RAFT_LOG_NOTICE(State, Data, "is stale upon entry due to having no prior leader heartbeat.", []),
             true;
         _ ->
             Delay = Now - LeaderHeartbeatTs,
             case Delay > ?RAFT_FOLLOWER_STALE_INTERVAL(Application) of
                 true ->
-                    ?RAFT_LOG_NOTICE(StateName, State, "is stale upon entry because the last leader heartbeat was received ~0p ms ago.", [Delay]),
+                    ?RAFT_LOG_NOTICE(State, Data, "is stale upon entry because the last leader heartbeat was received ~0p ms ago.", [Delay]),
                     true;
                 false ->
                     false
@@ -2265,17 +2631,29 @@ check_stale_upon_entry(StateName, Now, #raft_state{application = Application, ta
     true = wa_raft_info:set_stale(Table, Partition, Stale),
     ok;
 %% Leaders are never stale upon entry.
-check_stale_upon_entry(leader, _Now, #raft_state{table = Table, partition = Partition}) ->
+check_stale_upon_entry(leader, _, #raft_state{table = Table, partition = Partition}) ->
     true = wa_raft_info:set_stale(Table, Partition, false),
     ok;
 %% Witness, stalled and disabled servers are always stale.
-check_stale_upon_entry(_StateName, _Now, #raft_state{table = Table, partition = Partition}) ->
+check_stale_upon_entry(_, _, #raft_state{table = Table, partition = Partition}) ->
     true = wa_raft_info:set_stale(Table, Partition, true),
     ok.
 
 %% Set a new current term and voted-for peer and clear any state that is associated with the previous term.
--spec advance_term(State :: state(), NewTerm :: wa_raft_log:log_term(), VotedFor :: undefined | node(), Data :: #raft_state{}) -> #raft_state{}.
-advance_term(State, NewTerm, VotedFor, #raft_state{current_term = CurrentTerm} = Data0) when NewTerm > CurrentTerm ->
+-spec advance_term(
+    State :: state(),
+    NewTerm :: wa_raft_log:log_term(),
+    VotedFor :: undefined | node(),
+    Data :: #raft_state{}
+) -> #raft_state{}.
+advance_term(
+    State,
+    NewTerm,
+    VotedFor,
+    #raft_state{
+        current_term = CurrentTerm
+    } = Data0
+) when NewTerm > CurrentTerm ->
     Data1 = Data0#raft_state{
         current_term = NewTerm,
         voted_for = VotedFor,
@@ -2295,11 +2673,21 @@ advance_term(State, NewTerm, VotedFor, #raft_state{current_term = CurrentTerm} =
 %% RAFT Server - State Machine Implementation - Leader Methods
 %%------------------------------------------------------------------------------
 
--spec heartbeat(#raft_identity{}, #raft_state{}) -> #raft_state{}.
-heartbeat(?IDENTITY_REQUIRES_MIGRATION(_, FollowerId) = Sender,
-          #raft_state{application = App, name = Name, log_view = View, catchup = Catchup,
-                      commit_index = CommitIndex, next_indices = NextIndices, match_indices = MatchIndices,
-                      last_heartbeat_ts = LastHeartbeatTs, first_current_term_log_index = TermStartIndex} = State0) ->
+-spec heartbeat(Peer :: #raft_identity{}, State :: #raft_state{}) -> #raft_state{}.
+heartbeat(
+    ?IDENTITY_REQUIRES_MIGRATION(_, FollowerId) = Sender,
+    #raft_state{
+        application = App,
+        name = Name,
+        log_view = View,
+        catchup = Catchup,
+        commit_index = CommitIndex,
+        next_indices = NextIndices,
+        match_indices = MatchIndices,
+        last_heartbeat_ts = LastHeartbeatTs,
+        first_current_term_log_index = TermStartIndex
+    } = State0
+) ->
     FollowerNextIndex = maps:get(FollowerId, NextIndices, TermStartIndex),
     PrevLogIndex = FollowerNextIndex - 1,
     PrevLogTermRes = wa_raft_log:term(View, PrevLogIndex),
@@ -2318,7 +2706,8 @@ heartbeat(?IDENTITY_REQUIRES_MIGRATION(_, FollowerId) = Sender,
                 [FollowerId, LastIndex, PrevLogIndex, IsCatchingUp]),
             % Send append entries request.
             send_rpc(Sender, ?APPEND_ENTRIES(LastIndex, LastTerm, [], CommitIndex, 0), State1),
-            LastFollowerHeartbeatTs =/= undefined andalso ?RAFT_GATHER('raft.leader.heartbeat.interval_ms', erlang:monotonic_time(millisecond) - LastFollowerHeartbeatTs),
+            LastFollowerHeartbeatTs =/= undefined andalso
+                ?RAFT_GATHER('raft.leader.heartbeat.interval_ms', erlang:monotonic_time(millisecond) - LastFollowerHeartbeatTs),
             State1;
         false ->
             MaxLogEntries = ?RAFT_HEARTBEAT_MAX_ENTRIES(App),
@@ -2348,7 +2737,8 @@ heartbeat(?IDENTITY_REQUIRES_MIGRATION(_, FollowerId) = Sender,
                     _ ->
                         NextIndices
                 end,
-            LastFollowerHeartbeatTs =/= undefined andalso ?RAFT_GATHER('raft.leader.heartbeat.interval_ms', erlang:monotonic_time(millisecond) - LastFollowerHeartbeatTs),
+            LastFollowerHeartbeatTs =/= undefined andalso
+                ?RAFT_GATHER('raft.leader.heartbeat.interval_ms', erlang:monotonic_time(millisecond) - LastFollowerHeartbeatTs),
             State1#raft_state{next_indices = NewNextIndices}
     end.
 
@@ -2381,16 +2771,32 @@ compute_handover_candidates(#raft_state{application = App, log_view = View} = St
         end,
     [Peer || ?IDENTITY_REQUIRES_MIGRATION(_, Peer) = Replica <- Replicas, Peer =/= node(), is_eligible_for_handover(Replica, MatchCutoffIndex, ApplyCutoffIndex, State)].
 
--spec is_eligible_for_handover(Candidate :: #raft_identity{}, MatchCutoffIndex :: wa_raft_log:log_index(), ApplyCutoffIndex :: wa_raft_log:log_index(), State :: #raft_state{}) -> boolean().
-is_eligible_for_handover(?IDENTITY_REQUIRES_MIGRATION(_, CandidateId), MatchCutoffIndex, ApplyCutoffIndex, #raft_state{match_indices = MatchIndices, last_applied_indices = LastAppliedIndices}) ->
+-spec is_eligible_for_handover(
+    Candidate :: #raft_identity{},
+    MatchCutoffIndex :: wa_raft_log:log_index(),
+    ApplyCutoffIndex :: wa_raft_log:log_index(),
+    State :: #raft_state{}
+) -> boolean().
+is_eligible_for_handover(
+    ?IDENTITY_REQUIRES_MIGRATION(_, CandidateId),
+    MatchCutoffIndex,
+    ApplyCutoffIndex,
+    #raft_state{
+        match_indices = MatchIndices,
+        last_applied_indices = LastAppliedIndices
+    }
+) ->
     % A peer whose matching index is unknown should not be eligible for handovers.
     MatchIndex = maps:get(CandidateId, MatchIndices, 0),
     % A peer whose last applied index is unknown should not be eligible for handovers.
     LastAppliedIndex = maps:get(CandidateId, LastAppliedIndices, 0),
     MatchIndex >= MatchCutoffIndex andalso LastAppliedIndex >= ApplyCutoffIndex.
 
--spec adjust_config(Action :: {add, peer()} | {remove, peer()} | {add_witness, peer()} | {remove_witness, peer()} | {refresh, undefined},
-                    Config :: config(), State :: #raft_state{}) -> {ok, NewConfig :: config()} | {error, Reason :: atom()}.
+-spec adjust_config(
+    Action :: {add, peer()} | {remove, peer()} | {add_witness, peer()} | {remove_witness, peer()} | {refresh, undefined},
+    Config :: config(),
+    State :: #raft_state{}
+) -> {ok, NewConfig :: config()} | {error, Reason :: atom()}.
 adjust_config(Action, Config, #raft_state{self = Self}) ->
     Membership = get_config_members(Config),
     Witness = get_config_witnesses(Config),
@@ -2470,9 +2876,26 @@ open_snapshot(Root, Position, #raft_state{storage = Storage} = Data) ->
     TrimIndex :: wa_raft_log:log_index(),
     Data :: #raft_state{}
 ) -> gen_statem:event_handler_result(state(), #raft_state{}).
-handle_heartbeat(State, Event, Leader, PrevLogIndex, PrevLogTerm, Entries, LeaderCommitIndex, TrimIndex,
-                 #raft_state{application = App, table = Table, partition = Partition, current_term = CurrentTerm,
-                             log_view = View, commit_index = CommitIndex, last_applied = LastApplied} = Data0) ->
+
+handle_heartbeat(
+    State,
+    Event,
+    Leader,
+    PrevLogIndex,
+    PrevLogTerm,
+    Entries,
+    LeaderCommitIndex,
+    TrimIndex,
+    #raft_state{
+        application = App,
+        table = Table,
+        partition = Partition,
+        current_term = CurrentTerm,
+        log_view = View,
+        commit_index = CommitIndex,
+        last_applied = LastApplied
+    } = Data0
+) ->
     EntryCount = length(Entries),
 
     ?RAFT_GATHER({raft, State, 'heartbeat.size'}, EntryCount),
@@ -2522,7 +2945,20 @@ handle_heartbeat(State, Event, Leader, PrevLogIndex, PrevLogTerm, Entries, Leade
     EntryCount :: non_neg_integer(),
     Data :: #raft_state{}
 ) -> {ok, Accepted :: boolean(), NewMatchIndex :: wa_raft_log:log_index(), NewData :: #raft_state{}} | {fatal, Reason :: term()}.
-append_entries(State, PrevLogIndex, PrevLogTerm, Entries, EntryCount, #raft_state{log_view = View, commit_index = CommitIndex, current_term = CurrentTerm, leader_id = LeaderId} = Data) ->
+
+append_entries(
+    State,
+    PrevLogIndex,
+    PrevLogTerm,
+    Entries,
+    EntryCount,
+    #raft_state{
+        log_view = View,
+        commit_index = CommitIndex,
+        current_term = CurrentTerm,
+        leader_id = LeaderId
+    } = Data
+) ->
     % Inspect the locally stored term associated with the previous log entry to discern if
     % appending the provided range of log entries is allowed.
     case wa_raft_log:term(View, PrevLogIndex) of
@@ -2592,7 +3028,10 @@ request_vote_impl(
     ?IDENTITY_REQUIRES_MIGRATION(_, CandidateId) = Candidate,
     CandidateIndex,
     CandidateTerm,
-    #raft_state{log_view = View, voted_for = VotedFor} = Data
+    #raft_state{
+        log_view = View,
+        voted_for = VotedFor
+    } = Data
 ) when VotedFor =:= undefined; VotedFor =:= CandidateId ->
     Index = wa_raft_log:last_index(View),
     {ok, Term} = wa_raft_log:term(View, Index),
@@ -2631,7 +3070,7 @@ request_vote_impl(State, Candidate, _, _,  #raft_state{voted_for = VotedFor} = D
 
 %% Generic reply function for non-RPC requests that operates based on event type.
 -spec reply(Type :: enter | gen_statem:event_type(), Message :: term()) -> ok | wa_raft:error().
-reply(cast, _Message) ->
+reply(cast, _) ->
     ok;
 reply({call, From}, Message) ->
     gen_statem:reply(From, Message);
@@ -2642,12 +3081,16 @@ reply(Type, Message) ->
 
 %% Generic reply function for RPC requests that operates based on event type.
 -spec reply_rpc(Type :: gen_statem:event_type(), Reply :: term(), Data :: #raft_state{}) -> term().
-reply_rpc({call, From}, Reply, #raft_state{identifier = Identifier, distribution_module = DistributionModule}) ->
-    DistributionModule:reply(From, Identifier, Reply);
-reply_rpc(_Other, _Reply, _Data) ->
+reply_rpc({call, From}, Reply, #raft_state{identifier = Identifier, distribution_module = Distribution}) ->
+    Distribution:reply(From, Identifier, Reply);
+reply_rpc(_, _, #raft_state{}) ->
     ok.
 
--spec send_rpc(Destination :: #raft_identity{}, ProcedureCall :: normalized_procedure(), State :: #raft_state{}) -> term().
+-spec send_rpc(
+    Destination :: #raft_identity{},
+    ProcedureCall :: normalized_procedure(),
+    State :: #raft_state{}
+) -> term().
 send_rpc(Destination, Procedure, #raft_state{self = Self, current_term = Term} = State) ->
     cast(Destination, make_rpc(Self, Term, Procedure), State).
 
@@ -2655,10 +3098,20 @@ send_rpc(Destination, Procedure, #raft_state{self = Self, current_term = Term} =
 broadcast_rpc(ProcedureCall, #raft_state{self = Self} = State) ->
     [send_rpc(Peer, ProcedureCall, State) || Peer <- config_identities(config(State)), Peer =/= Self].
 
--spec cast(#raft_identity{}, rpc(), #raft_state{}) -> ok | {error, term()}.
-cast(#raft_identity{name = Name, node = Node} = Destination, Message, #raft_state{identifier = Identifier, distribution_module = DistributionModule}) ->
+-spec cast(Destination :: #raft_identity{}, RPC :: rpc(), State :: #raft_state{}) -> ok | {error, term()}.
+cast(
+    #raft_identity{
+        name = Name,
+        node = Node
+    } = Destination,
+    Message,
+    #raft_state{
+        identifier = Identifier,
+        distribution_module = Distribution
+    }
+) ->
     try
-        ok = DistributionModule:cast({Name, Node}, Identifier, Message)
+        ok = Distribution:cast({Name, Node}, Identifier, Message)
     catch
         _:E ->
             ?RAFT_COUNT({'raft.server.cast.error', E}),
@@ -2685,8 +3138,16 @@ should_heartbeat(#raft_state{application = App, last_heartbeat_ts = LastHeartbea
     Current - Latest > ?RAFT_HEARTBEAT_INTERVAL(App).
 
 %% Check follower/witness state due to log entry lag and change stale flag if needed
--spec check_follower_lagging(pos_integer(), #raft_state{}) -> ok.
-check_follower_lagging(LeaderCommit, #raft_state{application = App, table = Table, partition = Partition, last_applied = LastApplied} = Data) ->
+-spec check_follower_lagging(LeaderCommit :: pos_integer(), State :: #raft_state{}) -> ok.
+check_follower_lagging(
+    LeaderCommit,
+    #raft_state{
+        application = App,
+        table = Table,
+        partition = Partition,
+        last_applied = LastApplied
+    } = Data
+) ->
     Lagging = LeaderCommit - LastApplied,
     ?RAFT_GATHER('raft.follower.lagging', Lagging),
     case Lagging < ?RAFT_FOLLOWER_STALE_ENTRIES(App) of
@@ -2706,7 +3167,14 @@ check_follower_lagging(LeaderCommit, #raft_state{application = App, table = Tabl
 
 %% Check leader state and set stale if needed
 -spec check_leader_lagging(#raft_state{}) -> term().
-check_leader_lagging(#raft_state{application = App, table = Table, partition = Partition, heartbeat_response_ts = HeartbeatResponse} = State) ->
+check_leader_lagging(
+    #raft_state{
+        application = App,
+        table = Table,
+        partition = Partition,
+        heartbeat_response_ts = HeartbeatResponse
+    } = State
+) ->
     NowTs = erlang:monotonic_time(millisecond),
     QuorumTs = compute_quorum(HeartbeatResponse#{node() => NowTs}, 0, config(State)),
 
@@ -2727,8 +3195,18 @@ check_leader_lagging(#raft_state{application = App, table = Table, partition = P
 
 %% Based on information that the leader has available as a result of heartbeat replies, attempt
 %% to discern what the best subsequent replication mode would be for this follower.
--spec select_follower_replication_mode(wa_raft_log:log_index(), #raft_state{}) -> snapshot | bulk_logs | logs.
-select_follower_replication_mode(FollowerLastIndex, #raft_state{application = App, log_view = View, last_applied = LastAppliedIndex}) ->
+-spec select_follower_replication_mode(
+    FollowerLastIndex :: wa_raft_log:log_index(),
+    State :: #raft_state{}
+) -> snapshot | bulk_logs | logs.
+select_follower_replication_mode(
+    FollowerLastIndex,
+    #raft_state{
+        application = App,
+        log_view = View,
+        last_applied = LastAppliedIndex
+    }
+) ->
     CatchupEnabled = ?RAFT_CATCHUP_ENABLED(App),
     BulkLogThreshold = ?RAFT_CATCHUP_THRESHOLD(App),
     LeaderFirstIndex = wa_raft_log:first_index(View),
@@ -2750,30 +3228,51 @@ select_follower_replication_mode(FollowerLastIndex, #raft_state{application = Ap
 %% service is available. If the follower is a witness or too many snapshot
 %% transports have been started then no transport is created. This function
 %% always performs this request asynchronously.
--spec request_snapshot_for_follower(node(), #raft_state{}) -> term().
-request_snapshot_for_follower(FollowerId, #raft_state{application = App, name = Name, table = Table, partition = Partition} = State) ->
+-spec request_snapshot_for_follower(Follower :: node(), State :: #raft_state{}) -> term().
+request_snapshot_for_follower(
+    FollowerId,
+    #raft_state{
+        application = App,
+        name = Name,
+        table = Table,
+        partition = Partition
+    } = State
+) ->
     Witness = lists:member({Name, FollowerId}, config_witnesses(config(State))),
     wa_raft_snapshot_catchup:catchup(App, Name, FollowerId, Table, Partition, Witness).
 
--spec request_bulk_logs_for_follower(#raft_identity{}, wa_raft_log:log_index(), #raft_state{}) -> ok.
-request_bulk_logs_for_follower(Peer, FollowerEndIndex, #raft_state{catchup = Catchup, current_term = CurrentTerm, commit_index = CommitIndex} = State) ->
+-spec request_bulk_logs_for_follower(
+    Peer :: #raft_identity{},
+    FollowerLastIndex :: wa_raft_log:log_index(),
+    State :: #raft_state{}
+) -> ok.
+request_bulk_logs_for_follower(
+    Peer,
+    FollowerLastIndex,
+    #raft_state{
+        catchup = Catchup,
+        current_term = CurrentTerm,
+        commit_index = CommitIndex
+    } = State
+) ->
     ?RAFT_LOG_DEBUG(leader, State, "requesting bulk logs catchup for follower ~0p.", [Peer]),
-    wa_raft_log_catchup:start_catchup_request(Catchup, Peer, FollowerEndIndex, CurrentTerm, CommitIndex).
+    wa_raft_log_catchup:start_catchup_request(Catchup, Peer, FollowerLastIndex, CurrentTerm, CommitIndex).
 
--spec cancel_bulk_logs_for_follower(#raft_identity{}, #raft_state{}) -> ok.
+-spec cancel_bulk_logs_for_follower(Peer :: #raft_identity{}, State :: #raft_state{}) -> ok.
 cancel_bulk_logs_for_follower(Peer, #raft_state{catchup = Catchup}) ->
     wa_raft_log_catchup:cancel_catchup_request(Catchup, Peer).
 
--spec follower_or_witness_state(#raft_state{}) -> state().
+-spec follower_or_witness_state(State :: #raft_state{}) -> state().
 follower_or_witness_state(State) ->
     case is_self_witness(State) of
         true -> witness;
         false -> follower
     end.
 
--spec candidate_or_witness_state_transition(#raft_state{}, non_neg_integer()) -> gen_statem:event_handler_result(state(), #raft_state{}).
-candidate_or_witness_state_transition(State, Term) ->
+-spec candidate_or_witness_state_transition(State :: #raft_state{}) ->
+    gen_statem:event_handler_result(state(), #raft_state{}).
+candidate_or_witness_state_transition(#raft_state{current_term = CurrentTerm} = State) ->
     case is_self_witness(State) of
         true -> {next_state, witness, State};
-        false -> {next_state, candidate, State, {next_event, internal, ?FORCE_ELECTION(Term)}}
+        false -> {next_state, candidate, State, {next_event, internal, ?FORCE_ELECTION(CurrentTerm)}}
     end.
