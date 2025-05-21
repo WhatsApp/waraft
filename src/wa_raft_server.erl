@@ -1193,18 +1193,16 @@ leader(
     ?COMMIT_COMMAND(Op),
     #raft_state{
         application = App,
-        log_view = View0,
-        next_indices = NextIndices
+        log_view = View0
     } = State0
 ) ->
     ?RAFT_COUNT('raft.commit'),
     {State1, LogEntry} = get_log_entry(State0, Op),
     {ok, View1} = wa_raft_log:submit(View0, LogEntry),
-    ExpectedLastIndex = wa_raft_log:last_index(View1) + wa_raft_log:pending(View1),
+    Pending = wa_raft_log:pending(View1),
     State2 = apply_single_node_cluster(State1#raft_state{log_view = View1}), % apply immediately for single node cluster
 
-    MaxNextIndex = lists:max([0 | maps:values(NextIndices)]),
-    case ?RAFT_COMMIT_BATCH_INTERVAL(App) > 0 andalso ExpectedLastIndex - MaxNextIndex < ?RAFT_COMMIT_BATCH_MAX_ENTRIES(App) of
+    case ?RAFT_COMMIT_BATCH_INTERVAL(App) > 0 andalso Pending =< ?RAFT_COMMIT_BATCH_MAX_ENTRIES(App) of
         true ->
             ?RAFT_COUNT('raft.commit.batch.delay'),
             {keep_state, State2, ?COMMIT_BATCH_TIMEOUT(State2)};
