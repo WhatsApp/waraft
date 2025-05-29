@@ -365,7 +365,7 @@
 
     % Queue options
     queue_name :: atom(),
-    queue_counters :: counters:counters_ref(),
+    queue_counters :: atomics:atomics_ref(),
     queue_commits :: atom(),
     queue_reads :: atom(),
 
@@ -408,6 +408,8 @@
 
     %% Current view into this RAFT replica's log state
     log_view :: wa_raft_log:view(),
+    %% Current queue handle
+    queues :: wa_raft_queue:queues(),
 
     %% Active module for distribution of RPCs
     distribution_module :: module(),

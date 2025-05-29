@@ -626,6 +626,7 @@ init(
         partition = Partition,
         partition_path = PartitionPath,
         log_view = View,
+        queues = wa_raft_queue:queues(Options),
         label_module = LabelModule,
         last_label = undefined,
         distribution_module = DistributionModule,
@@ -1179,13 +1180,12 @@ leader(
     cast,
     ?COMMIT_COMMAND({Reference, _}),
     #raft_state{
-        table = Table,
-        partition = Partition,
+        queues = Queues,
         handover = {Peer, _, _}
     } = State
 ) ->
     ?RAFT_COUNT('raft.commit.handover'),
-    wa_raft_queue:fulfill_incomplete_commit(Table, Partition, Reference, {error, {notify_redirect, Peer}}), % Optimistically redirect to handover peer
+    wa_raft_queue:fulfill_incomplete_commit(Queues, Reference, {error, {notify_redirect, Peer}}), % Optimistically redirect to handover peer
     {keep_state, State};
 
 %% [Commit] Otherwise, add a new commit to the RAFT log
@@ -1214,13 +1214,12 @@ leader(
     cast,
     ?READ_COMMAND({From, _}),
     #raft_state{
-        table = Table,
-        partition = Partition,
+        queues = Queues,
         handover = {Peer, _, _}
     } = State
 ) ->
     ?RAFT_COUNT('raft.read.handover'),
-    wa_raft_queue:fulfill_incomplete_read(Table, Partition, From, {error, {notify_redirect, Peer}}), % Optimistically redirect to handover peer
+    wa_raft_queue:fulfill_incomplete_read(Queues, From, {error, {notify_redirect, Peer}}), % Optimistically redirect to handover peer
     {keep_state, State};
 
 %% [Strong Read] Leader is eligible to serve strong reads.
@@ -1229,8 +1228,7 @@ leader(
     ?READ_COMMAND({From, Command}),
     #raft_state{
         self = Self,
-        table = Table,
-        partition = Partition,
+        queues = Queues,
         storage = Storage,
         commit_index = CommitIndex,
         last_applied = LastApplied,
@@ -1245,7 +1243,7 @@ leader(
             wa_raft_storage:apply_read(Storage, From, Command),
             {keep_state, State0};
         _ ->
-            ok = wa_raft_queue:submit_read(Table, Partition, ReadIndex, From, Command),
+            ok = wa_raft_queue:submit_read(Queues, ReadIndex, From, Command),
             % Regardless of whether or not the read index is an existing log entry, indicate that
             % a read is pending as the leader must establish a new quorum to be able to serve the
             % read request.
@@ -1900,13 +1898,12 @@ command(
     cast,
     ?COMMIT_COMMAND({Key, _}),
     #raft_state{
-        table = Table,
-        partition = Partition,
+        queues = Queues,
         leader_id = LeaderId
     } = Data
 ) when State =/= leader ->
     ?RAFT_LOG_WARNING(State, Data, "commit with key ~0p fails. Leader is ~0p.", [Key, LeaderId]),
-    wa_raft_queue:fulfill_incomplete_commit(Table, Partition, Key, {error, not_leader}),
+    wa_raft_queue:fulfill_incomplete_commit(Queues, Key, {error, not_leader}),
     keep_state_and_data;
 
 %% [Strong Read] Non-leader nodes are not eligible for strong reads.
@@ -1915,13 +1912,12 @@ command(
     cast,
     ?READ_COMMAND({From, _}),
     #raft_state{
-        table = Table,
-        partition = Partition,
+        queues = Queues,
         leader_id = LeaderId
     } = Data
 ) when State =/= leader ->
     ?RAFT_LOG_WARNING(State, Data, "strong read fails. Leader is ~p.", [LeaderId]),
-    wa_raft_queue:fulfill_incomplete_read(Table, Partition, From, {error, not_leader}),
+    wa_raft_queue:fulfill_incomplete_read(Queues, From, {error, not_leader}),
     keep_state_and_data;
 
 %% [Notify Complete] Attempt to send more log entries to storage if applicable.
@@ -1930,11 +1926,10 @@ command(
     cast,
     ?NOTIFY_COMPLETE_COMMAND(),
     #raft_state{
-        table = Table,
-        partition = Partition
+        queues = Queues
     } = Data
 ) when State =:= leader; State =:= follower; State =:= witness ->
-    case wa_raft_queue:apply_queue_size(Table, Partition) of
+    case wa_raft_queue:apply_queue_size(Queues) of
         0 ->
             NewState = case State of
                 leader -> apply_log_leader(Data);
@@ -2454,22 +2449,21 @@ apply_log(
     TrimIndex,
     #raft_state{
         application = App,
-        table = Table,
-        partition = Partition,
+        queues = Queues,
         log_view = View,
         commit_index = CommitIndex,
         last_applied = LastApplied
     } = Data0
 ) when CommitIndex > LastApplied ->
     StartT = os:timestamp(),
-    case wa_raft_queue:apply_queue_full(Table, Partition) of
+    case wa_raft_queue:apply_queue_full(Queues) of
         false ->
             % Apply a limited number of log entries (both count and total byte size limited)
             LimitedIndex = min(CommitIndex, LastApplied + ?RAFT_MAX_CONSECUTIVE_APPLY_ENTRIES(App)),
             LimitBytes = ?RAFT_MAX_CONSECUTIVE_APPLY_BYTES(App),
             {ok, {_, #raft_state{log_view = View1, last_applied = NewLastApplied} = Data1}} = wa_raft_log:fold(View, LastApplied + 1, LimitedIndex, LimitBytes,
                 fun (Index, Size, Entry, {Index, AccData}) ->
-                    wa_raft_queue:reserve_apply(Table, Partition, Size),
+                    wa_raft_queue:reserve_apply(Queues, Size),
                     {Index + 1, apply_op(State, Index, Size, Entry, EffectiveTerm, AccData)}
                 end, {LastApplied + 1, Data0}),
 
@@ -2483,7 +2477,7 @@ apply_log(
             ?RAFT_GATHER('raft.apply_log.latency_us', timer:now_diff(os:timestamp(), StartT)),
             Data2;
         true ->
-            ApplyQueueSize = wa_raft_queue:apply_queue_size(Table, Partition),
+            ApplyQueueSize = wa_raft_queue:apply_queue_size(Queues),
             ?RAFT_COUNT('raft.apply.delay'),
             ?RAFT_GATHER('raft.apply.queue', ApplyQueueSize),
             LastApplied rem 10 =:= 0 andalso
@@ -2684,10 +2678,10 @@ collect_pending(#raft_state{pending = Pending} = Data) ->
 -spec cancel_pending(Reason :: wa_raft_acceptor:commit_error(), Data :: #raft_state{}) -> #raft_state{}.
 cancel_pending(_, #raft_state{pending = []} = Data) ->
     Data;
-cancel_pending(Reason, #raft_state{table = Table, partition = Partition, pending = Pending} = Data) ->
+cancel_pending(Reason, #raft_state{queues = Queues, pending = Pending} = Data) ->
     ?RAFT_COUNT('raft.commit.batch.cancel'),
     % Pending commits are kept in reverse order.
-    [wa_raft_queue:fulfill_incomplete_commit(Table, Partition, Reference, Reason) || {Reference, _} <- lists:reverse(Pending)],
+    [wa_raft_queue:fulfill_incomplete_commit(Queues, Reference, Reason) || {Reference, _} <- lists:reverse(Pending)],
     Data#raft_state{pending = []}.
 
 -spec heartbeat(Peer :: #raft_identity{}, State :: #raft_state{}) -> #raft_state{}.
@@ -2908,8 +2902,7 @@ handle_heartbeat(
     TrimIndex,
     #raft_state{
         application = App,
-        table = Table,
-        partition = Partition,
+        queues = Queues,
         current_term = CurrentTerm,
         log_view = View,
         commit_index = CommitIndex,
@@ -2924,7 +2917,7 @@ handle_heartbeat(
 
     case append_entries(State, PrevLogIndex, PrevLogTerm, Entries, EntryCount, Data0) of
         {ok, Accepted, NewMatchIndex, Data1} ->
-            AdjustedLastApplied = max(0, LastApplied - wa_raft_queue:apply_queue_size(Table, Partition)),
+            AdjustedLastApplied = max(0, LastApplied - wa_raft_queue:apply_queue_size(Queues)),
             send_rpc(Leader, ?APPEND_ENTRIES_RESPONSE(PrevLogIndex, Accepted, NewMatchIndex, AdjustedLastApplied), Data1),
             reply_rpc(Event, ?LEGACY_APPEND_ENTRIES_RESPONSE_RPC(CurrentTerm, node(), PrevLogIndex, Accepted, NewMatchIndex), Data1),
 

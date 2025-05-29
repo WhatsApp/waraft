@@ -9,43 +9,53 @@
 -compile(warn_missing_spec_all).
 -behaviour(gen_server).
 
+%% PUBLIC API
+-export([
+    queues/1,
+    queues/2,
+    commit_queue_size/1,
+    commit_queue_size/2,
+    commit_queue_full/1,
+    commit_queue_full/2,
+    apply_queue_size/1,
+    apply_queue_size/2,
+    apply_queue_byte_size/1,
+    apply_queue_byte_size/2,
+    apply_queue_full/1,
+    apply_queue_full/2
+]).
+
 %% INTERNAL API
 -export([
     default_name/2,
     default_counters/0,
     default_commit_queue_name/2,
     default_read_queue_name/2,
-    registered_name/2,
-    registered_info/2
+    registered_name/2
 ]).
 
 %% PENDING COMMIT QUEUE API
 -export([
-    commit/4,
-    commit_queue_size/2,
-    commit_queue_full/2,
-    fulfill_commit/4,
-    fulfill_incomplete_commit/4,
-    fulfill_all_commits/3
+    commit/3,
+    fulfill_commit/3,
+    fulfill_incomplete_commit/3,
+    fulfill_all_commits/2
 ]).
 
 %% PENDING READ API
 -export([
-    reserve_read/2,
-    submit_read/5,
-    query_reads/3,
-    fulfill_read/4,
-    fulfill_incomplete_read/4,
-    fulfill_all_reads/3
+    reserve_read/1,
+    submit_read/4,
+    query_reads/2,
+    fulfill_read/3,
+    fulfill_incomplete_read/3,
+    fulfill_all_reads/2
 ]).
 
 %% APPLY QUEUE API
 -export([
-    apply_queue_size/2,
-    apply_queue_byte_size/2,
-    apply_queue_full/2,
-    reserve_apply/3,
-    fulfill_apply/3
+    reserve_apply/2,
+    fulfill_apply/2
 ]).
 
 %% OTP SUPERVISION
@@ -62,9 +72,16 @@
     terminate/2
 ]).
 
+%% TYPES
+-export_type([
+    queues/0
+]).
+
 -include_lib("kernel/include/logger.hrl").
 -include_lib("stdlib/include/ms_transform.hrl"). % used by ets:fun2ms
 -include_lib("wa_raft/include/wa_raft.hrl").
+
+%%-------------------------------------------------------------------
 
 %% ETS table creation options shared by all queue tables
 -define(RAFT_QUEUE_TABLE_OPTIONS, [named_table, public, {read_concurrency, true}, {write_concurrency, true}]).
@@ -88,6 +105,90 @@
     name :: atom()
 }).
 
+-record(queues, {
+    application :: atom(),
+    counters :: atomics:atomics_ref(),
+    commits :: atom(),
+    reads :: atom()
+}).
+-opaque queues() :: #queues{}.
+
+%%-------------------------------------------------------------------
+%% PUBLIC API
+%%-------------------------------------------------------------------
+
+-spec queues(Options :: #raft_options{}) -> Queues :: queues().
+queues(Options) ->
+    #queues{
+        application = Options#raft_options.application,
+        counters = Options#raft_options.queue_counters,
+        commits = Options#raft_options.queue_commits,
+        reads = Options#raft_options.queue_reads
+    }.
+
+-spec queues(Table :: wa_raft:table(), Partition :: wa_raft:partition()) -> Queues :: queues() | undefined.
+queues(Table, Partition) ->
+    case wa_raft_part_sup:options(Table, Partition) of
+        undefined -> undefined;
+        Options -> queues(Options)
+    end.
+
+-spec commit_queue_size(Queues :: queues()) -> non_neg_integer().
+commit_queue_size(#queues{counters = Counters}) ->
+    atomics:get(Counters, ?RAFT_COMMIT_QUEUE_SIZE_COUNTER).
+
+-spec commit_queue_size(wa_raft:table(), wa_raft:partition()) -> non_neg_integer().
+commit_queue_size(Table, Partition) ->
+    case queues(Table, Partition) of
+        undefined -> 0;
+        Queue     -> commit_queue_size(Queue)
+    end.
+
+-spec commit_queue_full(Queues :: queues()) -> boolean().
+commit_queue_full(#queues{application = App, counters = Counters}) ->
+    atomics:get(Counters, ?RAFT_COMMIT_QUEUE_SIZE_COUNTER) >= ?RAFT_MAX_PENDING_COMMITS(App).
+
+-spec commit_queue_full(wa_raft:table(), wa_raft:partition()) -> boolean().
+commit_queue_full(Table, Partition) ->
+    case queues(Table, Partition) of
+        undefined -> false;
+        Queues    -> commit_queue_full(Queues)
+    end.
+
+-spec apply_queue_size(Queues :: queues()) -> non_neg_integer().
+apply_queue_size(#queues{counters = Counters}) ->
+    atomics:get(Counters, ?RAFT_APPLY_QUEUE_SIZE_COUNTER).
+
+-spec apply_queue_size(wa_raft:table(), wa_raft:partition()) -> non_neg_integer().
+apply_queue_size(Table, Partition) ->
+    case queues(Table, Partition) of
+        undefined -> 0;
+        Queues    -> apply_queue_size(Queues)
+    end.
+
+-spec apply_queue_byte_size(Queues :: queues()) -> non_neg_integer().
+apply_queue_byte_size(#queues{counters = Counters}) ->
+    atomics:get(Counters, ?RAFT_APPLY_QUEUE_BYTE_SIZE_COUNTER).
+
+-spec apply_queue_byte_size(wa_raft:table(), wa_raft:partition()) -> non_neg_integer().
+apply_queue_byte_size(Table, Partition) ->
+    case queues(Table, Partition) of
+        undefined -> 0;
+        Queues    -> apply_queue_byte_size(Queues)
+    end.
+
+-spec apply_queue_full(Queues :: queues()) -> boolean().
+apply_queue_full(#queues{application = App, counters = Counters}) ->
+    atomics:get(Counters, ?RAFT_APPLY_QUEUE_SIZE_COUNTER) >= ?RAFT_MAX_PENDING_APPLIES(App) orelse
+        atomics:get(Counters, ?RAFT_APPLY_QUEUE_BYTE_SIZE_COUNTER) >= ?RAFT_MAX_PENDING_APPLY_BYTES(App).
+
+-spec apply_queue_full(wa_raft:table(), wa_raft:partition()) -> boolean().
+apply_queue_full(Table, Partition) ->
+    case queues(Table, Partition) of
+        undefined -> false;
+        Queues    -> apply_queue_full(Queues)
+    end.
+
 %%-------------------------------------------------------------------
 %% INTERNAL API
 %%-------------------------------------------------------------------
@@ -96,24 +197,24 @@
 %% provided RAFT partition.
 -spec default_name(Table :: wa_raft:table(), Partition :: wa_raft:partition()) -> Name :: atom().
 default_name(Table, Partition) ->
-    list_to_atom("raft_queue_" ++ atom_to_list(Table) ++ "_" ++ integer_to_list(Partition)).
+    binary_to_atom(<<"raft_queue_", (atom_to_binary(Table))/bytes, "_", (integer_to_binary(Partition))/bytes>>).
 
-%% Create a properly-sized counters object for use by a RAFT queue.
--spec default_counters() -> Counters :: counters:counters_ref().
+%% Create a properly-sized atomics array for use by a RAFT queue
+-spec default_counters() -> Counters :: atomics:atomics_ref().
 default_counters() ->
-    counters:new(?RAFT_NUMBER_OF_QUEUE_SIZE_COUNTERS, [atomics]).
+    atomics:new(?RAFT_NUMBER_OF_QUEUE_SIZE_COUNTERS, []).
 
 %% Get the default name for the RAFT commit queue ETS table associated with the
 %% provided RAFT partition.
 -spec default_commit_queue_name(Table :: wa_raft:table(), Partition :: wa_raft:partition()) -> Name :: atom().
 default_commit_queue_name(Table, Partition) ->
-    list_to_atom("raft_commit_queue_" ++ atom_to_list(Table) ++ "_" ++ integer_to_list(Partition)).
+    binary_to_atom(<<"raft_commit_queue_", (atom_to_binary(Table))/bytes, "_", (integer_to_binary(Partition))/bytes>>).
 
 %% Get the default name for the RAFT read queue ETS table associated with the
 %% provided RAFT partition.
 -spec default_read_queue_name(Table :: wa_raft:table(), Partition :: wa_raft:partition()) -> Name :: atom().
 default_read_queue_name(Table, Partition) ->
-    list_to_atom("raft_read_queue_" ++ atom_to_list(Table) ++ "_" ++ integer_to_list(Partition)).
+    binary_to_atom(<<"raft_read_queue_", (atom_to_binary(Table))/bytes, "_", (integer_to_binary(Partition))/bytes>>).
 
 %% Get the registered name for the RAFT queue server associated with the
 %% provided RAFT partition or the default name if no registration exists.
@@ -124,33 +225,25 @@ registered_name(Table, Partition) ->
         Options   -> Options#raft_options.queue_name
     end.
 
-%% Get the registered counter and queue names for the RAFT queue associated
-%% with the provided RAFT partition or 'undefined' if no registration exists.
--spec registered_info(Table :: wa_raft:table(), Partition :: wa_raft:partition()) -> {App :: atom(), Counters :: counters:counters_ref(), CommitQueue :: atom(), ReadQueue :: atom()} | undefined.
-registered_info(Table, Partition) ->
-    case wa_raft_part_sup:options(Table, Partition) of
-        undefined -> undefined;
-        Options   -> {Options#raft_options.application, Options#raft_options.queue_counters, Options#raft_options.queue_commits, Options#raft_options.queue_reads}
-    end.
-
 %%-------------------------------------------------------------------
 %% PENDING COMMIT QUEUE API
 %%-------------------------------------------------------------------
 
--spec commit(wa_raft:table(), wa_raft:partition(), term(), gen_server:from()) -> ok | apply_queue_full | commit_queue_full | duplicate.
-commit(Table, Partition, Reference, From) ->
-    {App, Counters, CommitQueue, _} = require_info(Table, Partition),
-    PendingCommits = counters:get(Counters, ?RAFT_COMMIT_QUEUE_SIZE_COUNTER),
-    case PendingCommits >= ?RAFT_MAX_PENDING_COMMITS(App) of
-        true -> commit_queue_full;
+-spec commit(Queues :: queues(), Key :: wa_raft_acceptor:key(), From :: gen_server:from()) ->
+    ok | apply_queue_full | commit_queue_full | duplicate.
+commit(#queues{counters = Counters, commits = Commits} = Queues, Reference, From) ->
+    case commit_queue_full(Queues) of
+        true ->
+            commit_queue_full;
         false ->
-            case counters:get(Counters, ?RAFT_APPLY_QUEUE_SIZE_COUNTER) >= ?RAFT_MAX_PENDING_APPLIES(App) of
-                true -> apply_queue_full;
+            case apply_queue_full(Queues) of
+                true ->
+                    apply_queue_full;
                 false ->
-                    case ets:insert_new(CommitQueue, {Reference, From}) of
+                    case ets:insert_new(Commits, {Reference, From}) of
                         true ->
-                            ?RAFT_GATHER('raft.acceptor.commit.request.pending', PendingCommits + 1),
-                            counters:add(Counters, ?RAFT_COMMIT_QUEUE_SIZE_COUNTER, 1),
+                            PendingCommits = atomics:add_get(Counters, ?RAFT_COMMIT_QUEUE_SIZE_COUNTER, 1),
+                            ?RAFT_GATHER('raft.acceptor.commit.request.pending', PendingCommits),
                             ok;
                         false ->
                             duplicate
@@ -158,53 +251,36 @@ commit(Table, Partition, Reference, From) ->
             end
     end.
 
--spec commit_queue_size(wa_raft:table(), wa_raft:partition()) -> non_neg_integer().
-commit_queue_size(Table, Partition) ->
-    case registered_info(Table, Partition) of
-        undefined           -> 0;
-        {_, Counters, _, _} -> counters:get(Counters, ?RAFT_COMMIT_QUEUE_SIZE_COUNTER)
-    end.
-
--spec commit_queue_full(wa_raft:table(), wa_raft:partition()) -> boolean().
-commit_queue_full(Table, Partition) ->
-    case registered_info(Table, Partition) of
-        undefined             -> false;
-        {App, Counters, _, _} -> counters:get(Counters, ?RAFT_COMMIT_QUEUE_SIZE_COUNTER) >= ?RAFT_MAX_PENDING_COMMITS(App)
-    end.
-
 % Fulfill a pending commit with the result of the application of the command contained
 % within the commit.
--spec fulfill_commit(wa_raft:table(), wa_raft:partition(), term(), dynamic()) -> ok | not_found.
-fulfill_commit(Table, Partition, Reference, Reply) ->
-    {_, Counters, CommitQueue, _} = require_info(Table, Partition),
-    case ets:take(CommitQueue, Reference) of
+-spec fulfill_commit(Queues :: queues(), term(), dynamic()) -> ok | not_found.
+fulfill_commit(#queues{counters = Counters, commits = Commits}, Reference, Reply) ->
+    case ets:take(Commits, Reference) of
         [{Reference, From}] ->
-            counters:sub(Counters, ?RAFT_COMMIT_QUEUE_SIZE_COUNTER, 1),
+            atomics:sub(Counters, ?RAFT_COMMIT_QUEUE_SIZE_COUNTER, 1),
             gen_server:reply(From, Reply);
         [] ->
             not_found
     end.
 
 % Fulfill a pending commit with an error that indicates that the commit was not completed.
--spec fulfill_incomplete_commit(wa_raft:table(), wa_raft:partition(), term(), wa_raft_acceptor:commit_error()) -> ok | not_found.
-fulfill_incomplete_commit(Table, Partition, Reference, Error) ->
-    fulfill_commit(Table, Partition, Reference, Error).
+-spec fulfill_incomplete_commit(Queues :: queues(), term(), wa_raft_acceptor:commit_error()) -> ok | not_found.
+fulfill_incomplete_commit(Queues, Reference, Error) ->
+    fulfill_commit(Queues, Reference, Error).
 
 % Fulfill a pending commit with an error that indicates that the commit was not completed.
--spec fulfill_all_commits(wa_raft:table(), wa_raft:partition(), wa_raft_acceptor:commit_error()) -> ok.
-fulfill_all_commits(Table, Partition, Reply) ->
-    {_, Counters, CommitQueue, _} = require_info(Table, Partition),
-    CommitsTable = CommitQueue,
+-spec fulfill_all_commits(Queues :: queues(), wa_raft_acceptor:commit_error()) -> ok.
+fulfill_all_commits(#queues{counters = Counters, commits = Commits}, Reply) ->
     lists:foreach(
         fun ({Reference, _}) ->
-            case ets:take(CommitsTable, Reference) of
+            case ets:take(Commits, Reference) of
                 [{Reference, From}] ->
-                    counters:sub(Counters, ?RAFT_COMMIT_QUEUE_SIZE_COUNTER, 1),
+                    atomics:sub(Counters, ?RAFT_COMMIT_QUEUE_SIZE_COUNTER, 1),
                     gen_server:reply(From, Reply);
                 [] ->
                     ok
             end
-        end, ets:tab2list(CommitsTable)).
+        end, ets:tab2list(Commits)).
 
 %%-------------------------------------------------------------------
 %% PENDING READ QUEUE API
@@ -216,18 +292,17 @@ fulfill_all_commits(Table, Partition, Reply) ->
 % adding the read request to the table are done in two stages for reads
 % because the acceptor does not have enough information to add the read
 % to the ETS table directly.
--spec reserve_read(wa_raft:table(), wa_raft:partition()) -> ok | read_queue_full | apply_queue_full.
-reserve_read(Table, Partition) ->
-    {App, Counters, _, _} = require_info(Table, Partition),
-    PendingReads = counters:get(Counters, ?RAFT_READ_QUEUE_SIZE_COUNTER),
+-spec reserve_read(Queues :: queues()) -> ok | read_queue_full | apply_queue_full.
+reserve_read(#queues{application = App, counters = Counters}) ->
+    PendingReads = atomics:get(Counters, ?RAFT_READ_QUEUE_SIZE_COUNTER),
     case PendingReads >= ?RAFT_MAX_PENDING_READS(App) of
         true -> read_queue_full;
         false ->
-            case counters:get(Counters, ?RAFT_APPLY_QUEUE_SIZE_COUNTER) >= ?RAFT_MAX_PENDING_APPLIES(App) of
+            case atomics:get(Counters, ?RAFT_APPLY_QUEUE_SIZE_COUNTER) >= ?RAFT_MAX_PENDING_APPLIES(App) of
                 true -> apply_queue_full;
                 false ->
                     ?RAFT_GATHER('raft.acceptor.strong_read.request.pending', PendingReads + 1),
-                    counters:add(Counters, ?RAFT_READ_QUEUE_SIZE_COUNTER, 1),
+                    atomics:add(Counters, ?RAFT_READ_QUEUE_SIZE_COUNTER, 1),
                     ok
             end
     end.
@@ -235,28 +310,25 @@ reserve_read(Table, Partition) ->
 % Called from the RAFT server once it knows the proper ReadIndex for the
 % read request to add the read request to the reads table for storage
 % to handle upon applying.
--spec submit_read(wa_raft:table(), wa_raft:partition(), wa_raft_log:log_index(), term(), term()) -> ok.
-submit_read(Table, Partition, ReadIndex, From, Command) ->
-    {_, _, _, ReadQueue} = require_info(Table, Partition),
-    ets:insert(ReadQueue, {{ReadIndex, make_ref()}, From, Command}),
+-spec submit_read(Queues :: queues(), wa_raft_log:log_index(), term(), term()) -> ok.
+submit_read(#queues{reads = Reads}, ReadIndex, From, Command) ->
+    ets:insert(Reads, {{ReadIndex, make_ref()}, From, Command}),
     ok.
 
--spec query_reads(wa_raft:table(), wa_raft:partition(), wa_raft_log:log_index() | infinity) -> [{{wa_raft_log:log_index(), reference()}, term()}].
-query_reads(Table, Partition, MaxLogIndex) ->
-    {_, _, _, ReadQueue} = require_info(Table, Partition),
+-spec query_reads(Queues :: queues(), wa_raft_log:log_index() | infinity) -> [{{wa_raft_log:log_index(), reference()}, term()}].
+query_reads(#queues{reads = Reads}, MaxLogIndex) ->
     MatchSpec = ets:fun2ms(
         fun({{LogIndex, Reference}, _, Command}) when LogIndex =< MaxLogIndex ->
             {{LogIndex, Reference}, Command}
         end
     ),
-    ets:select(ReadQueue, MatchSpec).
+    ets:select(Reads, MatchSpec).
 
--spec fulfill_read(wa_raft:table(), wa_raft:partition(), term(), dynamic()) -> ok | not_found.
-fulfill_read(Table, Partition, Reference, Reply) ->
-    {_, Counters, _, ReadQueue} = require_info(Table, Partition),
-    case ets:take(ReadQueue, Reference) of
+-spec fulfill_read(Queues :: queues(), term(), dynamic()) -> ok | not_found.
+fulfill_read(#queues{counters = Counters, reads = Reads}, Reference, Reply) ->
+    case ets:take(Reads, Reference) of
         [{Reference, From, _}] ->
-            counters:sub(Counters, ?RAFT_READ_QUEUE_SIZE_COUNTER, 1),
+            atomics:sub(Counters, ?RAFT_READ_QUEUE_SIZE_COUNTER, 1),
             gen_server:reply(From, Reply);
         [] ->
             not_found
@@ -264,67 +336,38 @@ fulfill_read(Table, Partition, Reference, Reply) ->
 
 % Complete a read that was reserved by the RAFT acceptor but was rejected
 % before it could be added to the read queue and so has no reference.
--spec fulfill_incomplete_read(wa_raft:table(), wa_raft:partition(), gen_server:from(), wa_raft_acceptor:read_error()) -> ok.
-fulfill_incomplete_read(Table, Partition, From, Reply) ->
-    {_, Counters, _, _} = require_info(Table, Partition),
-    counters:sub(Counters, ?RAFT_READ_QUEUE_SIZE_COUNTER, 1),
+-spec fulfill_incomplete_read(Queues :: queues(), gen_server:from(), wa_raft_acceptor:read_error()) -> ok.
+fulfill_incomplete_read(#queues{counters = Counters}, From, Reply) ->
+    atomics:sub(Counters, ?RAFT_READ_QUEUE_SIZE_COUNTER, 1),
     gen_server:reply(From, Reply).
 
 % Fulfill a pending reads with an error that indicates that the read was not completed.
--spec fulfill_all_reads(wa_raft:table(), wa_raft:partition(), wa_raft_acceptor:read_error()) -> ok.
-fulfill_all_reads(Table, Partition, Reply) ->
-    {_, Counters, _, ReadQueue} = require_info(Table, Partition),
-    ReadsTable = ReadQueue,
+-spec fulfill_all_reads(Queues :: queues(), wa_raft_acceptor:read_error()) -> ok.
+fulfill_all_reads(#queues{counters = Counters, reads = Reads}, Reply) ->
     lists:foreach(
         fun ({Reference, _, _}) ->
-            case ets:take(ReadsTable, Reference) of
+            case ets:take(Reads, Reference) of
                 [{Reference, From, _}] ->
-                    counters:sub(Counters, ?RAFT_READ_QUEUE_SIZE_COUNTER, 1),
+                    atomics:sub(Counters, ?RAFT_READ_QUEUE_SIZE_COUNTER, 1),
                     gen_server:reply(From, Reply);
                 [] ->
                     ok
             end
-        end, ets:tab2list(ReadsTable)).
+        end, ets:tab2list(Reads)).
 
 %%-------------------------------------------------------------------
 %% APPLY QUEUE API
 %%-------------------------------------------------------------------
 
--spec apply_queue_size(wa_raft:table(), wa_raft:partition()) -> non_neg_integer().
-apply_queue_size(Table, Partition) ->
-    case registered_info(Table, Partition) of
-        undefined           -> 0;
-        {_, Counters, _, _} -> counters:get(Counters, ?RAFT_APPLY_QUEUE_SIZE_COUNTER)
-    end.
+-spec reserve_apply(Queues :: queues(), non_neg_integer()) -> ok.
+reserve_apply(#queues{counters = Counters}, Size) ->
+    atomics:add(Counters, ?RAFT_APPLY_QUEUE_SIZE_COUNTER, 1),
+    atomics:add(Counters, ?RAFT_APPLY_QUEUE_BYTE_SIZE_COUNTER, Size).
 
--spec apply_queue_byte_size(wa_raft:table(), wa_raft:partition()) -> non_neg_integer().
-apply_queue_byte_size(Table, Partition) ->
-    case registered_info(Table, Partition) of
-        undefined           -> 0;
-        {_, Counters, _, _} -> counters:get(Counters, ?RAFT_APPLY_QUEUE_BYTE_SIZE_COUNTER)
-    end.
-
--spec apply_queue_full(wa_raft:table(), wa_raft:partition()) -> boolean().
-apply_queue_full(Table, Partition) ->
-    case registered_info(Table, Partition) of
-        undefined ->
-            false;
-        {App, Counters, _, _} ->
-            counters:get(Counters, ?RAFT_APPLY_QUEUE_SIZE_COUNTER) >= ?RAFT_MAX_PENDING_APPLIES(App) orelse
-                counters:get(Counters, ?RAFT_APPLY_QUEUE_BYTE_SIZE_COUNTER) >= ?RAFT_MAX_PENDING_APPLY_BYTES(App)
-    end.
-
--spec reserve_apply(wa_raft:table(), wa_raft:partition(), non_neg_integer()) -> ok.
-reserve_apply(Table, Partition, Size) ->
-    {_, Counters, _, _} = require_info(Table, Partition),
-    counters:add(Counters, ?RAFT_APPLY_QUEUE_SIZE_COUNTER, 1),
-    counters:add(Counters, ?RAFT_APPLY_QUEUE_BYTE_SIZE_COUNTER, Size).
-
--spec fulfill_apply(wa_raft:table(), wa_raft:partition(), non_neg_integer()) -> ok.
-fulfill_apply(Table, Partition, Size) ->
-    {_, Counters, _, _} = require_info(Table, Partition),
-    counters:sub(Counters, ?RAFT_APPLY_QUEUE_SIZE_COUNTER, 1),
-    counters:sub(Counters, ?RAFT_APPLY_QUEUE_BYTE_SIZE_COUNTER, Size).
+-spec fulfill_apply(Queues :: queues(), non_neg_integer()) -> ok.
+fulfill_apply(#queues{counters = Counters}, Size) ->
+    atomics:sub(Counters, ?RAFT_APPLY_QUEUE_SIZE_COUNTER, 1),
+    atomics:sub(Counters, ?RAFT_APPLY_QUEUE_BYTE_SIZE_COUNTER, Size).
 
 %%-------------------------------------------------------------------
 %% OTP SUPERVISION
@@ -349,23 +392,30 @@ start_link(#raft_options{queue_name = Name} = Options) ->
 %%-------------------------------------------------------------------
 
 -spec init(Options :: #raft_options{}) -> {ok, #state{}}.
-init(#raft_options{table = Table, partition = Partition, queue_name = Name, queue_counters = Counters, queue_commits = CommitQueueName, queue_reads = ReadQueueName}) ->
+init(
+    #raft_options{
+        table = Table,
+        partition = Partition,
+        queue_name = Name,
+        queue_counters = Counters,
+        queue_commits = CommitsName,
+        queue_reads = ReadsName
+    }
+) ->
     process_flag(trap_exit, true),
 
     ?LOG_NOTICE("Queue[~p] starting for partition ~0p/~0p with read queue ~0p and commit queue ~0p",
-        [Name, Table, Partition, ReadQueueName, CommitQueueName], #{domain => [whatsapp, wa_raft]}),
+        [Name, Table, Partition, ReadsName, CommitsName], #{domain => [whatsapp, wa_raft]}),
 
     % The queue process is the first process in the supervision for a single
     % RAFT partition. The supervisor is configured to restart all processes if
     % even a single process fails. Since the queue process is starting up, all
     % queues tracked should be empty so reset all counters.
-    lists:foreach(
-        fun (I) -> counters:put(Counters, I, 0) end,
-        lists:seq(1, ?RAFT_NUMBER_OF_QUEUE_SIZE_COUNTERS)),
+    [atomics:put(Counters, Index, 0) || Index <- lists:seq(1, ?RAFT_NUMBER_OF_QUEUE_SIZE_COUNTERS)],
 
     % Create ETS tables for pending commits and reads.
-    CommitQueueName = ets:new(CommitQueueName, [set | ?RAFT_QUEUE_TABLE_OPTIONS]),
-    ReadQueueName = ets:new(ReadQueueName, [ordered_set | ?RAFT_QUEUE_TABLE_OPTIONS]),
+    CommitsName = ets:new(CommitsName, [set | ?RAFT_QUEUE_TABLE_OPTIONS]),
+    ReadsName = ets:new(ReadsName, [ordered_set | ?RAFT_QUEUE_TABLE_OPTIONS]),
 
     {ok, #state{name = Name}}.
 
@@ -385,14 +435,3 @@ handle_cast(Request, #state{name = Name} = State) ->
 terminate(Reason, #state{name = Name}) ->
     ?LOG_NOTICE("Queue[~p] terminating due to ~0P",
         [Name, Reason, 100], #{domain => [whatsapp, wa_raft]}).
-
-%%-------------------------------------------------------------------
-%% PRIVATE METHODS
-%%-------------------------------------------------------------------
-
--spec require_info(Table :: wa_raft:table(), Partition :: wa_raft:partition()) -> {Application :: atom(), Counters :: counters:counters_ref(), CommitQueue :: atom(), ReadQueue :: atom()}.
-require_info(Table, Partition) ->
-    case registered_info(Table, Partition) of
-        undefined -> error(partition_not_registered);
-        Info      -> Info
-    end.

@@ -94,12 +94,10 @@
 -record(state, {
     % Acceptor service name
     name :: atom(),
-    % Table name
-    table :: wa_raft:table(),
-    % Partition number
-    partition :: wa_raft:partition(),
     % Server service name
-    server :: atom()
+    server :: atom(),
+    % Queues handle
+    queues :: wa_raft_queue:queues()
 }).
 
 %%-------------------------------------------------------------------
@@ -190,7 +188,7 @@ registered_name(Table, Partition) ->
 %%-------------------------------------------------------------------
 
 -spec init(Options :: #raft_options{}) -> {ok, #state{}}.
-init(#raft_options{table = Table, partition = Partition, acceptor_name = Name, server_name = Server}) ->
+init(#raft_options{table = Table, partition = Partition, acceptor_name = Name, server_name = Server} = Options) ->
     process_flag(trap_exit, true),
 
     ?LOG_NOTICE("Acceptor[~0p] starting for partition ~0p/~0p",
@@ -198,9 +196,8 @@ init(#raft_options{table = Table, partition = Partition, acceptor_name = Name, s
 
     {ok, #state{
         name = Name,
-        table = Table,
-        partition = Partition,
-        server = Server
+        server = Server,
+        queues = wa_raft_queue:queues(Options)
     }}.
 
 -spec handle_call(read_request(), gen_server:from(), #state{}) -> {reply, read_result(), #state{}} | {noreply, #state{}};
@@ -242,12 +239,12 @@ terminate(Reason, #state{name = Name}) ->
 
 %% Enqueue a commit.
 -spec commit_impl(From :: gen_server:from(), Request :: op(), State :: #state{}) -> continue | commit_error().
-commit_impl(From, {Key, _} = Op, #state{table = Table, partition = Partition, server = Server, name = Name}) ->
+commit_impl(From, {Key, _} = Op, #state{name = Name, server = Server, queues = Queues}) ->
     StartT = os:timestamp(),
     try
         ?LOG_DEBUG("Acceptor[~0p] starts to handle commit of ~0P from ~0p.",
             [Name, Op, 30, From], #{domain => [whatsapp, wa_raft]}),
-        case wa_raft_queue:commit(Table, Partition, Key, From) of
+        case wa_raft_queue:commit(Queues, Key, From) of
             duplicate ->
                 ?LOG_WARNING("Acceptor[~0p] is rejecting commit request from ~0p because it has duplicate key ~0p.",
                     [Name, From, Key], #{domain => [whatsapp, wa_raft]}),
@@ -273,12 +270,12 @@ commit_impl(From, {Key, _} = Op, #state{table = Table, partition = Partition, se
 
 %% Enqueue a strongly-consistent read.
 -spec read_impl(gen_server:from(), command(), #state{}) -> continue | read_error().
-read_impl(From, Command, #state{name = Name, table = Table, partition = Partition, server = Server}) ->
+read_impl(From, Command, #state{name = Name, server = Server, queues = Queues}) ->
     StartT = os:timestamp(),
     ?LOG_DEBUG("Acceptor[~p] starts to handle read of ~0P from ~0p.",
         [Name, Command, 100, From], #{domain => [whatsapp, wa_raft]}),
     try
-        case wa_raft_queue:reserve_read(Table, Partition) of
+        case wa_raft_queue:reserve_read(Queues) of
             read_queue_full ->
                 ?RAFT_COUNT('raft.acceptor.strong_read.error.read_queue_full'),
                 ?LOG_WARNING("Acceptor[~0p] is rejecting read request from ~0p because the read queue is full.",

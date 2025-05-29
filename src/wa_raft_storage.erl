@@ -291,6 +291,7 @@
     options :: #raft_options{},
     path :: file:filename(),
     server :: atom(),
+    queues :: wa_raft_queue:queues(),
     module :: module(),
     handle :: storage_handle(),
     position :: wa_raft_log:log_pos(),
@@ -503,6 +504,7 @@ init(#raft_options{application = Application, table = Table, partition = Partiti
         options = Options,
         path = Path,
         server = Server,
+        queues = wa_raft_queue:queues(Options),
         module = Module,
         handle = Handle,
         position = Position
@@ -592,14 +594,14 @@ handle_call(Request, From, #state{name = Name} = State) ->
 -spec handle_cast(Request :: cast(), State :: #state{}) ->
     {noreply, NewState :: #state{}}.
 
-handle_cast(?CANCEL_REQUEST, #state{name = Name, table = Table, partition = Partition} = State) ->
+handle_cast(?CANCEL_REQUEST, #state{name = Name, queues = Queues} = State) ->
     ?LOG_NOTICE("Storage[~0p] cancels all pending commits and reads.", [Name], #{domain => [whatsapp, wa_raft]}),
-    wa_raft_queue:fulfill_all_commits(Table, Partition, {error, not_leader}),
-    wa_raft_queue:fulfill_all_reads(Table, Partition, {error, not_leader}),
+    wa_raft_queue:fulfill_all_commits(Queues, {error, not_leader}),
+    wa_raft_queue:fulfill_all_reads(Queues, {error, not_leader}),
     {noreply, State};
 
-handle_cast(?APPLY_REQUEST({LogIndex, {LogTerm, {Reference, Label, Command}}}, Size, EffectiveTerm), #state{name = Name, table = Table, partition = Partition} = State0) ->
-    wa_raft_queue:fulfill_apply(Table, Partition, Size),
+handle_cast(?APPLY_REQUEST({LogIndex, {LogTerm, {Reference, Label, Command}}}, Size, EffectiveTerm), #state{name = Name, queues = Queues} = State0) ->
+    wa_raft_queue:fulfill_apply(Queues, Size),
     LogPosition = #raft_log_pos{index = LogIndex, term = LogTerm},
     ?LOG_DEBUG("Storage[~0p] is starting to apply ~0p", [Name, LogPosition], #{domain => [whatsapp, wa_raft]}),
     {noreply, handle_apply(LogPosition, Reference, Label, Command, EffectiveTerm, State0)};
@@ -655,16 +657,21 @@ handle_apply(
     Label,
     Command,
     EffectiveTerm,
-    #state{application = Application, name = Name, table = Table, partition = Partition,
-           server = Server, position = #raft_log_pos{index = Index}} = State
+    #state{
+        application = Application,
+        name = Name,
+        server = Server,
+        queues = Queues,
+        position = #raft_log_pos{index = Index}
+    } = State
 ) when LogIndex =:= Index + 1 ->
     ?RAFT_COUNT('raft.storage.apply'),
     StartT = os:timestamp(),
     {Reply, NewState} = handle_command(Label, Command, LogPosition, State),
     LogTerm =:= EffectiveTerm andalso
-        wa_raft_queue:fulfill_commit(Table, Partition, Reference, Reply),
+        wa_raft_queue:fulfill_commit(Queues, Reference, Reply),
     handle_delayed_reads(NewState),
-    wa_raft_queue:apply_queue_size(Table, Partition) =:= 0 andalso ?RAFT_STORAGE_NOTIFY_COMPLETE(Application) andalso
+    wa_raft_queue:apply_queue_size(Queues) =:= 0 andalso ?RAFT_STORAGE_NOTIFY_COMPLETE(Application) andalso
         wa_raft_server:notify_complete(Server),
     ?LOG_DEBUG("Storage[~0p] finishes applying ~0p.",
         [Name, LogPosition], #{domain => [whatsapp, wa_raft]}),
@@ -714,12 +721,12 @@ handle_command_impl(Label, Command, Position, #state{module = Module, handle = H
     {Reply, State#state{handle = NewHandle, position = Position}}.
 
 -spec handle_delayed_reads(State :: #state{}) -> ok.
-handle_delayed_reads(#state{table = Table, partition = Partition, module = Module, handle = Handle, position = #raft_log_pos{index = Index} = Position}) ->
+handle_delayed_reads(#state{queues = Queues, module = Module, handle = Handle, position = #raft_log_pos{index = Index} = Position}) ->
     [
         begin
             Reply = Module:storage_read(Command, Position, Handle),
-            wa_raft_queue:fulfill_read(Table, Partition, Reference, Reply)
-        end || {Reference, Command} <- wa_raft_queue:query_reads(Table, Partition, Index)
+            wa_raft_queue:fulfill_read(Queues, Reference, Reply)
+        end || {Reference, Command} <- wa_raft_queue:query_reads(Queues, Index)
     ],
     ok.
 
