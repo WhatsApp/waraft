@@ -26,7 +26,7 @@
 
 %% RAFT log provider interface for writing new log data
 -export([
-    append/4
+    append/3
 ]).
 
 %% RAFT log provider interface for managing underlying RAFT log
@@ -141,33 +141,13 @@ config(#raft_log{name = Name}) ->
 %% RAFT log provider interface for writing new log data
 %%-------------------------------------------------------------------
 
--spec append(View :: wa_raft_log:view(), Start :: wa_raft_log:log_index(), Entries :: [wa_raft_log:log_entry()], Mode :: strict | relaxed) ->
-    ok | {mismatch, Index :: wa_raft_log:log_index()} | skipped | wa_raft_log:error().
-append(View, Start, Entries, _Mode) ->
-    Log = wa_raft_log:log(View),
-    append_impl(Log, Start, Entries, first_index(Log), last_index(Log)).
-
--spec append_impl(
-    Log :: wa_raft_log:log(),
-    Start :: wa_raft_log:log_index(),
-    Entries :: [wa_raft_log:log_entry()],
-    First :: wa_raft_log:log_index() | undefined,
-    Last :: wa_raft_log:log_index() | undefined
-) -> ok | {mismatch, Index :: wa_raft_log:log_index()} | wa_raft_log:error().
-append_impl(_Log, _Start, [], _First, _Last) ->
-    ok;
-append_impl(Log, Start, [_ | Entries], First, Last) when Start < First ->
-    append_impl(Log, Start + 1, Entries, First, Last);
-append_impl(Log, Start, [{Term, _Entry} | Entries], First, Last) when Start =< Last ->
-    case term(Log, Start) of
-        {ok, Term} -> append_impl(Log, Start + 1, Entries, First, Last);
-        _          -> {mismatch, Start}
-    end;
-append_impl(#raft_log{name = Name}, Start, [_|_] = Entries, _First, Last) when Start =:= Last + 1 ->
-    true = ets:insert(Name, lists:enumerate(Start, Entries)),
-    ok;
-append_impl(_Log, _Start, [_|_], _First, _Last) ->
-    {error, invalid_start_index}.
+-spec append(View :: wa_raft_log:view(), Entries :: [wa_raft_log:log_entry()], Mode :: strict | relaxed) ->
+    ok | skipped | wa_raft_log:error().
+append(View, Entries, _Mode) ->
+    Name = wa_raft_log:log_name(View),
+    Last = wa_raft_log:last_index(View),
+    true = ets:insert(Name, lists:enumerate(Last + 1, Entries)),
+    ok.
 
 %%-------------------------------------------------------------------
 %% RAFT log provider interface for managing underlying RAFT log

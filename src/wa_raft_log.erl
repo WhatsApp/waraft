@@ -212,28 +212,17 @@
 %% RAFT log provider interface for writing new log data
 %%-------------------------------------------------------------------
 
-%% Write log entries to the specified position in the RAFT log.
-%%  - Implementations should not write any log entries before
-%%    the start of the current log even if they may be included
-%%    in the provided list of log entries.
-%%  - When handling log entries that already exist in the RAFT log,
-%%    implementations should verify that the terms in the provided
-%%    log entries match the terms of the existing log entries.
-%%    If a term does not match, then {mismatch, Index} should be
-%%    returned with the index of the first log entry whose term does
-%%    not match.
+%% Append new log entries to the end of the RAFT log.
 %%  - This function should never overwrite existing log entries.
-%%  - If appending the provided log entries at the provided starting
-%%    position would produce a gap, then return
-%%    `{error, invalid_start_index}`.
-%%  - Otherwise, if the provided log entries were written
-%%    successfully or otherwise already existed, return `ok`.
-%% In 'strict' mode, the append should always succeed or otherwise
-%% return an error. In 'relaxed' mode, if there are conditions that
-%% would make it impossible to quickly append to the log, it is
-%% acceptable to skip this append and return 'skipped'.
--callback append(View :: view(), Start :: log_index(), Entries :: [log_entry()], Mode :: strict | relaxed) ->
-    ok | {mismatch, Index :: log_index()} | skipped | wa_raft:error().
+%%  - If the new log entries were written successfully, return 'ok'.
+%%  - In 'strict' mode, the append should always succeed or return an
+%%    error on failure.
+%%  - In 'relaxed' mode, if there are transient conditions that would
+%%    make it difficult to append to the log without blocking, then
+%%    the append should be skipped and 'skipped' returned. Otherwise,
+%%    the same conditions as the 'strict' mode apply.
+-callback append(View :: view(), Entries :: [log_entry()], Mode :: strict | relaxed) ->
+    ok | skipped | wa_raft:error().
 
 %%-------------------------------------------------------------------
 %% RAFT log provider interface for managing underlying RAFT log
@@ -324,41 +313,59 @@ append(#log_view{last = Last} = View, Entries) ->
 %% entries provided.
 -spec append(View :: view(), Start :: log_index(), Entries :: [log_entry()]) ->
     {ok, MatchIndex :: log_index(), NewView :: view()} | wa_raft:error().
-append(View, Start, _Entries) when Start =< 0 ->
-    ?LOG_ERROR("[~p] rejecting append starting at invalid start index ~p", [log_name(View), Start], #{domain => [whatsapp, wa_raft]}),
+append(#log_view{last = Last}, Start, _Entries) when Start =< 0; Start > Last + 1 ->
     {error, invalid_start_index};
 append(#log_view{log = Log, last = Last} = View0, Start, Entries) ->
     ?RAFT_COUNT('raft.log.append'),
     Provider = provider(Log),
-    case Provider:append(View0, Start, Entries, strict) of
-        ok ->
-            ?RAFT_COUNT('raft.log.append.ok'),
-            NewMatch = Start + length(Entries) - 1,
-            NewLast = max(Last, NewMatch),
-            {ok, NewMatch, refresh_config(View0#log_view{last = NewLast})};
-        {mismatch, Index} ->
+    End = Start + length(Entries) - 1,
+    try Provider:fold_terms(Log, Start, End, fun append_validate/3, {Start, Entries}) of
+        {ok, {_, []}} ->
+            {ok, End, View0};
+        {ok, {Next, NewEntries}} when Next =:= Last + 1 ->
+            case Provider:append(View0, NewEntries, strict) of
+                ok ->
+                    ?RAFT_COUNT('raft.log.append.ok'),
+                    {ok, End, refresh_config(View0#log_view{last = max(Last, End)})};
+                {error, Reason} ->
+                    ?RAFT_COUNT('raft.log.append.error'),
+                    {error, Reason}
+            end;
+        {error, Reason} ->
+            ?RAFT_COUNT('raft.log.append.fold.error'),
+            {error, Reason}
+    catch
+        throw:{mismatch, Next, NewEntries} when Next >= Start ->
             ?RAFT_COUNT('raft.log.append.mismatch'),
-            case truncate(View0, Index) of
+            case truncate(View0, Next) of
                 {ok, View1} ->
-                    NewEntries = lists:nthtail(Index - Start, Entries),
-                    case Provider:append(View1, Index, NewEntries, strict) of
+                    case Provider:append(View1, NewEntries, strict) of
                         ok ->
                             ?RAFT_COUNT('raft.log.append.ok'),
-                            NewMatch = Start + length(Entries) - 1,
-                            NewLast = max(Index - 1, NewMatch),
-                            {ok, NewMatch, refresh_config(View1#log_view{last = NewLast})};
+                            {ok, End, refresh_config(View1#log_view{last = End})};
                         {error, Reason} ->
                             ?RAFT_COUNT('raft.log.append.error'),
                             {error, Reason}
                     end;
                 {error, Reason} ->
-                    ?RAFT_COUNT('raft.log.append.mismatch.error'),
+                    ?RAFT_COUNT('raft.log.append.truncate.error'),
                     {error, Reason}
             end;
-        {error, Reason} ->
-            ?RAFT_COUNT('raft.log.append.error'),
-            {error, Reason}
+        throw:{missing, Index} ->
+            ?RAFT_COUNT('raft.log.append.corruption'),
+            {error, {missing, Index}}
     end.
+
+-spec append_validate(Index :: wa_raft_log:log_index(), Term :: wa_raft_log:log_term(), Acc) -> Acc
+    when Acc :: {Next :: wa_raft_log:log_index(), Entries :: [log_entry()]}.
+append_validate(Index, Term, {Index, [{Term, _} | Entries]}) ->
+    {Index + 1, Entries};
+append_validate(Index, _, {Index, [_ | _] = Entries}) ->
+    throw({mismatch, Index, Entries});
+append_validate(StoredIndex, StoredTerm, {Index, [_ | Entries]}) when Index < StoredIndex ->
+    append_validate(StoredIndex, StoredTerm, {Index + 1, Entries});
+append_validate(_, _, {Index, [_ | _]}) ->
+    throw({missing, Index}).
 
 %%-------------------------------------------------------------------
 %% APIs for accessing log data
@@ -605,7 +612,7 @@ sync(#log_view{log = Log, last = Last, pending = Pending} = View) ->
     ?RAFT_COUNT('raft.log.sync'),
     Entries = lists:reverse(Pending),
     Provider = provider(Log),
-    case Provider:append(View, Last + 1, Entries, relaxed) of
+    case Provider:append(View, Entries, relaxed) of
         ok ->
             {ok, refresh_config(View#log_view{last = Last + length(Pending), pending = []})};
         skipped ->
