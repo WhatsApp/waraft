@@ -11,7 +11,7 @@
 -behaviour(gen_server).
 
 -include_lib("kernel/include/logger.hrl").
--include("wa_raft.hrl").
+-include_lib("wa_raft/include/wa_raft.hrl").
 
 % elp:ignore W0048 (no_dialyzer_attribute): improper list expected by gen interface
 -dialyzer({no_improper_lists, [handle_cast/2]}).

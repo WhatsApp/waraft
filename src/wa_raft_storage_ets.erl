@@ -27,7 +27,7 @@
     storage_make_empty_snapshot/5
 ]).
 
--include("wa_raft.hrl").
+-include_lib("wa_raft/include/wa_raft.hrl").
 
 %% Options used for the ETS table
 -define(OPTIONS, [set, public, {read_concurrency, true}, {write_concurrency, true}]).

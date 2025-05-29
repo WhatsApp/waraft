@@ -24,7 +24,7 @@
 -type scope() :: Application :: atom() | {Table :: wa_raft:table(), Partition :: wa_raft:partition()} | SearchApps :: [atom()].
 -type key() :: Key :: atom() | {Primary :: atom(), Fallback :: atom()}.
 
--include("wa_raft.hrl").
+-include_lib("wa_raft/include/wa_raft.hrl").
 
 %%-------------------------------------------------------------------
 %% Config API

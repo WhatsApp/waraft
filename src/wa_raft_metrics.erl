@@ -28,7 +28,7 @@
     value/0
 ]).
 
--include("wa_raft.hrl").
+-include_lib("wa_raft/include/wa_raft.hrl").
 
 %%-------------------------------------------------------------------
 %% RAFT Metrics Behaviour

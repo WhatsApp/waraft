@@ -8,7 +8,7 @@
 -module(wa_raft).
 -compile(warn_missing_spec_all).
 
--include("wa_raft.hrl").
+-include_lib("wa_raft/include/wa_raft.hrl").
 
 %% Public Types
 -export_type([

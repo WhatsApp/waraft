@@ -94,7 +94,7 @@
 ]).
 
 -include_lib("kernel/include/logger.hrl").
--include("wa_raft.hrl").
+-include_lib("wa_raft/include/wa_raft.hrl").
 
 %% Atom indicating that the provider has not been opened yet.
 -define(PROVIDER_NOT_OPENED, '$not_opened').

@@ -43,7 +43,7 @@
 ]).
 
 -include_lib("kernel/include/logger.hrl").
--include("wa_raft.hrl").
+-include_lib("wa_raft/include/wa_raft.hrl").
 
 %% Key in persistent_term for the options associated with a RAFT partition.
 -define(OPTIONS_KEY(Table, Partition), {?MODULE, Table, Partition}).

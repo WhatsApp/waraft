@@ -9,7 +9,7 @@
 
 -include_lib("kernel/include/file.hrl").
 -include_lib("kernel/include/logger.hrl").
--include("wa_raft.hrl").
+-include_lib("wa_raft/include/wa_raft.hrl").
 
 %% OTP supervision
 -export([

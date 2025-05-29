@@ -21,7 +21,7 @@
     init/1
 ]).
 
--include("wa_raft.hrl").
+-include_lib("wa_raft/include/wa_raft.hrl").
 
 -spec start_link() -> supervisor:startlink_ret().
 start_link() ->

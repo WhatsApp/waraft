@@ -26,7 +26,7 @@
     init/1
 ]).
 
--include("wa_raft.hrl").
+-include_lib("wa_raft/include/wa_raft.hrl").
 
 %%% ------------------------------------------------------------------------
 %%%  Internal API

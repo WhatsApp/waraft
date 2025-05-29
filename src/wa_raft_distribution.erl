@@ -15,7 +15,7 @@
     reply/3
 ]).
 
--include("wa_raft.hrl").
+-include_lib("wa_raft/include/wa_raft.hrl").
 
 -type dest_addr() :: {Name :: atom(), Node :: node()}.
 

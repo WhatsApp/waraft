@@ -53,7 +53,7 @@
     init/1
 ]).
 
--include("wa_raft.hrl").
+-include_lib("wa_raft/include/wa_raft.hrl").
 
 %% Key in persistent_term for the application options associated with an
 %% application that has started a RAFT supervisor.

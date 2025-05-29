@@ -58,7 +58,7 @@
 ]).
 
 -include_lib("kernel/include/logger.hrl").
--include("wa_raft.hrl").
+-include_lib("wa_raft/include/wa_raft.hrl").
 
 -type command() :: noop_command() | noop_omitted_command() | config_command() | dynamic().
 -type noop_command() :: noop.
