@@ -235,7 +235,7 @@ reserve_read(Table, Partition) ->
 % Called from the RAFT server once it knows the proper ReadIndex for the
 % read request to add the read request to the reads table for storage
 % to handle upon applying.
--spec submit_read(wa_raft:table(), wa_raft:partition(), wa_raft_log:log_index(), term(), term()) -> ok | read_queue_full.
+-spec submit_read(wa_raft:table(), wa_raft:partition(), wa_raft_log:log_index(), term(), term()) -> ok.
 submit_read(Table, Partition, ReadIndex, From, Command) ->
     {_, _, _, ReadQueue} = require_info(Table, Partition),
     ets:insert(ReadQueue, {{ReadIndex, make_ref()}, From, Command}),

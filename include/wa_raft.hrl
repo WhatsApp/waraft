@@ -450,6 +450,14 @@
     %% this RAFT replica was reached
     state_start_ts :: non_neg_integer(),
 
+    %% [Leader] The list of pending operations in the current commit batch
+    %%          that are in queue to be appended and replicated after a short
+    %%          wait to see if multiple commits can be handled at once to
+    %%          reduce overhead
+    pending = [] :: [wa_raft_acceptor:op()],
+    %% [Leader] Whether or not a read has been accepted and is waiting for the
+    %%          leader to establish a new quorum to be handled.
+    pending_read = false :: boolean(),
     %% [Leader] The index of the next log entry to send in the next heartbeat
     %%          to each peer
     next_indices = #{} :: #{node() => wa_raft_log:log_index()},

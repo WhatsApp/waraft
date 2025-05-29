@@ -19,7 +19,8 @@
 %% APIs for writing new log data
 -export([
     append/2,
-    append/3
+    append/3,
+    append_at/3
 ]).
 
 %% APIs for accessing log data
@@ -39,14 +40,6 @@
     get_terms/3,
 
     config/1
-]).
-
-%% APIs for batching new entries and committing
--export([
-    submit/2,
-    pending/1,
-    sync/1,
-    cancel/1
 ]).
 
 %% APIs for managing logs and log data
@@ -109,7 +102,6 @@
     log :: log(),
     first = 0 :: log_index(),
     last = 0 :: log_index(),
-    pending = [] :: [log_entry()],
     config :: undefined | {log_index(), wa_raft_server:config()}
 }).
 
@@ -298,11 +290,26 @@ start_link(#raft_options{log_name = Name} = Options) ->
 %% APIs for writing new log data
 %%-------------------------------------------------------------------
 
-%% Append the provided log entries to the end of the log.
-%% See `append/3` for more detailed information.
--spec append(View :: view(), Entries :: [log_entry()]) -> {ok, LastIndex :: log_index(), NewView :: view()} | wa_raft:error().
-append(#log_view{last = Last} = View, Entries) ->
-    append(View, Last + 1, Entries).
+%% Append new log entries to the end of the log.
+-spec append(View :: view(), Entries :: [log_entry()]) ->
+    {ok, NewView :: view()} | wa_raft:error().
+append(View, Entries) ->
+    % eqwalizer:ignore - strict append cannot return skipped
+    append(View, Entries, strict).
+
+%% Append new log entries to the end of the log.
+-spec append(View :: view(), Entries :: [log_entry()], Mode :: strict | relaxed) ->
+    {ok, NewView :: view()} | skipped | wa_raft:error().
+append(#log_view{last = Last} = View, Entries, Mode) ->
+    Provider = provider(View),
+    case Provider:append(View, Entries, Mode) of
+        ok ->
+            {ok, refresh_config(View#log_view{last = Last + length(Entries)})};
+        skipped when Mode =:= relaxed ->
+            skipped;
+        {error, Reason} ->
+            {error, Reason}
+    end.
 
 %% Append the provided log entries to the log at the specified starting position.
 %% If this provided starting position is past the end of the log and appending
@@ -311,11 +318,11 @@ append(#log_view{last = Last} = View, Entries) ->
 %% compared with the already existing log entries. If there is any mismatch, then
 %% all log entries after the mismatching log will be replaced with the new log
 %% entries provided.
--spec append(View :: view(), Start :: log_index(), Entries :: [log_entry()]) ->
+-spec append_at(View :: view(), Start :: log_index(), Entries :: [log_entry()]) ->
     {ok, MatchIndex :: log_index(), NewView :: view()} | wa_raft:error().
-append(#log_view{last = Last}, Start, _Entries) when Start =< 0; Start > Last + 1 ->
+append_at(#log_view{last = Last}, Start, _Entries) when Start =< 0; Start > Last + 1 ->
     {error, invalid_start_index};
-append(#log_view{log = Log, last = Last} = View0, Start, Entries) ->
+append_at(#log_view{log = Log, last = Last} = View0, Start, Entries) ->
     ?RAFT_COUNT('raft.log.append'),
     Provider = provider(Log),
     End = Start + length(Entries) - 1,
@@ -579,54 +586,6 @@ config(Log) ->
         {ok, Index, Config} -> {ok, Index, wa_raft_server:normalize_config(Config)};
         Other -> Other
     end.
-
-%%-------------------------------------------------------------------
-%% APIs for batching new entries and committing
-%%-------------------------------------------------------------------
-
-%% Add a new entry to the list of pending log entries in the current batch.
-%% These pending log entries can be commited to the log by using `sync/1` or
-%% removed from the batch using `cancel/1`.
-%%
--spec submit(View :: view() , Entry :: wa_raft_log:log_entry()) -> {ok, NewView :: view()}.
-submit(#log_view{pending = []} = View, Entry) ->
-   {ok, View#log_view{pending = [Entry]}};
-submit(#log_view{pending = [{_, {?READ_OP, noop}} | Tail]} = View, Entry) ->
-   {ok, View#log_view{pending = [Entry | Tail]}};
-submit(#log_view{pending = [{_, {?READ_OP, _Label, noop}} | Tail]} = View, Entry) ->
-   {ok, View#log_view{pending = [Entry | Tail]}};
-submit(#log_view{pending = Pending} = View, Entry) ->
-   {ok, View#log_view{pending = [Entry | Pending]}}.
-
-%% Return the number of pending log entries in the current batch.
--spec pending(View :: view()) -> Pending :: non_neg_integer().
-pending(#log_view{pending = Pending}) ->
-    length(Pending).
-
-%% Append all pending log entries in the current batch to the end of the log.
-%% This operation performs a 'relaxed' append which may fail. In the case that
-%% the append fails, then this function will return 'skipped' and there will
-%% be no change to the log nor to the pending log entries in the current batch.
--spec sync(View :: view()) -> {ok, NewView :: view()} | skipped | wa_raft:error().
-sync(#log_view{log = Log, last = Last, pending = Pending} = View) ->
-    ?RAFT_COUNT('raft.log.sync'),
-    Entries = lists:reverse(Pending),
-    Provider = provider(Log),
-    case Provider:append(View, Entries, relaxed) of
-        ok ->
-            {ok, refresh_config(View#log_view{last = Last + length(Pending), pending = []})};
-        skipped ->
-            skipped;
-        {error, Reason} ->
-            {error, Reason}
-    end.
-
-%% Remove all pending log entries from the current batch, returning those log
-%% entries that were removed.
--spec cancel(View :: view()) -> {ok, Cancelled :: [log_entry()], NewView :: view()}.
-cancel(#log_view{pending = Pending} = View) ->
-    ?RAFT_COUNT('raft.log.cancel'),
-    {ok, lists:reverse(Pending), View#log_view{pending = []}}.
 
 %%-------------------------------------------------------------------
 %% APIs for managing logs and log data

@@ -1005,8 +1005,9 @@ leader(enter, PreviousStateName, #raft_state{self = Self, log_view = View0} = St
     % quorum in the new term by starting replication and clearing out
     % any log mismatches on follower replicas.
     {State4, LogEntry} = get_log_entry(State3, {make_ref(), noop}),
-    {ok, NewLastLogIndex, View1} = wa_raft_log:append(View0, [LogEntry]),
-    State5 = State4#raft_state{log_view = View1, first_current_term_log_index = NewLastLogIndex},
+    {ok, View1} = wa_raft_log:append(View0, [LogEntry], strict),
+    TermStartIndex = wa_raft_log:last_index(View1),
+    State5 = State4#raft_state{log_view = View1, first_current_term_log_index = TermStartIndex},
 
     % Perform initial heartbeat and log entry resolution
     State6 = append_entries_to_followers(State5),
@@ -1017,14 +1018,14 @@ leader(enter, PreviousStateName, #raft_state{self = Self, log_view = View0} = St
 leader(
     internal,
     ?ADVANCE_TERM(NewTerm),
-    #raft_state{log_view = View, current_term = CurrentTerm} = State
+    #raft_state{current_term = CurrentTerm} = State0
 ) when NewTerm > CurrentTerm ->
     ?RAFT_COUNT('raft.leader.advance_term'),
-    ?RAFT_LOG_NOTICE(State, "advancing to new term ~0p.", [NewTerm]),
-    %% Drop any pending log entries queued in the log view before advancing
-    {ok, _, NewView} = wa_raft_log:cancel(View),
-    State1 = advance_term(?FUNCTION_NAME, NewTerm, undefined, State#raft_state{log_view = NewView}),
-    {next_state, follower_or_witness_state(State1), State1};
+    ?RAFT_LOG_NOTICE(State0, "advancing to new term ~0p.", [NewTerm]),
+    %% Drop any pending log entries in the current batch before advancing
+    State1 = cancel_pending({error, not_leader}, State0),
+    State2 = advance_term(?FUNCTION_NAME, NewTerm, undefined, State1),
+    {next_state, follower_or_witness_state(State2), State2};
 
 %% [Protocol] Parse any RPCs in network formats
 leader(Type, Event, #raft_state{} = State) when is_tuple(Event), element(1, Event) =:= rpc ->
@@ -1158,7 +1159,7 @@ leader(state_timeout = Type, Event, #raft_state{handover = {Peer, _, Timeout}} =
     end;
 
 %% [Timeout] Periodic heartbeat to followers
-leader(state_timeout, _, #raft_state{application = App, log_view = View} = State0) ->
+leader(state_timeout, _, #raft_state{application = App} = State0) ->
     case ?RAFT_LEADER_ELIGIBLE(App) of
         true ->
             State1 = append_entries_to_followers(State0),
@@ -1168,9 +1169,9 @@ leader(state_timeout, _, #raft_state{application = App, log_view = View} = State
         false ->
             ?RAFT_LOG_NOTICE(State0, "resigns from leadership because this node is ineligible.", []),
             %% Drop any pending log entries queued in the log view before resigning
-            {ok, _, NewView} = wa_raft_log:cancel(View),
-            State1 = clear_leader(?FUNCTION_NAME, State0#raft_state{log_view = NewView}),
-            {next_state, follower_or_witness_state(State1), State1}
+            State1 = cancel_pending({error, not_leader}, State0),
+            State2 = clear_leader(?FUNCTION_NAME, State1),
+            {next_state, follower_or_witness_state(State2), State2}
     end;
 
 %% [Commit] If a handover is in progress, then try to redirect to handover target
@@ -1193,22 +1194,19 @@ leader(
     ?COMMIT_COMMAND(Op),
     #raft_state{
         application = App,
-        log_view = View0
+        pending = Pending
     } = State0
 ) ->
     ?RAFT_COUNT('raft.commit'),
-    {State1, LogEntry} = get_log_entry(State0, Op),
-    {ok, View1} = wa_raft_log:submit(View0, LogEntry),
-    Pending = wa_raft_log:pending(View1),
-    State2 = apply_single_node_cluster(State1#raft_state{log_view = View1}), % apply immediately for single node cluster
-
-    case ?RAFT_COMMIT_BATCH_INTERVAL(App) > 0 andalso Pending =< ?RAFT_COMMIT_BATCH_MAX_ENTRIES(App) of
+    State1 = apply_single_node_cluster(State0#raft_state{pending = [Op | Pending]}), % apply immediately for single node cluster
+    PendingCount = length(State1#raft_state.pending),
+    case ?RAFT_COMMIT_BATCH_INTERVAL(App) > 0 andalso PendingCount =< ?RAFT_COMMIT_BATCH_MAX_ENTRIES(App) of
         true ->
             ?RAFT_COUNT('raft.commit.batch.delay'),
-            {keep_state, State2, ?COMMIT_BATCH_TIMEOUT(State2)};
+            {keep_state, State1, ?COMMIT_BATCH_TIMEOUT(State1)};
         false ->
-            State3 = append_entries_to_followers(State2),
-            {keep_state, State3, ?HEARTBEAT_TIMEOUT(State3)}
+            State2 = append_entries_to_followers(State1),
+            {keep_state, State2, ?HEARTBEAT_TIMEOUT(State2)}
     end;
 
 %% [Strong Read] If a handover is in progress, then try to redirect to handover target
@@ -1233,44 +1231,34 @@ leader(
         self = Self,
         table = Table,
         partition = Partition,
-        log_view = View0,
         storage = Storage,
         commit_index = CommitIndex,
         last_applied = LastApplied,
+        pending = Pending,
         first_current_term_log_index = FirstLogIndex
     } = State0
 ) ->
-    LastLogIndex = wa_raft_log:last_index(View0),
-    Pending = wa_raft_log:pending(View0),
     ReadIndex = max(CommitIndex, FirstLogIndex),
     case is_single_member(Self, config(State0)) of
         % If we are a single node cluster and we are fully-applied, then immediately dispatch.
-        true when Pending =:= 0, ReadIndex =:= LastApplied ->
+        true when Pending =:= [], ReadIndex =< LastApplied ->
             wa_raft_storage:apply_read(Storage, From, Command),
             {keep_state, State0};
         _ ->
-            ok = wa_raft_queue:submit_read(Table, Partition, ReadIndex + 1, From, Command),
-            State2 = case ReadIndex < LastLogIndex orelse Pending > 0 of
-                true  ->
-                    State0;
-                % TODO(hsun324): Try to reuse the commit code to deal with placeholder ops so we
-                % handle batching and timeout properly instead of relying on a previously set timeout.
-                false ->
-                    {State1, LogEntry} = get_log_entry(State0, {?READ_OP, noop}),
-                    {ok, View1} = wa_raft_log:submit(View0, LogEntry),
-                    State1#raft_state{log_view = View1}
-            end,
-            {keep_state, State2}
+            ok = wa_raft_queue:submit_read(Table, Partition, ReadIndex, From, Command),
+            % Regardless of whether or not the read index is an existing log entry, indicate that
+            % a read is pending as the leader must establish a new quorum to be able to serve the
+            % read request.
+            {keep_state, State0#raft_state{pending_read = true}}
     end;
 
 %% [Resign] Leader resigns by switching to follower state.
-leader({call, From}, ?RESIGN_COMMAND, #raft_state{log_view = View} = State) ->
-    ?RAFT_LOG_NOTICE(State, "resigns.", []),
-
+leader({call, From}, ?RESIGN_COMMAND, #raft_state{} = State0) ->
+    ?RAFT_LOG_NOTICE(State0, "resigns.", []),
     %% Drop any pending log entries queued in the log view before resigning
-    {ok, _, NewView} = wa_raft_log:cancel(View),
-    State1 = clear_leader(?FUNCTION_NAME, State#raft_state{log_view = NewView}),
-    {next_state, follower_or_witness_state(State1), State1, {reply, From, ok}};
+    State1 = cancel_pending({error, not_leader}, State0),
+    State2 = clear_leader(?FUNCTION_NAME, State1),
+    {next_state, follower_or_witness_state(State2), State2, {reply, From, ok}};
 
 %% [Adjust Membership] Leader attempts to commit a single-node membership change.
 leader(
@@ -1322,7 +1310,8 @@ leader(
                                     % soon as possible.
                                     Op = {make_ref(), {config, NewConfig}},
                                     {State1, LogEntry} = get_log_entry(State0, Op),
-                                    {ok, LogIndex, View1} = wa_raft_log:append(View0, [LogEntry]),
+                                    {ok, View1} = wa_raft_log:append(View0, [LogEntry], strict),
+                                    LogIndex = wa_raft_log:last_index(View1),
                                     ?RAFT_LOG_NOTICE(State1, "appended configuration change from ~0p to ~0p at log index ~0p.", [Config, NewConfig, LogIndex]),
                                     State2 = State1#raft_state{log_view = View1},
                                     State3 = apply_single_node_cluster(State2),
@@ -2351,17 +2340,14 @@ get_log_entry(#raft_state{current_term = CurrentTerm, label_module = LabelModule
     {State0#raft_state{last_label = NewLabel}, {CurrentTerm, {Ref, NewLabel, Command}}}.
 
 -spec apply_single_node_cluster(Data :: #raft_state{}) -> #raft_state{}.
-apply_single_node_cluster(#raft_state{self = Self, log_view = View} = Data) ->
-    % TODO(hsun324) T112326686: Review after RAFT RPC id changes.
-    case is_single_member(Self, config(Data)) of
+apply_single_node_cluster(#raft_state{self = Self} = Data0) ->
+    case is_single_member(Self, config(Data0)) of
         true ->
-            NewView = case wa_raft_log:sync(View) of
-                {ok, Synced} -> Synced;
-                _            -> View
-            end,
-            apply_log_leader(maybe_advance(Data#raft_state{log_view = NewView}));
+            Data1 = commit_pending(Data0),
+            Data2 = maybe_advance(Data1),
+            apply_log_leader(Data2);
         false ->
-            Data
+            Data0
     end.
 
 %% Leader - check quorum and advance commit index if possible
@@ -2535,33 +2521,6 @@ apply_op(State, LogIndex, _, Entry, _, #raft_state{} = Data) ->
     ?RAFT_LOG_ERROR(State, Data, "failed to apply unrecognized entry ~0P at ~0p.", [Entry, 20, LogIndex]),
     exit({invalid_op, LogIndex, Entry}).
 
--spec append_entries_to_followers(State :: #raft_state{}) -> #raft_state{}.
-append_entries_to_followers(#raft_state{table = Table, partition = Partition, log_view = View0} = State0) ->
-    State1 = case wa_raft_log:sync(View0) of
-        {ok, View1} ->
-            State0#raft_state{log_view = View1};
-        skipped ->
-            {ok, Pending, View1} = wa_raft_log:cancel(View0),
-            ?RAFT_COUNT('raft.server.sync.skipped'),
-            ?RAFT_LOG_WARNING(leader, State0, "skipped pre-heartbeat sync for ~0p log entr(ies).", [length(Pending)]),
-            lists:foreach(
-                fun({_, {Reference, _}}) ->
-                    wa_raft_queue:fulfill_incomplete_commit(Table, Partition, Reference, {error, commit_stalled});
-                   ({_, {Reference, _, _}}) ->
-                    wa_raft_queue:fulfill_incomplete_commit(Table, Partition, Reference, {error, commit_stalled})
-                end,
-                Pending),
-            State0#raft_state{log_view = View1};
-        {error, Error} ->
-            ?RAFT_COUNT({'raft.server.sync', Error}),
-            ?RAFT_LOG_ERROR(leader, State0, "sync failed due to ~0P.", [Error, 20]),
-            error(Error)
-    end,
-    lists:foldl(
-        fun (Self, #raft_state{self = Self} = StateN) -> StateN;
-            (Peer, #raft_state{} = StateN)            -> heartbeat(Peer, StateN)
-        end, State1, config_identities(config(State1))).
-
 %%------------------------------------------------------------------------------
 %% RAFT Server - State Machine Implementation - State Management
 %%------------------------------------------------------------------------------
@@ -2656,6 +2615,8 @@ advance_term(
         current_term = NewTerm,
         voted_for = VotedFor,
         votes = #{},
+        pending = [],
+        pending_read = false,
         next_indices = #{},
         match_indices = #{},
         last_applied_indices = #{},
@@ -2671,7 +2632,68 @@ advance_term(
 %% RAFT Server - State Machine Implementation - Leader Methods
 %%------------------------------------------------------------------------------
 
+-spec append_entries_to_followers(Data :: #raft_state{}) -> #raft_state{}.
+append_entries_to_followers(Data0) ->
+    Data1 = commit_pending(Data0),
+    Data2 = lists:foldl(fun heartbeat/2, Data1, config_identities(config(Data1))),
+    Data2.
+
+-spec commit_pending(Data :: #raft_state{}) -> #raft_state{}.
+commit_pending(#raft_state{pending = [], pending_read = false} = Data) ->
+    Data;
+commit_pending(#raft_state{log_view = View} = Data0) ->
+    {Entries, Data1} = collect_pending(Data0),
+    case wa_raft_log:append(View, Entries, relaxed) of
+        {ok, NewView} ->
+            % We can clear pending read flag as we've successfully added at
+            % least one new log entry so the leader will proceed to replicate
+            % and establish a new quorum is it is still up to date.
+            Data1#raft_state{log_view = NewView, pending = [], pending_read = false};
+        skipped ->
+            % Since the append failed, we roll back the label state to before
+            % we constructed the entries.
+            ?RAFT_COUNT('raft.server.sync.skipped'),
+            ?RAFT_LOG_WARNING(leader, Data0, "skipped pre-heartbeat sync for ~0p log entr(ies).", [length(Entries)]),
+            cancel_pending({error, commit_stalled}, Data0);
+        {error, Error} ->
+            ?RAFT_COUNT('raft.server.sync.error'),
+            ?RAFT_LOG_ERROR(leader, Data0, "sync failed due to ~0P.", [Error, 20]),
+            error(Error)
+    end.
+
+-spec collect_pending(Data :: #raft_state{}) -> {[wa_raft_log:log_entry()], #raft_state{}}.
+collect_pending(#raft_state{pending = [], pending_read = true} = Data) ->
+    % If the pending queue is empty, then we have at least one pending
+    % read but no commits to go along with it.
+    {NewData, ReadEntry} = get_log_entry(Data, {?READ_OP, noop}),
+    {[ReadEntry], NewData};
+collect_pending(#raft_state{pending = Pending} = Data) ->
+    % Otherwise, the pending queue is kept in reverse order so fold
+    % from the right to ensure that the log entries are labeled
+    % in the correct order.
+    {Entries, NewData} = lists:foldr(
+        fun (Op, {AccEntries, AccData}) ->
+            {NewAccData, Entry} = get_log_entry(AccData, Op),
+            {[Entry | AccEntries], NewAccData}
+        end,
+        {[], Data},
+        Pending
+    ),
+    {lists:reverse(Entries), NewData}.
+
+-spec cancel_pending(Reason :: wa_raft_acceptor:commit_error(), Data :: #raft_state{}) -> #raft_state{}.
+cancel_pending(_, #raft_state{pending = []} = Data) ->
+    Data;
+cancel_pending(Reason, #raft_state{table = Table, partition = Partition, pending = Pending} = Data) ->
+    ?RAFT_COUNT('raft.commit.batch.cancel'),
+    % Pending commits are kept in reverse order.
+    [wa_raft_queue:fulfill_incomplete_commit(Table, Partition, Reference, Reason) || {Reference, _} <- lists:reverse(Pending)],
+    Data#raft_state{pending = []}.
+
 -spec heartbeat(Peer :: #raft_identity{}, State :: #raft_state{}) -> #raft_state{}.
+heartbeat(Self, #raft_state{self = Self} = Data) ->
+    % Skip sending heartbeat to self
+    Data;
 heartbeat(
     ?IDENTITY_REQUIRES_MIGRATION(_, FollowerId) = Sender,
     #raft_state{
@@ -2964,7 +2986,7 @@ append_entries(
             % If the term of the log entry previous the entries to be applied matches the term stored
             % with the previous log entry in the local RAFT log, then this follower can proceed with
             % appending to the log.
-            {ok, NewMatchIndex, NewView} = wa_raft_log:append(View, PrevLogIndex + 1, Entries),
+            {ok, NewMatchIndex, NewView} = wa_raft_log:append_at(View, PrevLogIndex + 1, Entries),
             {ok, true, NewMatchIndex, Data#raft_state{log_view = NewView}};
         {ok, LocalPrevLogTerm} ->
             % If the term of the log entry proceeding the entries to be applied does not match the log
