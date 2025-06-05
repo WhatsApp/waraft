@@ -2646,11 +2646,9 @@ commit_pending(#raft_state{log_view = View} = Data0) ->
         skipped ->
             % Since the append failed, we roll back the label state to before
             % we constructed the entries.
-            ?RAFT_COUNT('raft.server.sync.skipped'),
             ?RAFT_LOG_WARNING(leader, Data0, "skipped pre-heartbeat sync for ~0p log entr(ies).", [length(Entries)]),
             cancel_pending({error, commit_stalled}, Data0);
         {error, Error} ->
-            ?RAFT_COUNT('raft.server.sync.error'),
             ?RAFT_LOG_ERROR(leader, Data0, "sync failed due to ~0P.", [Error, 20]),
             error(Error)
     end.
@@ -2679,7 +2677,6 @@ collect_pending(#raft_state{pending = Pending} = Data) ->
 cancel_pending(_, #raft_state{pending = []} = Data) ->
     Data;
 cancel_pending(Reason, #raft_state{queues = Queues, pending = Pending} = Data) ->
-    ?RAFT_COUNT('raft.commit.batch.cancel'),
     % Pending commits are kept in reverse order.
     [wa_raft_queue:fulfill_incomplete_commit(Queues, Reference, Reason) || {Reference, _} <- lists:reverse(Pending)],
     Data#raft_state{pending = []}.
@@ -2966,60 +2963,76 @@ append_entries(
     Entries,
     EntryCount,
     #raft_state{
-        log_view = View,
+        log_view = View0,
         commit_index = CommitIndex,
         current_term = CurrentTerm,
         leader_id = LeaderId
     } = Data
 ) ->
-    % Inspect the locally stored term associated with the previous log entry to discern if
-    % appending the provided range of log entries is allowed.
-    case wa_raft_log:term(View, PrevLogIndex) of
-        {ok, PrevLogTerm} ->
-            % If the term of the log entry previous the entries to be applied matches the term stored
-            % with the previous log entry in the local RAFT log, then this follower can proceed with
-            % appending to the log.
-            {ok, NewMatchIndex, NewView} = wa_raft_log:append_at(View, PrevLogIndex + 1, Entries),
-            {ok, true, NewMatchIndex, Data#raft_state{log_view = NewView}};
-        {ok, LocalPrevLogTerm} ->
-            % If the term of the log entry proceeding the entries to be applied does not match the log
-            % entry stored with the previous log entry in the local RAFT log, then we need to truncate
-            % the log because there is a mismatch between this follower and the leader of the cluster.
-            ?RAFT_COUNT({raft, State, 'heartbeat.skip.log_term_mismatch'}),
-            ?RAFT_LOG_WARNING(State, Data, "rejects appending ~0p log entries in range ~0p to ~0p as previous log entry ~0p has term ~0p locally when leader ~0p expects it to have term ~0p.",
-                [EntryCount, PrevLogIndex + 1, PrevLogIndex + EntryCount, PrevLogIndex, LocalPrevLogTerm, LeaderId, PrevLogTerm]),
-            case PrevLogIndex =< CommitIndex of
-                true ->
-                    % We cannot validly delete log entries that have already been committed because doing
-                    % so means that we are erasing log entries that may be part of the minimum quorum. If
-                    % we try to do so, then disable this partition as we've violated a critical invariant.
-                    ?RAFT_COUNT({raft, State, 'heartbeat.error.corruption.excessive_truncation'}),
-                    ?RAFT_LOG_WARNING(State, Data, "fails as progress requires truncation of log entry at ~0p due to log mismatch when log entries up to ~0p were already committed.",
-                        [PrevLogIndex, CommitIndex]),
-                    {fatal,
-                        lists:flatten(
-                            io_lib:format("Leader ~0p of term ~0p requested truncation of log entry at ~0p due to log term mismatch (local ~0p, leader ~0p) when log entries up to ~0p were already committed.",
-                                [LeaderId, CurrentTerm, PrevLogIndex, LocalPrevLogTerm, PrevLogTerm, CommitIndex]))};
-                false ->
-                    % We are not deleting already applied log entries, so proceed with truncation.
-                    ?RAFT_LOG_NOTICE(State, Data, "Server[~0p, term ~0p, ~0p] truncating local log ending at ~0p to past ~0p due to log mismatch.",
-                        [wa_raft_log:last_index(View), PrevLogIndex]),
-                    {ok, NewView} = wa_raft_log:truncate(View, PrevLogIndex),
-                    {ok, false, wa_raft_log:last_index(NewView), Data#raft_state{log_view = NewView}}
+    % Compare the incoming heartbeat with the local log to determine what
+    % actions need to be taken as part of handling this heartbeat.
+    case wa_raft_log:check_heartbeat(View0, PrevLogIndex, [{PrevLogTerm, undefined} | Entries]) of
+        {ok, []} ->
+            % No append is required as all the log entries in the heartbeat
+            % are already in the local log.
+            {ok, true, PrevLogIndex + EntryCount, Data};
+        {ok, NewEntries} ->
+            % No conflicting log entries were found in the heartbeat, but the
+            % heartbeat does contain new log entries to be appended to the end
+            % of the log.
+            {ok, View1} = wa_raft_log:append(View0, NewEntries),
+            {ok, true, PrevLogIndex + EntryCount, Data#raft_state{log_view = View1}};
+        {conflict, ConflictIndex, [{ConflictTerm, _} | _]} when ConflictIndex =< CommitIndex ->
+            % A conflict is detected that would result in the truncation of a
+            % log entry that the local replica has committed. We cannot validly
+            % delete log entries that are already committed because doing so
+            % may potenially cause the log entry to be no longer present on a
+            % majority of replicas.
+            {ok, LocalTerm} = wa_raft_log:term(View0, ConflictIndex),
+            ?RAFT_COUNT({raft, State, 'heartbeat.error.corruption.excessive_truncation'}),
+            ?RAFT_LOG_WARNING(State, Data, "refuses heartbeat at ~0p to ~0p that requires truncation past ~0p (term ~0p vs ~0p) when log entries up to ~0p are already committed.",
+                [PrevLogIndex, PrevLogIndex + EntryCount, ConflictIndex, ConflictTerm, LocalTerm, CommitIndex]),
+            Fatal = io_lib:format("A heartbeat at ~0p to ~0p from ~0p in term ~0p required truncating past ~0p (term ~0p vs ~0p) when log entries up to ~0p were already committed.",
+                [PrevLogIndex, PrevLogIndex + EntryCount, LeaderId, CurrentTerm, ConflictIndex, ConflictTerm, LocalTerm, CommitIndex]),
+            {fatal, lists:flatten(Fatal)};
+        {conflict, ConflictIndex, NewEntries} when ConflictIndex >= PrevLogIndex ->
+            % A truncation is required as there is a conflict between the local
+            % log and the incoming heartbeat.
+            ?RAFT_LOG_NOTICE(State, Data, "handling heartbeat at ~0p by truncating local log ending at ~0p to past ~0p.",
+                [PrevLogIndex, wa_raft_log:last_index(View0), ConflictIndex]),
+            case wa_raft_log:truncate(View0, ConflictIndex) of
+                {ok, View1} ->
+                    case ConflictIndex =:= PrevLogIndex of
+                        true ->
+                            % If the conflict precedes the heartbeat's log
+                            % entries then no append can be performed.
+                            {ok, false, wa_raft_log:last_index(View1), Data#raft_state{log_view = View1}};
+                        false ->
+                            % Otherwise, we can replace the truncated log
+                            % entries with those from the current heartbeat.
+                            {ok, View2} = wa_raft_log:append(View1, NewEntries),
+                            {ok, true, PrevLogIndex + EntryCount, Data#raft_state{log_view = View2}}
+                    end;
+                {error, Reason} ->
+                    ?RAFT_COUNT({raft, State, 'heartbeat.truncate.error'}),
+                    ?RAFT_LOG_WARNING(State, Data, "fails to truncate past ~0p while handling heartbeat at ~0p to ~0p due to ~0P",
+                        [ConflictIndex, PrevLogIndex, PrevLogIndex + EntryCount, Reason, 30]),
+                    {ok, false, wa_raft_log:last_index(View0), Data}
             end;
-        not_found ->
-            % If the log entry is not found, then ignore and notify the leader of what log entry
-            % is required by this follower in the reply.
-            ?RAFT_COUNT({raft, State, 'heartbeat.skip.missing_previous_log_entry'}),
+        {error, out_of_range} ->
+            % If the heartbeat is out of range (generally past the end of the
+            % log) then ignore and notify the leader of what log entry is
+            % required by this replica.
+            ?RAFT_COUNT({raft, State, 'heartbeat.skip.out_of_range'}),
             EntryCount =/= 0 andalso
-                ?RAFT_LOG_WARNING(State, Data, "skips appending ~0p log entries in range ~0p to ~0p because previous log entry at ~0p is not available in local log covering ~0p to ~0p.",
-                    [EntryCount, PrevLogIndex + 1, PrevLogIndex + EntryCount, PrevLogIndex, wa_raft_log:first_index(View), wa_raft_log:last_index(View)]),
-            {ok, false, wa_raft_log:last_index(View), Data};
+                ?RAFT_LOG_WARNING(State, Data, "refuses out of range heartbeat at ~0p to ~0p with local log covering ~0p to ~0p.",
+                    [PrevLogIndex, PrevLogIndex + EntryCount, wa_raft_log:first_index(View0), wa_raft_log:last_index(View0)]),
+            {ok, false, wa_raft_log:last_index(View0), Data};
         {error, Reason} ->
-            ?RAFT_COUNT({raft, State, 'heartbeat.skip.failed_to_read_previous_log_entry'}),
-            ?RAFT_LOG_WARNING(State, Data, "skips appending ~0p log entries in range ~0p to ~0p because reading previous log entry at ~0p failed with error ~0P.",
-                [EntryCount, PrevLogIndex + 1, PrevLogIndex + EntryCount, PrevLogIndex, Reason, 30]),
-            {ok, false, wa_raft_log:last_index(View), Data}
+            ?RAFT_COUNT({raft, State, 'heartbeat.skip.error'}),
+            ?RAFT_LOG_WARNING(State, Data, "fails to check heartbeat at ~0p to ~0p for validity due to ~0P",
+                [PrevLogIndex, PrevLogIndex + EntryCount, Reason, 30]),
+            {ok, false, wa_raft_log:last_index(View0), Data}
     end.
 
 %%------------------------------------------------------------------------------

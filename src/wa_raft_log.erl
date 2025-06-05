@@ -20,7 +20,7 @@
 -export([
     append/2,
     append/3,
-    append_at/3
+    check_heartbeat/3
 ]).
 
 %% APIs for accessing log data
@@ -249,7 +249,9 @@
 
 %% Truncate the RAFT log to the given position so that all log entries
 %% including and after the provided index are completely deleted from
-%% the RAFT log.
+%% the RAFT log. If the truncation failed but the log state was not
+%% changed, then an error can be returned. Otherwise, a error should
+%% be raised.
 -callback truncate(Log :: log(), Index :: log_index(), State :: term()) -> {ok, NewState :: term()} | error().
 
 %% Optionally, trim the RAFT log up to the given index.
@@ -301,77 +303,66 @@ append(View, Entries) ->
 -spec append(View :: view(), Entries :: [log_entry()], Mode :: strict | relaxed) ->
     {ok, NewView :: view()} | skipped | wa_raft:error().
 append(#log_view{last = Last} = View, Entries, Mode) ->
+    ?RAFT_COUNT('raft.log.append'),
     Provider = provider(View),
     case Provider:append(View, Entries, Mode) of
         ok ->
+            ?RAFT_COUNT('raft.log.append.ok'),
             {ok, refresh_config(View#log_view{last = Last + length(Entries)})};
         skipped when Mode =:= relaxed ->
+            ?RAFT_COUNT('raft.log.append.skipped'),
             skipped;
         {error, Reason} ->
+            ?RAFT_COUNT('raft.log.append.error'),
             {error, Reason}
     end.
 
-%% Append the provided log entries to the log at the specified starting position.
-%% If this provided starting position is past the end of the log and appending
-%% would produce a gap, then fail. If the provided start position is located
-%% in the middle of the log, then the terms of the provided log entries will be
-%% compared with the already existing log entries. If there is any mismatch, then
-%% all log entries after the mismatching log will be replaced with the new log
-%% entries provided.
--spec append_at(View :: view(), Start :: log_index(), Entries :: [log_entry()]) ->
-    {ok, MatchIndex :: log_index(), NewView :: view()} | wa_raft:error().
-append_at(#log_view{last = Last}, Start, _Entries) when Start =< 0; Start > Last + 1 ->
-    {error, invalid_start_index};
-append_at(#log_view{log = Log, last = Last} = View0, Start, Entries) ->
-    ?RAFT_COUNT('raft.log.append'),
+%% Compare the provided heartbeat log entries to the local log at the provided
+%% starting position in preparation for an append operation:
+%%  * If the provided starting position is before the start of the log or past
+%%    the end of the log, the comparison will fail with an `out_of_range`
+%%    error.
+%%  * If there is a conflict between the provided heartbeat log entries and any
+%%    local log entries due to a term mismatch, then the comparison will fail
+%%    with a `conflict` tuple that contains the log index of the first log
+%%    entry with a conflicting term and the list containing the corresponding
+%%    heartbeat log entry and all subsequent heartbeat log entries.
+%%  * Otherwise, the comparison will succeed. Any new log entries not already
+%%    in the local log will be returned.
+-spec check_heartbeat(View :: view(), Start :: log_index(), Entries :: [log_entry()]) ->
+    {ok, NewEntries :: [log_entry()]} |
+    {conflict, ConflictIndex :: log_index(), NewEntries :: [log_entry()]} |
+    {error, out_of_range | {missing, MissingIndex :: log_index()}} |
+    wa_raft:error().
+check_heartbeat(#log_view{first = First, last = Last}, Start, _Entries) when Start =< 0; Start < First; Start > Last ->
+    {error, out_of_range};
+check_heartbeat(#log_view{log = Log, last = Last}, Start, Entries) ->
     Provider = provider(Log),
     End = Start + length(Entries) - 1,
-    try Provider:fold_terms(Log, Start, End, fun append_validate/3, {Start, Entries}) of
-        {ok, {_, []}} ->
-            {ok, End, View0};
+    try Provider:fold_terms(Log, Start, End, fun check_heartbeat_terms/3, {Start, Entries}) of
+        % The fold should not terminate early if the provider is well-behaved.
+        {ok, {Next, []}} when Next =:= End + 1 ->
+            {ok, []};
         {ok, {Next, NewEntries}} when Next =:= Last + 1 ->
-            case Provider:append(View0, NewEntries, strict) of
-                ok ->
-                    ?RAFT_COUNT('raft.log.append.ok'),
-                    {ok, End, refresh_config(View0#log_view{last = max(Last, End)})};
-                {error, Reason} ->
-                    ?RAFT_COUNT('raft.log.append.error'),
-                    {error, Reason}
-            end;
+            {ok, NewEntries};
         {error, Reason} ->
-            ?RAFT_COUNT('raft.log.append.fold.error'),
+            ?RAFT_COUNT('raft.log.heartbeat.error'),
             {error, Reason}
     catch
-        throw:{mismatch, Next, NewEntries} when Next >= Start ->
-            ?RAFT_COUNT('raft.log.append.mismatch'),
-            case truncate(View0, Next) of
-                {ok, View1} ->
-                    case Provider:append(View1, NewEntries, strict) of
-                        ok ->
-                            ?RAFT_COUNT('raft.log.append.ok'),
-                            {ok, End, refresh_config(View1#log_view{last = End})};
-                        {error, Reason} ->
-                            ?RAFT_COUNT('raft.log.append.error'),
-                            {error, Reason}
-                    end;
-                {error, Reason} ->
-                    ?RAFT_COUNT('raft.log.append.truncate.error'),
-                    {error, Reason}
-            end;
+        throw:{conflict, ConflictIndex, ConflictEntries} ->
+            {conflict, ConflictIndex, ConflictEntries};
         throw:{missing, Index} ->
-            ?RAFT_COUNT('raft.log.append.corruption'),
+            ?RAFT_COUNT('raft.log.heartbeat.corruption'),
             {error, {missing, Index}}
     end.
 
--spec append_validate(Index :: wa_raft_log:log_index(), Term :: wa_raft_log:log_term(), Acc) -> Acc
+-spec check_heartbeat_terms(Index :: wa_raft_log:log_index(), Term :: wa_raft_log:log_term(), Acc) -> Acc
     when Acc :: {Next :: wa_raft_log:log_index(), Entries :: [log_entry()]}.
-append_validate(Index, Term, {Index, [{Term, _} | Entries]}) ->
+check_heartbeat_terms(Index, Term, {Index, [{Term, _} | Entries]}) ->
     {Index + 1, Entries};
-append_validate(Index, _, {Index, [_ | _] = Entries}) ->
-    throw({mismatch, Index, Entries});
-append_validate(StoredIndex, StoredTerm, {Index, [_ | Entries]}) when Index < StoredIndex ->
-    append_validate(StoredIndex, StoredTerm, {Index + 1, Entries});
-append_validate(_, _, {Index, [_ | _]}) ->
+check_heartbeat_terms(Index, _, {Index, [_ | _] = Entries}) ->
+    throw({conflict, Index, Entries});
+check_heartbeat_terms(_, _, {Index, [_ | _]}) ->
     throw({missing, Index}).
 
 %%-------------------------------------------------------------------
