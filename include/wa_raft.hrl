@@ -274,7 +274,7 @@
 %% Whether or not the storage server should request more log entries
 %% when the apply queue is empty.
 -define(RAFT_STORAGE_NOTIFY_COMPLETE, raft_storage_notify_complete).
--define(RAFT_STORAGE_NOTIFY_COMPLETE(App), (?RAFT_APP_CONFIG(App, ?RAFT_STORAGE_NOTIFY_COMPLETE, false) =:= true)).
+-define(RAFT_STORAGE_NOTIFY_COMPLETE(App), (?RAFT_APP_CONFIG(App, ?RAFT_STORAGE_NOTIFY_COMPLETE, true) =:= true)).
 
 %% Time in seconds to retain transport destination directories after use
 -define(RAFT_TRANSPORT_RETAIN_INTERVAL, transport_retain_min_secs).
