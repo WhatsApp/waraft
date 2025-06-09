@@ -1,3 +1,4 @@
+%% @format
 %%% Copyright (c) Meta Platforms, Inc. and affiliates. All rights reserved.
 %%%
 %%% This source code is licensed under the Apache 2.0 license found in
@@ -21,7 +22,8 @@
     get_env/3
 ]).
 
--type scope() :: Application :: atom() | {Table :: wa_raft:table(), Partition :: wa_raft:partition()} | SearchApps :: [atom()].
+-type scope() ::
+    Application :: atom() | {Table :: wa_raft:table(), Partition :: wa_raft:partition()} | SearchApps :: [atom()].
 -type key() :: Key :: atom() | {Primary :: atom(), Fallback :: atom()}.
 
 -include_lib("wa_raft/include/wa_raft.hrl").
@@ -34,7 +36,7 @@
 database_path(Scope) ->
     case get_env(Scope, {raft_database, db}) of
         {ok, Root} -> Root;
-        undefined  -> error({no_configured_database_path, Scope})
+        undefined -> error({no_configured_database_path, Scope})
     end.
 
 %%-------------------------------------------------------------------
@@ -49,28 +51,29 @@ get_env(Scope, Key) ->
 get_env(Scope, Key, Default) ->
     case get_env(Scope, Key) of
         {ok, Value} -> Value;
-        undefined   -> Default
+        undefined -> Default
     end.
 
--spec get_env_impl(SearchApps :: [atom()], Key :: atom(), FallbackKey :: atom()) -> {ok, Value :: dynamic()} | undefined.
+-spec get_env_impl(SearchApps :: [atom()], Key :: atom(), FallbackKey :: atom()) ->
+    {ok, Value :: dynamic()} | undefined.
 get_env_impl([], _Key, FallbackKey) ->
     application:get_env(?APP, FallbackKey);
 get_env_impl([App | SearchApps], Key, FallbackKey) ->
     case application:get_env(App, Key) of
         {ok, Value} -> {ok, Value};
-        undefined   -> get_env_impl(SearchApps, Key, FallbackKey)
+        undefined -> get_env_impl(SearchApps, Key, FallbackKey)
     end.
 
 -spec search_apps(Scope :: scope()) -> SearchApps :: [atom()].
 search_apps(Application) when is_atom(Application) ->
     case wa_raft_sup:options(Application) of
-        undefined       -> [];
+        undefined -> [];
         RaftApplication -> RaftApplication#raft_application.config_search_apps
     end;
 search_apps({Table, Partition}) ->
     case wa_raft_part_sup:options(Table, Partition) of
         undefined -> [];
-        Options   -> search_apps(Options#raft_options.application)
+        Options -> search_apps(Options#raft_options.application)
     end;
 search_apps(SearchApps) ->
     SearchApps.

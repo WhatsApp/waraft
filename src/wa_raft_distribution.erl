@@ -1,3 +1,4 @@
+%% @format
 %%% Copyright (c) Meta Platforms, Inc. and affiliates. All rights reserved.
 %%%
 %%% This source code is licensed under the Apache 2.0 license found in
@@ -39,7 +40,9 @@
 cast(DestAddr, _Identifier, Message) ->
     erlang:send(DestAddr, {'$gen_cast', Message}, [noconnect, nosuspend]).
 
--spec call(DestAddr :: dest_addr(), Identifier :: #raft_identifier{}, Message :: term(), Timeout :: integer() | infinity) -> term().
+-spec call(
+    DestAddr :: dest_addr(), Identifier :: #raft_identifier{}, Message :: term(), Timeout :: integer() | infinity
+) -> term().
 call(DestAddr, _Identifier, Message, Timeout) ->
     gen_server:call(DestAddr, Message, Timeout).
 

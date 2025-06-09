@@ -1,3 +1,4 @@
+%% @format
 %%% Copyright (c) Meta Platforms, Inc. and affiliates. All rights reserved.
 %%%
 %%% This source code is licensed under the Apache 2.0 license found in
@@ -78,7 +79,8 @@ child_spec(Application, Spec) ->
 -spec start_link(Application :: atom(), Spec :: wa_raft:args()) -> supervisor:startlink_ret().
 start_link(Application, Spec) ->
     %% First normalize the provided specification into a full options record.
-    Options = #raft_options{table = Table, partition = Partition, supervisor_name = Name} = normalize_spec(Application, Spec),
+    Options =
+        #raft_options{table = Table, partition = Partition, supervisor_name = Name} = normalize_spec(Application, Spec),
 
     %% Then put the declared options for the current RAFT partition into
     %% persistent term for access by shared resources and other services.
@@ -87,8 +89,11 @@ start_link(Application, Spec) ->
     %% result in any GC load. Warn if this is case.
     PrevOptions = persistent_term:get(?OPTIONS_KEY(Table, Partition), Options),
     PrevOptions =/= Options andalso
-        ?LOG_WARNING(?MODULE_STRING " storing changed options for RAFT partitition ~0p/~0p",
-            [Table, Partition], #{domain => [whatsapp, wa_raft]}),
+        ?LOG_WARNING(
+            ?MODULE_STRING " storing changed options for RAFT partitition ~0p/~0p",
+            [Table, Partition],
+            #{domain => [whatsapp, wa_raft]}
+        ),
     ok = persistent_term:put(?OPTIONS_KEY(Table, Partition), Options),
 
     supervisor:start_link({local, Name}, ?MODULE, Options).
@@ -105,7 +110,8 @@ default_name(Table, Partition) ->
 
 %% Get the default location for the database directory associated with the
 %% provided RAFT partition given the database of the RAFT root.
--spec default_partition_path(Root :: file:filename(), Table :: wa_raft:table(), Partition :: wa_raft:partition()) -> Database :: file:filename().
+-spec default_partition_path(Root :: file:filename(), Table :: wa_raft:table(), Partition :: wa_raft:partition()) ->
+    Database :: file:filename().
 default_partition_path(Root, Table, Partition) ->
     filename:join(Root, atom_to_list(Table) ++ "." ++ integer_to_list(Partition)).
 
@@ -115,16 +121,17 @@ default_partition_path(Root, Table, Partition) ->
 registered_name(Table, Partition) ->
     case wa_raft_part_sup:options(Table, Partition) of
         undefined -> default_name(Table, Partition);
-        Options   -> Options#raft_options.supervisor_name
+        Options -> Options#raft_options.supervisor_name
     end.
 
 %% Get the registered database directory for the provided RAFT partition. An
 %% error is raised if no registration exists.
--spec registered_partition_path(Table :: wa_raft:table(), Partition :: wa_raft:partition()) -> Database :: file:filename().
+-spec registered_partition_path(Table :: wa_raft:table(), Partition :: wa_raft:partition()) ->
+    Database :: file:filename().
 registered_partition_path(Table, Partition) ->
     case wa_raft_part_sup:options(Table, Partition) of
         undefined -> error({not_registered, Table, Partition});
-        Options   -> Options#raft_options.database
+        Options -> Options#raft_options.database
     end.
 
 -spec options(Table :: wa_raft:table(), Partition :: wa_raft:partition()) -> #raft_options{} | undefined.
@@ -148,10 +155,18 @@ normalize_spec(Application, #{table := Table, partition := Partition} = Spec) ->
         identifier = #raft_identifier{application = Application, table = Table, partition = Partition},
         database = Database,
         acceptor_name = AcceptorName,
-        distribution_module = maps:get(distribution_module, Spec, wa_raft_env:get_env(Application, raft_distribution_module, ?RAFT_DEFAULT_DISTRIBUTION_MODULE)),
+        distribution_module = maps:get(
+            distribution_module,
+            Spec,
+            wa_raft_env:get_env(Application, raft_distribution_module, ?RAFT_DEFAULT_DISTRIBUTION_MODULE)
+        ),
         log_name = LogName,
-        log_module = maps:get(log_module, Spec, wa_raft_env:get_env(Application, raft_log_module, ?RAFT_DEFAULT_LOG_MODULE)),
-        label_module = maps:get(label_module, Spec, wa_raft_env:get_env(Application, raft_label_module, ?RAFT_DEFAULT_LABEL_MODULE)),
+        log_module = maps:get(
+            log_module, Spec, wa_raft_env:get_env(Application, raft_log_module, ?RAFT_DEFAULT_LOG_MODULE)
+        ),
+        label_module = maps:get(
+            label_module, Spec, wa_raft_env:get_env(Application, raft_label_module, ?RAFT_DEFAULT_LABEL_MODULE)
+        ),
         log_catchup_name = wa_raft_log_catchup:default_name(Table, Partition),
         queue_name = wa_raft_queue:default_name(Table, Partition),
         queue_counters = wa_raft_queue:default_counters(),
@@ -159,11 +174,17 @@ normalize_spec(Application, #{table := Table, partition := Partition} = Spec) ->
         queue_reads = wa_raft_queue:default_read_queue_name(Table, Partition),
         server_name = ServerName,
         storage_name = StorageName,
-        storage_module = maps:get(storage_module, Spec, wa_raft_env:get_env(Application, raft_storage_module, ?RAFT_DEFAULT_STORAGE_MODULE)),
+        storage_module = maps:get(
+            storage_module, Spec, wa_raft_env:get_env(Application, raft_storage_module, ?RAFT_DEFAULT_STORAGE_MODULE)
+        ),
         supervisor_name = default_name(Table, Partition),
         transport_cleanup_name = wa_raft_transport_cleanup:default_name(Table, Partition),
         transport_directory = wa_raft_transport:default_directory(Database),
-        transport_module = maps:get(transport_module, Spec, wa_raft_env:get_env(Application, {raft_transport_module, transport_module}, ?RAFT_DEFAULT_TRANSPORT_MODULE))
+        transport_module = maps:get(
+            transport_module,
+            Spec,
+            wa_raft_env:get_env(Application, {raft_transport_module, transport_module}, ?RAFT_DEFAULT_TRANSPORT_MODULE)
+        )
     }.
 
 %%-------------------------------------------------------------------
