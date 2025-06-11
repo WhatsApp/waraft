@@ -31,7 +31,8 @@
 
     fold/5,
     fold/6,
-
+    fold_binary/5,
+    fold_binary/6,
     fold_terms/5,
 
     term/2,
@@ -39,6 +40,9 @@
     get/3,
     get/4,
     get_terms/3,
+
+    entries/3,
+    entries/4,
 
     config/1
 ]).
@@ -150,17 +154,21 @@
 %% then return 'undefined'.
 -callback last_index(Log :: log()) -> undefined | log_index() | error().
 
-%% Fold over a range (inclusive) of log entries from the RAFT log by
-%% calling the provided accumulator function on successive log entries.
-%% The size of each entry is calculated as the external term size of
-%% {Term, Op} in bytes. The fold will stop once the provided size limit
-%% is reached (if one is given, otherwise will complete the range of entries).
-%% There is no expectation that the log entries folded over are complete,
-%% only that the accumulator is called on log entries with indices that
-%% are strictly increasing however implementations should try to call the
-%% accumulator on all available log entries within the range. Callers of
-%% this function are responsible for performing any necessary validation
-%% of log indices.
+%% Call the provided combining function on successive log entries in the
+%% specified log starting from the specified start index (inclusive) and ending
+%% at the specified end index (also inclusive) or until the total cumulative
+%% size of log entries for which the combining function has been called upon
+%% is at least the specified size limit. The combining function must always be
+%% called with log entries in log order starting with the first log entry that
+%% exists within the provided range. The combining function should not be
+%% called for those log indices within the provided range that do not have a
+%% stored log entry. It is suggested that the external term size of the entire
+%% log entry be used as the size provided to the combining function and for
+%% tracking the size limit; however, implementations are free to use any value.
+%%
+%% The combining function may raise an error. Implementations should take care
+%% to release any resources held in the case that the fold needs to terminate
+%% early.
 -callback fold(
     Log :: log(),
     Start :: log_index(),
@@ -168,25 +176,51 @@
     SizeLimit :: non_neg_integer() | infinity,
     Func :: fun((Index :: log_index(), Size :: non_neg_integer(), Entry :: log_entry(), Acc) -> Acc),
     Acc
-) ->
-    {ok, Acc} | wa_raft:error().
+) -> {ok, Acc} | wa_raft:error().
 
-%% Fold over a range (inclusive) of log terms from the RAFT log by
-%% calling the provided accumulator function on successive log terms.
-%% There is no expectation that the log terms folded over are complete,
-%% only that the accumulator is called on log terms with indices that
-%% are strictly increasing however implementations should try to call the
-%% accumulator on all available log terms within the range. Callers of
-%% this function are responsible for performing any necessary validation
-%% of log indices.
+%% Call the provided combining function on the external term format of
+%% successive log entries in the specified log starting from the specified
+%% start index (inclusive) and ending at the specified end index (also
+%% inclusive) or until the total cumulative size of log entries for which the
+%% combining function has been called upon is at least the specified size
+%% limit. The combining function must always be called with log entries in log
+%% order starting with the first log entry that exists within the provided
+%% range. The combining function should not be called for those log indices
+%% within the provided range that do not have a stored log entry. The byte
+%% size of the binary provided to the combining function must be used as the
+%% size of the entry for tracking of the size limit.
+%%
+%% The combining function may raise an error. Implementations should take care
+%% to release any resources held in the case that the fold needs to terminate
+%% early.
+-callback fold_binary(
+    Log :: log(),
+    Start :: log_index(),
+    End :: log_index(),
+    SizeLimit :: non_neg_integer() | infinity,
+    Func :: fun((Index :: log_index(), Entry :: binary(), Acc) -> Acc),
+    Acc
+) -> {ok, Acc} | wa_raft:error().
+-optional_callbacks([fold_binary/6]).
+
+%% Call the provided combining function on the log term of successive log
+%% entries in the specified log starting from the specified start index
+%% (inclusive) and ending at the specified end index (also inclusive). The
+%% combining function must always be called with log entries in log order
+%% starting with the first log entry that exists within the provided range. The
+%% combining function should not be called for those log indices within the
+%% provided range that do not have a stored log entry.
+%%
+%% The combining function may raise an error. Implementations should take care
+%% to release any resources held in the case that the fold needs to terminate
+%% early.
 -callback fold_terms(
     Log :: log(),
     Start :: log_index(),
     End :: log_index(),
-    Func :: fun((Index :: log_index(), Entry :: log_entry(), Acc) -> Acc),
+    Func :: fun((Index :: log_index(), Term :: log_term(), Acc) -> Acc),
     Acc
-) ->
-    {ok, Acc} | wa_raft:error().
+) -> {ok, Acc} | wa_raft:error().
 
 %% Get a single log entry at the specified index. This API is specified
 %% separately because some implementations may have more efficient ways to
@@ -212,13 +246,15 @@
 %% Append new log entries to the end of the RAFT log.
 %%  - This function should never overwrite existing log entries.
 %%  - If the new log entries were written successfully, return 'ok'.
+%%  - Log entries may be provided either as terms directly or as a
+%%    binary encoding a log entry in external term format.
 %%  - In 'strict' mode, the append should always succeed or return an
 %%    error on failure.
 %%  - In 'relaxed' mode, if there are transient conditions that would
 %%    make it difficult to append to the log without blocking, then
 %%    the append should be skipped and 'skipped' returned. Otherwise,
 %%    the same conditions as the 'strict' mode apply.
--callback append(View :: view(), Entries :: [log_entry()], Mode :: strict | relaxed) ->
+-callback append(View :: view(), Entries :: [log_entry() | binary()], Mode :: strict | relaxed) ->
     ok | skipped | wa_raft:error().
 
 %%-------------------------------------------------------------------
@@ -298,14 +334,14 @@ start_link(#raft_options{log_name = Name} = Options) ->
 %%-------------------------------------------------------------------
 
 %% Append new log entries to the end of the log.
--spec append(View :: view(), Entries :: [log_entry()]) ->
+-spec append(View :: view(), Entries :: [log_entry() | binary()]) ->
     {ok, NewView :: view()} | wa_raft:error().
 append(View, Entries) ->
     % eqwalizer:ignore - strict append cannot return skipped
     append(View, Entries, strict).
 
 %% Append new log entries to the end of the log.
--spec append(View :: view(), Entries :: [log_entry()], Mode :: strict | relaxed) ->
+-spec append(View :: view(), Entries :: [log_entry() | binary()], Mode :: strict | relaxed) ->
     {ok, NewView :: view()} | skipped | wa_raft:error().
 append(#log_view{last = Last} = View, Entries, Mode) ->
     ?RAFT_COUNT('raft.log.append'),
@@ -334,7 +370,7 @@ append(#log_view{last = Last} = View, Entries, Mode) ->
 %%    heartbeat log entry and all subsequent heartbeat log entries.
 %%  * Otherwise, the comparison will succeed. Any new log entries not already
 %%    in the local log will be returned.
--spec check_heartbeat(View :: view(), Start :: log_index(), Entries :: [log_entry()]) ->
+-spec check_heartbeat(View :: view(), Start :: log_index(), Entries :: [log_entry() | binary()]) ->
     {ok, NewEntries :: [log_entry()]}
     | {conflict, ConflictIndex :: log_index(), NewEntries :: [log_entry()]}
     | {error, out_of_range | {missing, MissingIndex :: log_index()}}
@@ -362,7 +398,9 @@ check_heartbeat(#log_view{log = Log, last = Last}, Start, Entries) ->
     end.
 
 -spec check_heartbeat_terms(Index :: wa_raft_log:log_index(), Term :: wa_raft_log:log_term(), Acc) -> Acc when
-    Acc :: {Next :: wa_raft_log:log_index(), Entries :: [log_entry()]}.
+    Acc :: {Next :: wa_raft_log:log_index(), Entries :: [log_entry() | binary()]}.
+check_heartbeat_terms(Index, Term, {Next, [Binary | Entries]}) when is_binary(Binary) ->
+    check_heartbeat_terms(Index, Term, {Next, [binary_to_term(Binary) | Entries]});
 check_heartbeat_terms(Index, Term, {Index, [{Term, _} | Entries]}) ->
     {Index + 1, Entries};
 check_heartbeat_terms(Index, _, {Index, [_ | _] = Entries}) ->
@@ -396,19 +434,18 @@ last_index(Log) ->
     Last :: log_index() | infinity,
     Func :: fun((Index :: log_index(), Entry :: log_entry(), Acc) -> Acc),
     Acc
-) ->
-    {ok, Acc} | wa_raft:error().
+) -> {ok, Acc} | wa_raft:error().
 fold(LogOrView, First, Last, Func, Acc) ->
     fold(LogOrView, First, Last, infinity, Func, Acc).
 
-%% Folds over the entries in the log view of raw entries from the log provider
-%% between the provided first and last log indices (inclusive) up until the
-%% provided accumulator function has been called on a total byte size of log
-%% entries that is less than the provided byte size limit.
-%% If there exists a log entry between the provided first and last indices then
-%% the accumulator function will be called on at least that entry.
-%% This API provides no validation of the log indices and entries passed by the
-%% provider to the callback function.
+%% Call the provided combining function on successive log entries in the
+%% specified log starting from the specified start index (inclusive) and ending
+%% at the specified end index (also inclusive). The combining function will
+%% always be called with log entries in log order starting with the first log
+%% entry that exists within the provided range. The combining function will
+%% not be called for those log indices within the provided range that do not
+%% have a stored log entry. The size provided to the combining function when
+%% requested is determined by the underlying log provider.
 -spec fold(
     LogOrView :: log() | view(),
     First :: log_index(),
@@ -418,28 +455,11 @@ fold(LogOrView, First, Last, Func, Acc) ->
         fun((Index :: log_index(), Entry :: log_entry(), Acc) -> Acc)
         | fun((Index :: log_index(), Size :: non_neg_integer(), Entry :: log_entry(), Acc) -> Acc),
     Acc
-) ->
-    {ok, Acc} | wa_raft:error().
-fold(#log_view{log = Log, first = LogFirst, last = LogLast}, First, Last, SizeLimit, Func, Acc) ->
-    fold_impl(Log, max(First, LogFirst), min(Last, LogLast), SizeLimit, Func, Acc);
-fold(Log, First, Last, SizeLimit, Func, Acc) ->
-    Provider = provider(Log),
-    LogFirst = Provider:first_index(Log),
-    LogLast = Provider:last_index(Log),
-    % eqwalizer:fixme - min [T166261957]
-    fold_impl(Log, max(First, LogFirst), min(Last, LogLast), SizeLimit, Func, Acc).
-
--spec fold_impl(
-    Log :: log(),
-    First :: log_index(),
-    Last :: log_index(),
-    SizeLimit :: non_neg_integer() | infinity,
-    Func ::
-        fun((Index :: log_index(), Entry :: log_entry(), Acc) -> Acc)
-        | fun((Index :: log_index(), Size :: non_neg_integer(), Entry :: log_entry(), Acc) -> Acc),
-    Acc :: term()
 ) -> {ok, Acc} | wa_raft:error().
-fold_impl(Log, First, Last, SizeLimit, Func, AccIn) ->
+fold(LogOrView, RawFirst, RawLast, SizeLimit, Func, Acc) ->
+    Log = log(LogOrView),
+    First = max(RawFirst, first_index(LogOrView)),
+    Last = min(RawLast, last_index(LogOrView)),
     ?RAFT_COUNT('raft.log.fold'),
     ?RAFT_COUNTV('raft.log.fold.total', Last - First + 1),
     AdjFunc =
@@ -448,11 +468,53 @@ fold_impl(Log, First, Last, SizeLimit, Func, AccIn) ->
             is_function(Func, 4) -> Func
         end,
     Provider = provider(Log),
-    case Provider:fold(Log, First, Last, SizeLimit, AdjFunc, AccIn) of
+    case Provider:fold(Log, First, Last, SizeLimit, AdjFunc, Acc) of
         {ok, AccOut} ->
             {ok, AccOut};
         {error, Reason} ->
             ?RAFT_COUNT('raft.log.fold.error'),
+            {error, Reason}
+    end.
+
+-spec fold_binary(
+    LogOrView :: log() | view(),
+    First :: log_index(),
+    Last :: log_index() | infinity,
+    Func :: fun((Index :: log_index(), Entry :: binary(), Acc) -> Acc),
+    Acc
+) -> {ok, Acc} | wa_raft:error().
+fold_binary(LogOrView, First, Last, Func, Acc) ->
+    fold_binary(LogOrView, First, Last, infinity, Func, Acc).
+
+%% Call the provided combining function on the external term format of
+%% successive log entries in the specified log starting from the specified
+%% start index (inclusive) and ending at the specified end index (also
+%% inclusive). The combining function will always be called with log entries
+%% in log order starting with the first log entry that exists within the
+%% provided range. The combining function will not be called for those log
+%% indices within the provided range that do not have a stored log entry. The
+%% size provided to the combining function when requested is determined by the
+%% underlying log provider.
+-spec fold_binary(
+    LogOrView :: log() | view(),
+    First :: log_index(),
+    Last :: log_index() | infinity,
+    SizeLimit :: non_neg_integer() | infinity,
+    Func :: fun((Index :: log_index(), Entry :: binary(), Acc) -> Acc),
+    Acc
+) -> {ok, Acc} | wa_raft:error().
+fold_binary(LogOrView, RawFirst, RawLast, SizeLimit, Func, Acc) ->
+    Log = log(LogOrView),
+    First = max(RawFirst, first_index(LogOrView)),
+    Last = min(RawLast, last_index(LogOrView)),
+    ?RAFT_COUNT('raft.log.fold_binary'),
+    ?RAFT_COUNTV('raft.log.fold_binary.total', Last - First + 1),
+    Provider = provider(Log),
+    case Provider:fold_binary(Log, First, Last, SizeLimit, Func, Acc) of
+        {ok, AccOut} ->
+            {ok, AccOut};
+        {error, Reason} ->
+            ?RAFT_COUNT('raft.log.fold_binary.error'),
             {error, Reason}
     end.
 
@@ -526,76 +588,129 @@ get(Log, Index) ->
     Provider = provider(Log),
     Provider:get(Log, Index).
 
--spec get(LogOrView :: log() | view(), First :: log_index(), CountLimit :: non_neg_integer()) ->
+%% Fetch a contiguous range of log entries containing up to the specified
+%% number of log entries starting at the provided index. When using a log view,
+%% only those log entries that fall within the provided view will be returned.
+-spec get(LogOrView :: log() | view(), Start :: log_index(), CountLimit :: non_neg_integer()) ->
     {ok, Entries :: [log_entry()]} | wa_raft:error().
-get(LogOrView, First, CountLimit) ->
-    get(LogOrView, First, CountLimit, infinity).
+get(LogOrView, Start, CountLimit) ->
+    get(LogOrView, Start, CountLimit, infinity).
 
-%% Gets a contiguous range of log entries starting at the provided log index,
-%% up to the specified maximum total number of bytes (based on external format).
-%% If at least one log entry is requested, then at least one log entry will be
-%% returned no matter what total number of bytes is specified.
-%% When using a log view this function may not return all physically present
-%% log entries if those entries are outside of the log view.
+%% Fetch a contiguous range of log entries containing up to the specified
+%% number of log entries or the specified maximum total number of bytes (based
+%% on the byte sizes reported by the underlying log provider) starting at the
+%% provided index. If log entries exist at the provided starting index, then
+%% at least one log entry will be returned. When using a log view, only those
+%% log entries that fall within the provided view will be returned.
 -spec get(
     LogOrView :: log() | view(),
-    First :: log_index(),
+    Start :: log_index(),
     CountLimit :: non_neg_integer(),
     SizeLimit :: non_neg_integer() | infinity
-) ->
-    {ok, Entries :: [log_entry()]} | wa_raft:error().
-get(LogOrView, First, CountLimit, SizeLimit) ->
-    try
-        fold(
-            LogOrView,
-            First,
-            First + CountLimit - 1,
-            SizeLimit,
-            fun
-                (Index, Entry, {Index, Acc}) -> {Index + 1, [Entry | Acc]};
-                (_Index, _Entry, {ExpectedIndex, _Acc}) -> throw({missing, ExpectedIndex})
-            end,
-            {First, []}
-        )
-    of
-        {ok, {_, EntriesRev}} -> {ok, lists:reverse(EntriesRev)};
-        {error, Reason} -> {error, Reason}
+) -> {ok, Entries :: [log_entry()]} | wa_raft:error().
+get(LogOrView, Start, CountLimit, SizeLimit) ->
+    End = Start + CountLimit - 1,
+    try fold(LogOrView, Start, End, SizeLimit, fun get_method/3, {Start, []}) of
+        {ok, {_, EntriesRev}} ->
+            {ok, lists:reverse(EntriesRev)};
+        {error, Reason} ->
+            {error, Reason}
     catch
         throw:{missing, Index} ->
             ?LOG_WARNING(
-                "[~p] detected log is missing index ~p during get of ~p ~~ ~p",
-                [log_name(LogOrView), Index, First, First + CountLimit - 1],
+                "[~0p] detected missing log entry ~0p while folding range ~0p ~~ ~0p",
+                [log_name(LogOrView), Index, Start, End],
                 #{domain => [whatsapp, wa_raft]}
             ),
             {error, corruption}
     end.
 
--spec get_terms(LogOrView :: log() | view(), First :: log_index(), Limit :: non_neg_integer()) ->
+-spec get_method(Index :: log_index(), Entry :: log_entry(), Acc) -> Acc when
+    Acc :: {AccIndex :: log_index(), AccEntries :: [log_entry()]}.
+get_method(Index, Entry, {Index, AccEntries}) ->
+    {Index + 1, [Entry | AccEntries]};
+get_method(_, _, {AccIndex, _}) ->
+    throw({missing, AccIndex}).
+
+-spec get_terms(LogOrView :: log() | view(), Start :: log_index(), CountLimit :: non_neg_integer()) ->
     {ok, Terms :: [wa_raft_log:log_term()]} | wa_raft:error().
-get_terms(LogOrView, First, Limit) ->
-    try
-        fold_terms(
-            LogOrView,
-            First,
-            First + Limit - 1,
-            fun
-                (Index, Term, {Index, Acc}) -> {Index + 1, [Term | Acc]};
-                (_Index, _Term, {ExpectedIndex, _Acc}) -> throw({missing, ExpectedIndex})
-            end,
-            {First, []}
-        )
-    of
-        {ok, {_, TermsRev}} -> {ok, lists:reverse(TermsRev)};
-        {error, Reason} -> {error, Reason}
+get_terms(LogOrView, Start, CountLimit) ->
+    End = Start + CountLimit - 1,
+    try fold_terms(LogOrView, Start, End, fun get_terms_method/3, {Start, []}) of
+        {ok, {_, TermsRev}} ->
+            {ok, lists:reverse(TermsRev)};
+        {error, Reason} ->
+            {error, Reason}
     catch
         throw:{missing, Index} ->
             ?LOG_WARNING(
-                "[~p] detected log is missing index ~p during get of ~p ~~ ~p",
-                [log_name(LogOrView), Index, First, First + Limit - 1],
+                "[~0p] detected missing log entry ~0p while folding range ~0p ~~ ~0p for terms",
+                [log_name(LogOrView), Index, Start, End],
                 #{domain => [whatsapp, wa_raft]}
             ),
             {error, corruption}
     end.
+
+-spec get_terms_method(Index :: log_index(), Terms :: log_term(), Acc) -> Acc when
+    Acc :: {AccIndex :: log_index(), AccTerms :: [log_term()]}.
+get_terms_method(Index, Entry, {Index, AccTerms}) ->
+    {Index + 1, [Entry | AccTerms]};
+get_terms_method(_, _, {AccIndex, _}) ->
+    throw({missing, AccIndex}).
+
+%% Produce a list of log entries in a format appropriate for inclusion within
+%% a heartbeat to a peer containing up to the specified number of log entries
+%% starting at the provided index. When using a log view, only those log
+%% entries that fall within the provided view will be returned.
+-spec entries(LogOrView :: log() | view(), Start :: log_index(), CountLimit :: non_neg_integer()) ->
+    {ok, Entries :: [log_entry() | binary()]} | wa_raft:error().
+entries(LogOrView, First, Count) ->
+    entries(LogOrView, First, Count, infinity).
+
+%% Produce a list of log entries in a format appropriate for inclusion within
+%% a heartbeat to a peer containing up to the specified number of log entries
+%% or the specified maximum total number of bytes (based on the byte sizes
+%% reported by the underlying log provider when returning log entries or the
+%% byte size of each log entry binary when returning binaries) starting at the
+%% provided index. If log entries exist at the provided starting index, then
+%% at least one log entry will be returned. When using a log view, only those
+%% log entries that fall within the provided view will be returned.
+-spec entries(
+    LogOrView :: log() | view(),
+    Start :: log_index(),
+    CountLimit :: non_neg_integer(),
+    SizeLimit :: non_neg_integer() | infinity
+) -> {ok, Entries :: [log_entry() | binary()]} | wa_raft:error().
+entries(LogOrView, Start, CountLimit, SizeLimit) ->
+    App = app(LogOrView),
+    Provider = provider(LogOrView),
+    End = Start + CountLimit - 1,
+    try
+        case erlang:function_exported(Provider, fold_binary, 6) andalso ?RAFT_LOG_HEARTBEAT_BINARY_ENTRIES(App) of
+            true -> fold_binary(LogOrView, Start, End, SizeLimit, fun entries_method/3, {Start, []});
+            false -> fold(LogOrView, Start, End, SizeLimit, fun entries_method/3, {Start, []})
+        end
+    of
+        {ok, {_, EntriesRev}} ->
+            {ok, lists:reverse(EntriesRev)};
+        {error, Reason} ->
+            {error, Reason}
+    catch
+        throw:{missing, Index} ->
+            ?LOG_WARNING(
+                "[~0p] detected missing log entry ~0p while folding range ~0p ~~ ~0p for heartbeat",
+                [log_name(LogOrView), Index, Start, End],
+                #{domain => [whatsapp, wa_raft]}
+            ),
+            {error, corruption}
+    end.
+
+-spec entries_method(Index :: log_index(), Entry :: log_entry() | binary(), Acc) -> Acc when
+    Acc :: {AccIndex :: log_index(), AccEntries :: [log_entry() | binary()]}.
+entries_method(Index, Entry, {Index, AccEntries}) ->
+    {Index + 1, [Entry | AccEntries]};
+entries_method(_, _, {AccIndex, _}) ->
+    throw({missing, AccIndex}).
 
 -spec config(LogOrView :: log() | view()) -> {ok, Index :: log_index(), Config :: wa_raft_server:config()} | not_found.
 config(#log_view{config = undefined}) ->
@@ -698,8 +813,14 @@ registered_name(Table, Partition) ->
         Options -> Options#raft_options.log_name
     end.
 
--spec log(View :: view()) -> Log :: log().
+-spec app(LogOrView :: log() | view()) -> App :: atom().
+app(LogOrView) ->
+    (log(LogOrView))#raft_log.application.
+
+-spec log(LogOrView :: log() | view()) -> Log :: log().
 log(#log_view{log = Log}) ->
+    Log;
+log(#raft_log{} = Log) ->
     Log.
 
 -spec log_name(LogOrView :: log() | view()) -> Name :: log_name().

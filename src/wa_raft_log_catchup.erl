@@ -310,7 +310,7 @@ send_logs_impl(
 
     LogBatchEntries = ?RAFT_CATCHUP_MAX_ENTRIES_PER_BATCH(App),
     LogBatchBytes = ?RAFT_CATCHUP_MAX_BYTES_PER_BATCH(App),
-    {ok, Entries} = wa_raft_log:get(Log, NextLogIndex, LogBatchEntries, LogBatchBytes),
+    {ok, Entries} = wa_raft_log:entries(Log, NextLogIndex, LogBatchEntries, LogBatchBytes),
 
     case Entries of
         [] ->

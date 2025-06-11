@@ -719,7 +719,7 @@ terminate(Reason, State, #raft_state{table = Table, partition = Partition} = Dat
 -type append_entries() :: ?APPEND_ENTRIES(
     wa_raft_log:log_index(),
     wa_raft_log:log_term(),
-    [wa_raft_log:log_entry()],
+    [wa_raft_log:log_entry() | binary()],
     wa_raft_log:log_index(),
     wa_raft_log:log_index()
 ).
@@ -728,7 +728,13 @@ terminate(Reason, State, #raft_state{table = Table, partition = Partition} = Dat
 ).
 -type request_vote() :: ?REQUEST_VOTE(election_type(), wa_raft_log:log_index(), wa_raft_log:log_term()).
 -type vote() :: ?VOTE(boolean()).
--type handover() :: ?HANDOVER(reference(), wa_raft_log:log_index(), wa_raft_log:log_term(), [wa_raft_log:log_entry()]).
+-type handover() ::
+    ?HANDOVER(
+        reference(),
+        wa_raft_log:log_index(),
+        wa_raft_log:log_term(),
+        [wa_raft_log:log_entry() | binary()]
+    ).
 -type handover_failed() :: ?HANDOVER_FAILED(reference()).
 -type notify_term() :: ?NOTIFY_TERM().
 
@@ -1458,7 +1464,7 @@ leader(
 
                     PrevLogIndex = PeerSendIndex - 1,
                     {ok, PrevLogTerm} = wa_raft_log:term(View, PrevLogIndex),
-                    {ok, LogEntries} = wa_raft_log:get(View, PeerSendIndex, MaxHandoverBatchSize, MaxHandoverBytes),
+                    {ok, LogEntries} = wa_raft_log:entries(View, PeerSendIndex, MaxHandoverBatchSize, MaxHandoverBytes),
 
                     % The request to load the log may result in not all required log entries being loaded
                     % if we hit the byte size limit. Ensure that we have loaded all required log entries
@@ -2818,7 +2824,7 @@ heartbeat(
             MaxLogEntries = ?RAFT_HEARTBEAT_MAX_ENTRIES(App),
             MaxHeartbeatSize = ?RAFT_HEARTBEAT_MAX_BYTES(App),
             Witnesses = config_witnesses(config(State0)),
-            {ok, RawEntries} = wa_raft_log:get(View, FollowerNextIndex, MaxLogEntries, MaxHeartbeatSize),
+            {ok, RawEntries} = wa_raft_log:entries(View, FollowerNextIndex, MaxLogEntries, MaxHeartbeatSize),
             Entries =
                 case lists:member({Name, FollowerId}, Witnesses) of
                     true ->
@@ -2856,11 +2862,13 @@ heartbeat(
             State1#raft_state{next_indices = NewNextIndices}
     end.
 
--spec stub_entries_for_witness([wa_raft_log:log_entry()]) -> [wa_raft_log:log_entry()].
+-spec stub_entries_for_witness([wa_raft_log:log_entry() | binary()]) -> [wa_raft_log:log_entry() | binary()].
 stub_entries_for_witness(Entries) ->
     [stub_entry(E) || E <- Entries].
 
--spec stub_entry(wa_raft_log:log_entry()) -> wa_raft_log:log_entry().
+-spec stub_entry(wa_raft_log:log_entry() | binary()) -> wa_raft_log:log_entry() | binary().
+stub_entry(Binary) when is_binary(Binary) ->
+    Binary;
 stub_entry({Term, undefined}) ->
     {Term, undefined};
 stub_entry({Term, {Key, Cmd}}) ->
@@ -3003,7 +3011,7 @@ open_snapshot(Root, Position, #raft_state{storage = Storage} = Data) ->
     Leader :: #raft_identity{},
     PrevLogIndex :: wa_raft_log:log_index(),
     PrevLogTerm :: wa_raft_log:log_term(),
-    Entries :: [wa_raft_log:log_entry()],
+    Entries :: [wa_raft_log:log_entry() | binary()],
     CommitIndex :: wa_raft_log:log_index(),
     TrimIndex :: wa_raft_log:log_index(),
     Data :: #raft_state{}
@@ -3084,7 +3092,7 @@ handle_heartbeat(
     State :: state(),
     PrevLogIndex :: wa_raft_log:log_index(),
     PrevLogTerm :: wa_raft_log:log_term(),
-    Entries :: [wa_raft_log:log_entry()],
+    Entries :: [wa_raft_log:log_entry() | binary()],
     EntryCount :: non_neg_integer(),
     Data :: #raft_state{}
 ) ->

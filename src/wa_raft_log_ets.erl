@@ -155,13 +155,25 @@ config(#raft_log{name = Name}) ->
 %% RAFT log provider interface for writing new log data
 %%-------------------------------------------------------------------
 
--spec append(View :: wa_raft_log:view(), Entries :: [wa_raft_log:log_entry()], Mode :: strict | relaxed) ->
+-spec append(View :: wa_raft_log:view(), Entries :: [wa_raft_log:log_entry() | binary()], Mode :: strict | relaxed) ->
     ok | skipped | wa_raft_log:error().
 append(View, Entries, _Mode) ->
     Name = wa_raft_log:log_name(View),
     Last = wa_raft_log:last_index(View),
-    true = ets:insert(Name, lists:enumerate(Last + 1, Entries)),
+    true = ets:insert(Name, append_decode(Last + 1, Entries)),
     ok.
+
+-spec append_decode(Index :: wa_raft_log:log_index(), Entries :: [wa_raft_log:log_entry() | binary()]) ->
+    [{wa_raft_log:log_index(), wa_raft_log:log_entry()}].
+append_decode(_, []) ->
+    [];
+append_decode(Index, [Entry | Entries]) ->
+    NewEntry =
+        case is_binary(Entry) of
+            true -> binary_to_term(Entry);
+            false -> Entry
+        end,
+    [{Index, NewEntry} | append_decode(Index + 1, Entries)].
 
 %%-------------------------------------------------------------------
 %% RAFT log provider interface for managing underlying RAFT log

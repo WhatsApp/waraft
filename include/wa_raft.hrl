@@ -260,6 +260,13 @@
     (?RAFT_APP_CONFIG(App, {?RAFT_LOG_ROTATION_BY_TRIM_INDEX, use_trim_index}, false) =:= true)
 ).
 
+%% Whether or not the log should return entries in external term format
+%% when log entries are fetched for heartbeats
+-define(RAFT_LOG_HEARTBEAT_BINARY_ENTRIES, raft_log_heartbeat_binary_entries).
+-define(RAFT_LOG_HEARTBEAT_BINARY_ENTRIES(App),
+    (?RAFT_APP_CONFIG(App, ?RAFT_LOG_HEARTBEAT_BINARY_ENTRIES, false) =:= true)
+).
+
 %% Whether or not the RAFT server should use any special catchup strategy to bring peers back in sync.
 -define(RAFT_CATCHUP_ENABLED, raft_catchup_enabled).
 -define(RAFT_CATCHUP_ENABLED(App), (?RAFT_APP_CONFIG(App, {?RAFT_CATCHUP_ENABLED, catchup_enabled}, true) =/= false)).
