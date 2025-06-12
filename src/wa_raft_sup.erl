@@ -1,4 +1,3 @@
-%% @format
 %%% Copyright (c) Meta Platforms, Inc. and affiliates. All rights reserved.
 %%%
 %%% This source code is licensed under the Apache 2.0 license found in
@@ -101,9 +100,8 @@ start_link(Application, RaftArgs, Options) ->
             [
                 case start_partition(Pid, Spec) of
                     {error, Reason} -> error(Reason);
-                    _Other -> ok
-                end
-             || Spec <- RaftArgs
+                    _Other          -> ok
+                end || Spec <- RaftArgs
             ],
             Result;
         Else ->
@@ -126,21 +124,18 @@ start_partition_under_application(Application, Spec) ->
 stop_partition(Supervisor, Pid) ->
     supervisor:terminate_child(Supervisor, Pid).
 
--spec stop_partition(Supervisor :: atom() | pid(), Table :: wa_raft:table(), Partition :: wa_raft:partition()) ->
-    ok | {error, atom()}.
+-spec stop_partition(Supervisor :: atom() | pid(), Table :: wa_raft:table(), Partition :: wa_raft:partition()) -> ok | {error, atom()}.
 stop_partition(Supervisor, Table, Partition) ->
     case whereis(wa_raft_part_sup:registered_name(Table, Partition)) of
         Pid when is_pid(Pid) -> stop_partition(Supervisor, Pid);
-        _ -> {error, not_found}
+        _                    -> {error, not_found}
     end.
 
 -spec stop_partition_under_application(Application :: atom(), Pid :: pid()) -> ok | {error, atom()}.
 stop_partition_under_application(Application, Pid) ->
     stop_partition(default_name(Application), Pid).
 
--spec stop_partition_under_application(
-    Application :: atom(), Table :: wa_raft:table(), Partition :: wa_raft:partition()
-) -> ok | {error, atom()}.
+-spec stop_partition_under_application(Application :: atom(), Table :: wa_raft:table(), Partition :: wa_raft:partition()) -> ok | {error, atom()}.
 stop_partition_under_application(Application, Table, Partition) ->
     stop_partition(default_name(Application), Table, Partition).
 
@@ -160,7 +155,7 @@ default_config_apps(Application) ->
 registered_config_apps(Application) ->
     case options(Application) of
         undefined -> error({raft_not_started, Application});
-        Options -> Options#raft_application.config_search_apps
+        Options   -> Options#raft_application.config_search_apps
     end.
 
 -spec options(Application :: atom()) -> #raft_application{} | undefined.

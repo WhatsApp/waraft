@@ -1,4 +1,3 @@
-%% @format
 %%% Copyright (c) Meta Platforms, Inc. and affiliates. All rights reserved.
 %%%
 %%% This source code is licensed under the Apache 2.0 license found in
@@ -71,32 +70,26 @@ storage_position(#state{storage = Storage}) ->
 storage_label(#state{storage = Storage}) ->
     case ets:lookup(Storage, ?LABEL_TAG) of
         [{_, Label}] -> {ok, Label};
-        [] -> {ok, undefined}
+        []           -> {ok, undefined}
     end.
 
 -spec storage_config(#state{}) -> {ok, wa_raft_log:log_pos(), wa_raft_server:config()} | undefined.
 storage_config(#state{storage = Storage}) ->
     case ets:lookup(Storage, {?METADATA_TAG, config}) of
         [{_, {Version, Value}}] -> {ok, Version, Value};
-        [] -> undefined
+        []                      -> undefined
     end.
 
 -spec storage_incomplete(#state{}) -> boolean().
 storage_incomplete(#state{storage = Storage}) ->
     ets:lookup_element(Storage, ?INCOMPLETE_TAG, 2, false).
 
--spec storage_apply(
-    Command :: wa_raft_acceptor:command(),
-    Position :: wa_raft_log:log_pos(),
-    Label :: wa_raft_label:label(),
-    Storage :: #state{}
-) -> {ok, #state{}}.
+-spec storage_apply(Command :: wa_raft_acceptor:command(), Position :: wa_raft_log:log_pos(), Label :: wa_raft_label:label(), Storage :: #state{}) -> {ok, #state{}}.
 storage_apply(Command, Position, Label, #state{storage = Storage} = State) ->
     true = ets:insert(Storage, {?LABEL_TAG, Label}),
     storage_apply(Command, Position, State).
 
--spec storage_apply(Command :: wa_raft_acceptor:command(), Position :: wa_raft_log:log_pos(), Storage :: #state{}) ->
-    {ok, #state{}}.
+-spec storage_apply(Command :: wa_raft_acceptor:command(), Position :: wa_raft_log:log_pos(), Storage :: #state{}) -> {ok, #state{}}.
 storage_apply(noop, Position, #state{storage = Storage} = State) ->
     true = ets:insert(Storage, {?POSITION_TAG, Position}),
     {ok, State};
@@ -130,35 +123,29 @@ storage_apply_config(Config, ConfigPos, LogPos, #state{storage = Storage} = Stat
     true = ets:insert(Storage, [{{?METADATA_TAG, config}, {ConfigPos, Config}}, {?POSITION_TAG, LogPos}]),
     {ok, State}.
 
--spec storage_read(Command :: wa_raft_acceptor:command(), Position :: wa_raft_log:log_pos(), State :: #state{}) ->
-    ok | {ok, Value :: dynamic()} | not_found.
+-spec storage_read(Command :: wa_raft_acceptor:command(), Position :: wa_raft_log:log_pos(), State :: #state{}) -> ok | {ok, Value :: dynamic()} | not_found.
 storage_read(noop, _Position, #state{}) ->
     ok;
 storage_read({read, _Table, Key}, _Position, #state{storage = Storage}) ->
     case ets:lookup(Storage, Key) of
         [{_, Value}] -> {ok, Value};
-        [] -> not_found
+        []           -> not_found
     end.
 
 -spec storage_create_snapshot(file:filename(), #state{}) -> ok | wa_raft_storage:error().
 storage_create_snapshot(SnapshotPath, #state{storage = Storage}) ->
     case filelib:ensure_path(SnapshotPath) of
-        ok -> ets:tab2file(Storage, filename:join(SnapshotPath, ?SNAPSHOT_FILENAME));
+        ok              -> ets:tab2file(Storage, filename:join(SnapshotPath, ?SNAPSHOT_FILENAME));
         {error, Reason} -> {error, Reason}
     end.
 
 -spec storage_create_witness_snapshot(file:filename(), #state{}) -> ok | wa_raft_storage:error().
-storage_create_witness_snapshot(
-    SnapshotPath, #state{name = Name, table = Table, partition = Partition, self = Self} = State
-) ->
+storage_create_witness_snapshot(SnapshotPath, #state{name = Name, table = Table, partition = Partition, self = Self} = State) ->
     {ok, ConfigPosition, Config} = storage_config(State),
     SnapshotPosition = storage_position(State),
-    storage_make_empty_snapshot(
-        Name, Table, Partition, Self, SnapshotPath, SnapshotPosition, Config, ConfigPosition, #{}
-    ).
+    storage_make_empty_snapshot(Name, Table, Partition, Self, SnapshotPath, SnapshotPosition, Config, ConfigPosition, #{}).
 
--spec storage_open_snapshot(file:filename(), wa_raft_log:log_pos(), #state{}) ->
-    {ok, #state{}} | wa_raft_storage:error().
+-spec storage_open_snapshot(file:filename(), wa_raft_log:log_pos(), #state{}) -> {ok, #state{}} | wa_raft_storage:error().
 storage_open_snapshot(SnapshotPath, SnapshotPosition, #state{storage = Storage} = State) ->
     SnapshotData = filename:join(SnapshotPath, ?SNAPSHOT_FILENAME),
     case ets:file2tab(SnapshotData) of
@@ -191,34 +178,12 @@ storage_check_config(Config, #state{self = Self} = State) ->
         false -> ok
     end.
 
--spec storage_make_empty_snapshot(
-    #raft_options{}, file:filename(), wa_raft_log:log_pos(), wa_raft_server:config(), dynamic()
-) -> ok | wa_raft_storage:error().
-storage_make_empty_snapshot(
-    #raft_options{table = Table, partition = Partition, self = Self, storage_name = Name},
-    SnapshotPath,
-    SnapshotPosition,
-    Config,
-    Data
-) ->
-    storage_make_empty_snapshot(
-        Name, Table, Partition, Self, SnapshotPath, SnapshotPosition, Config, SnapshotPosition, Data
-    ).
+-spec storage_make_empty_snapshot(#raft_options{}, file:filename(), wa_raft_log:log_pos(), wa_raft_server:config(), dynamic()) -> ok | wa_raft_storage:error().
+storage_make_empty_snapshot(#raft_options{table = Table, partition = Partition, self = Self, storage_name = Name}, SnapshotPath, SnapshotPosition, Config, Data) ->
+    storage_make_empty_snapshot(Name, Table, Partition, Self, SnapshotPath, SnapshotPosition, Config, SnapshotPosition, Data).
 
--spec storage_make_empty_snapshot(
-    atom(),
-    wa_raft:table(),
-    wa_raft:partition(),
-    #raft_identity{},
-    file:filename(),
-    wa_raft_log:log_pos(),
-    wa_raft_server:config(),
-    wa_raft_log:log_pos(),
-    dynamic()
-) -> ok | wa_raft_storage:error().
-storage_make_empty_snapshot(
-    Name, Table, Partition, Self, SnapshotPath, SnapshotPosition, Config, ConfigPosition, _Data
-) ->
+-spec storage_make_empty_snapshot(atom(), wa_raft:table(), wa_raft:partition(), #raft_identity{}, file:filename(), wa_raft_log:log_pos(), wa_raft_server:config(), wa_raft_log:log_pos(), dynamic()) -> ok | wa_raft_storage:error().
+storage_make_empty_snapshot(Name, Table, Partition, Self, SnapshotPath, SnapshotPosition, Config, ConfigPosition, _Data) ->
     Storage = ets:new(Name, ?OPTIONS),
     State = #state{name = Name, table = Table, partition = Partition, self = Self, storage = Storage},
     storage_apply_config(Config, ConfigPosition, SnapshotPosition, State),

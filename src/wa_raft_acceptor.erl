@@ -1,4 +1,3 @@
-%% @format
 %%% Copyright (c) Meta Platforms, Inc. and affiliates. All rights reserved.
 %%%
 %%% This source code is licensed under the Apache 2.0 license found in
@@ -82,12 +81,12 @@
 -type commit_request() :: {commit, Op :: op()}.
 -type commit_async_request() :: {commit, From :: gen_server:from(), Op :: op()}.
 -type commit_error_type() ::
-    not_leader
-    | {duplicate_request, Key :: key()}
-    | {commit_queue_full, Key :: key()}
-    | {apply_queue_full, Key :: key()}
-    | {notify_redirect, Peer :: node()}
-    | commit_stalled.
+    not_leader |
+    {duplicate_request, Key :: key()} |
+    {commit_queue_full, Key :: key()} |
+    {apply_queue_full, Key :: key()} |
+    {notify_redirect, Peer :: node()} |
+    commit_stalled.
 -type commit_error() :: {error, commit_error_type()}.
 -type commit_result() :: Result :: dynamic() | Error :: commit_error() | call_error().
 
@@ -158,11 +157,11 @@ call(ServerRef, Request, Timeout) ->
     try
         gen_server:call(ServerRef, Request, Timeout)
     catch
-        exit:{timeout, _} -> {error, timeout};
-        exit:{noproc, _} -> {error, unreachable};
+        exit:{timeout, _}       -> {error, timeout};
+        exit:{noproc, _}        -> {error, unreachable};
         exit:{{nodedown, _}, _} -> {error, unreachable};
-        exit:{shutdown, _} -> {error, unreachable};
-        exit:{Other, _} -> {error, {call_error, Other}}
+        exit:{shutdown, _}      -> {error, unreachable};
+        exit:{Other, _}         -> {error, {call_error, Other}}
     end.
 
 %%-------------------------------------------------------------------
@@ -181,7 +180,7 @@ default_name(Table, Partition) ->
 registered_name(Table, Partition) ->
     case wa_raft_part_sup:options(Table, Partition) of
         undefined -> default_name(Table, Partition);
-        Options -> Options#raft_options.acceptor_name
+        Options   -> Options#raft_options.acceptor_name
     end.
 
 %%-------------------------------------------------------------------
@@ -192,11 +191,8 @@ registered_name(Table, Partition) ->
 init(#raft_options{table = Table, partition = Partition, acceptor_name = Name, server_name = Server} = Options) ->
     process_flag(trap_exit, true),
 
-    ?LOG_NOTICE(
-        "Acceptor[~0p] starting for partition ~0p/~0p",
-        [Name, Table, Partition],
-        #{domain => [whatsapp, wa_raft]}
-    ),
+    ?LOG_NOTICE("Acceptor[~0p] starting for partition ~0p/~0p",
+        [Name, Table, Partition], #{domain => [whatsapp, wa_raft]}),
 
     {ok, #state{
         name = Name,
@@ -204,25 +200,21 @@ init(#raft_options{table = Table, partition = Partition, acceptor_name = Name, s
         queues = wa_raft_queue:queues(Options)
     }}.
 
--spec handle_call
-    (read_request(), gen_server:from(), #state{}) -> {reply, read_result(), #state{}} | {noreply, #state{}};
-    (commit_request(), gen_server:from(), #state{}) -> {reply, commit_result(), #state{}} | {noreply, #state{}}.
+-spec handle_call(read_request(), gen_server:from(), #state{}) -> {reply, read_result(), #state{}} | {noreply, #state{}};
+                 (commit_request(), gen_server:from(), #state{}) -> {reply, commit_result(), #state{}} | {noreply, #state{}}.
 handle_call({read, Command}, From, State) ->
     case read_impl(From, Command, State) of
-        continue -> {noreply, State};
+        continue           -> {noreply, State};
         {error, _} = Error -> {reply, Error, State}
     end;
 handle_call({commit, Op}, From, State) ->
     case commit_impl(From, Op, State) of
-        continue -> {noreply, State};
+        continue           -> {noreply, State};
         {error, _} = Error -> {reply, Error, State}
     end;
 handle_call(Request, From, #state{name = Name} = State) ->
-    ?LOG_ERROR(
-        "Acceptor[~0p] received unexpected call ~0P from ~0p.",
-        [Name, Request, 30, From],
-        #{domain => [whatsapp, wa_raft]}
-    ),
+    ?LOG_ERROR("Acceptor[~0p] received unexpected call ~0P from ~0p.",
+        [Name, Request, 30, From], #{domain => [whatsapp, wa_raft]}),
     {noreply, State}.
 
 -spec handle_cast(commit_async_request(), #state{}) -> {noreply, #state{}}.
@@ -231,20 +223,14 @@ handle_cast({commit, From, Op}, State) ->
     Result =/= continue andalso gen_server:reply(From, Result),
     {noreply, State};
 handle_cast(Request, #state{name = Name} = State) ->
-    ?LOG_ERROR(
-        "Acceptor[~0p] received unexpected cast ~0P.",
-        [Name, Request, 30],
-        #{domain => [whatsapp, wa_raft]}
-    ),
+    ?LOG_ERROR("Acceptor[~0p] received unexpected cast ~0P.",
+        [Name, Request, 30], #{domain => [whatsapp, wa_raft]}),
     {noreply, State}.
 
 -spec terminate(Reason :: term(), State :: #state{}) -> ok.
 terminate(Reason, #state{name = Name}) ->
-    ?LOG_NOTICE(
-        "Acceptor[~0p] terminating with reason ~0P",
-        [Name, Reason, 30],
-        #{domain => [whatsapp, wa_raft]}
-    ),
+    ?LOG_NOTICE("Acceptor[~0p] terminating with reason ~0P",
+        [Name, Reason, 30], #{domain => [whatsapp, wa_raft]}),
     ok.
 
 %%-------------------------------------------------------------------
@@ -256,34 +242,22 @@ terminate(Reason, #state{name = Name}) ->
 commit_impl(From, {Key, _} = Op, #state{name = Name, server = Server, queues = Queues}) ->
     StartT = os:timestamp(),
     try
-        ?LOG_DEBUG(
-            "Acceptor[~0p] starts to handle commit of ~0P from ~0p.",
-            [Name, Op, 30, From],
-            #{domain => [whatsapp, wa_raft]}
-        ),
+        ?LOG_DEBUG("Acceptor[~0p] starts to handle commit of ~0P from ~0p.",
+            [Name, Op, 30, From], #{domain => [whatsapp, wa_raft]}),
         case wa_raft_queue:commit(Queues, Key, From) of
             duplicate ->
-                ?LOG_WARNING(
-                    "Acceptor[~0p] is rejecting commit request from ~0p because it has duplicate key ~0p.",
-                    [Name, From, Key],
-                    #{domain => [whatsapp, wa_raft]}
-                ),
+                ?LOG_WARNING("Acceptor[~0p] is rejecting commit request from ~0p because it has duplicate key ~0p.",
+                    [Name, From, Key], #{domain => [whatsapp, wa_raft]}),
                 ?RAFT_COUNT('raft.acceptor.error.duplicate_commit'),
                 {error, {duplicate_request, Key}};
             commit_queue_full ->
-                ?LOG_WARNING(
-                    "Acceptor[~0p] is rejecting commit request from ~0p with key ~0p because the commit queue is full.",
-                    [Name, From, Key],
-                    #{domain => [whatsapp, wa_raft]}
-                ),
+                ?LOG_WARNING("Acceptor[~0p] is rejecting commit request from ~0p with key ~0p because the commit queue is full.",
+                    [Name, From, Key], #{domain => [whatsapp, wa_raft]}),
                 ?RAFT_COUNT('raft.acceptor.error.commit_queue_full'),
                 {error, {commit_queue_full, Key}};
             apply_queue_full ->
-                ?LOG_WARNING(
-                    "Acceptor[~0p] is rejecting commit request from ~0p with key ~0p because the apply queue is full.",
-                    [Name, From, Key],
-                    #{domain => [whatsapp, wa_raft]}
-                ),
+                ?LOG_WARNING("Acceptor[~0p] is rejecting commit request from ~0p with key ~0p because the apply queue is full.",
+                    [Name, From, Key], #{domain => [whatsapp, wa_raft]}),
                 ?RAFT_COUNT('raft.acceptor.error.apply_queue_full'),
                 {error, {apply_queue_full, Key}};
             ok ->
@@ -298,28 +272,19 @@ commit_impl(From, {Key, _} = Op, #state{name = Name, server = Server, queues = Q
 -spec read_impl(gen_server:from(), command(), #state{}) -> continue | read_error().
 read_impl(From, Command, #state{name = Name, server = Server, queues = Queues}) ->
     StartT = os:timestamp(),
-    ?LOG_DEBUG(
-        "Acceptor[~p] starts to handle read of ~0P from ~0p.",
-        [Name, Command, 100, From],
-        #{domain => [whatsapp, wa_raft]}
-    ),
+    ?LOG_DEBUG("Acceptor[~p] starts to handle read of ~0P from ~0p.",
+        [Name, Command, 100, From], #{domain => [whatsapp, wa_raft]}),
     try
         case wa_raft_queue:reserve_read(Queues) of
             read_queue_full ->
                 ?RAFT_COUNT('raft.acceptor.strong_read.error.read_queue_full'),
-                ?LOG_WARNING(
-                    "Acceptor[~0p] is rejecting read request from ~0p because the read queue is full.",
-                    [Name, From],
-                    #{domain => [whatsapp, wa_raft]}
-                ),
+                ?LOG_WARNING("Acceptor[~0p] is rejecting read request from ~0p because the read queue is full.",
+                    [Name, From], #{domain => [whatsapp, wa_raft]}),
                 {error, read_queue_full};
             apply_queue_full ->
                 ?RAFT_COUNT('raft.acceptor.strong_read.error.apply_queue_full'),
-                ?LOG_WARNING(
-                    "Acceptor[~0p] is rejecting read request from ~0p because the apply queue is full.",
-                    [Name, From],
-                    #{domain => [whatsapp, wa_raft]}
-                ),
+                ?LOG_WARNING("Acceptor[~0p] is rejecting read request from ~0p because the apply queue is full.",
+                    [Name, From], #{domain => [whatsapp, wa_raft]}),
                 {error, apply_queue_full};
             ok ->
                 wa_raft_server:read(Server, {From, Command}),

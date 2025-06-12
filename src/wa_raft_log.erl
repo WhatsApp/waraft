@@ -1,4 +1,3 @@
-%% @format
 %%% Copyright (c) Meta Platforms, Inc. and affiliates. All rights reserved.
 %%%
 %%% This source code is licensed under the Apache 2.0 license found in
@@ -169,14 +168,12 @@
 %% The combining function may raise an error. Implementations should take care
 %% to release any resources held in the case that the fold needs to terminate
 %% early.
--callback fold(
-    Log :: log(),
-    Start :: log_index(),
-    End :: log_index(),
-    SizeLimit :: non_neg_integer() | infinity,
-    Func :: fun((Index :: log_index(), Size :: non_neg_integer(), Entry :: log_entry(), Acc) -> Acc),
-    Acc
-) -> {ok, Acc} | wa_raft:error().
+-callback fold(Log :: log(),
+               Start :: log_index(),
+               End :: log_index(),
+               SizeLimit :: non_neg_integer() | infinity,
+               Func :: fun((Index :: log_index(), Size :: non_neg_integer(), Entry :: log_entry(), Acc) -> Acc),
+               Acc) -> {ok, Acc} | wa_raft:error().
 
 %% Call the provided combining function on the external term format of
 %% successive log entries in the specified log starting from the specified
@@ -214,13 +211,11 @@
 %% The combining function may raise an error. Implementations should take care
 %% to release any resources held in the case that the fold needs to terminate
 %% early.
--callback fold_terms(
-    Log :: log(),
-    Start :: log_index(),
-    End :: log_index(),
-    Func :: fun((Index :: log_index(), Term :: log_term(), Acc) -> Acc),
-    Acc
-) -> {ok, Acc} | wa_raft:error().
+-callback fold_terms(Log :: log(),
+                     Start :: log_index(),
+                     End :: log_index(),
+                     Func :: fun((Index :: log_index(), Term :: log_term(), Acc) -> Acc),
+                     Acc) -> {ok, Acc} | wa_raft:error().
 
 %% Get a single log entry at the specified index. This API is specified
 %% separately because some implementations may have more efficient ways to
@@ -371,10 +366,10 @@ append(#log_view{last = Last} = View, Entries, Mode) ->
 %%  * Otherwise, the comparison will succeed. Any new log entries not already
 %%    in the local log will be returned.
 -spec check_heartbeat(View :: view(), Start :: log_index(), Entries :: [log_entry() | binary()]) ->
-    {ok, NewEntries :: [log_entry()]}
-    | {conflict, ConflictIndex :: log_index(), NewEntries :: [log_entry()]}
-    | {error, out_of_range | {missing, MissingIndex :: log_index()}}
-    | wa_raft:error().
+    {ok, NewEntries :: [log_entry()]} |
+    {conflict, ConflictIndex :: log_index(), NewEntries :: [log_entry()]} |
+    {error, out_of_range | {missing, MissingIndex :: log_index()}} |
+    wa_raft:error().
 check_heartbeat(#log_view{first = First, last = Last}, Start, _Entries) when Start =< 0; Start < First; Start > Last ->
     {error, out_of_range};
 check_heartbeat(#log_view{log = Log, last = Last}, Start, Entries) ->
@@ -397,8 +392,8 @@ check_heartbeat(#log_view{log = Log, last = Last}, Start, Entries) ->
             {error, {missing, Index}}
     end.
 
--spec check_heartbeat_terms(Index :: wa_raft_log:log_index(), Term :: wa_raft_log:log_term(), Acc) -> Acc when
-    Acc :: {Next :: wa_raft_log:log_index(), Entries :: [log_entry() | binary()]}.
+-spec check_heartbeat_terms(Index :: wa_raft_log:log_index(), Term :: wa_raft_log:log_term(), Acc) -> Acc
+    when Acc :: {Next :: wa_raft_log:log_index(), Entries :: [log_entry() | binary()]}.
 check_heartbeat_terms(Index, Term, {Next, [Binary | Entries]}) when is_binary(Binary) ->
     check_heartbeat_terms(Index, Term, {Next, [binary_to_term(Binary) | Entries]});
 check_heartbeat_terms(Index, Term, {Index, [{Term, _} | Entries]}) ->
@@ -428,13 +423,11 @@ last_index(Log) ->
     Provider = provider(Log),
     Provider:last_index(Log).
 
--spec fold(
-    LogOrView :: log() | view(),
-    First :: log_index(),
-    Last :: log_index() | infinity,
-    Func :: fun((Index :: log_index(), Entry :: log_entry(), Acc) -> Acc),
-    Acc
-) -> {ok, Acc} | wa_raft:error().
+-spec fold(LogOrView :: log() | view(),
+           First :: log_index(),
+           Last :: log_index() | infinity,
+           Func :: fun((Index :: log_index(), Entry :: log_entry(), Acc) -> Acc),
+           Acc) -> {ok, Acc} | wa_raft:error().
 fold(LogOrView, First, Last, Func, Acc) ->
     fold(LogOrView, First, Last, infinity, Func, Acc).
 
@@ -462,11 +455,10 @@ fold(LogOrView, RawFirst, RawLast, SizeLimit, Func, Acc) ->
     Last = min(RawLast, last_index(LogOrView)),
     ?RAFT_COUNT('raft.log.fold'),
     ?RAFT_COUNTV('raft.log.fold.total', Last - First + 1),
-    AdjFunc =
-        if
-            is_function(Func, 3) -> fun(Index, _Size, Entry, InnerAcc) -> Func(Index, Entry, InnerAcc) end;
-            is_function(Func, 4) -> Func
-        end,
+    AdjFunc = if
+        is_function(Func, 3) -> fun (Index, _Size, Entry, InnerAcc) -> Func(Index, Entry, InnerAcc) end;
+        is_function(Func, 4) -> Func
+    end,
     Provider = provider(Log),
     case Provider:fold(Log, First, Last, SizeLimit, AdjFunc, Acc) of
         {ok, AccOut} ->
@@ -524,13 +516,11 @@ fold_binary(LogOrView, RawFirst, RawLast, SizeLimit, Func, Acc) ->
 %% the accumulator function will be called on at least that term.
 %% This API provides no validation of the log indices and term passed by the
 %% provider to the callback function.
--spec fold_terms(
-    LogOrView :: log() | view(),
-    First :: log_index(),
-    Last :: log_index(),
-    Func :: fun((Index :: log_index(), Term :: log_term(), Acc) -> Acc),
-    Acc
-) ->
+-spec fold_terms(LogOrView :: log() | view(),
+                 First :: log_index(),
+                 Last :: log_index(),
+                 Func :: fun((Index :: log_index(), Term :: log_term(), Acc) -> Acc),
+                 Acc) ->
     {ok, Acc} | wa_raft:error().
 fold_terms(#log_view{log = Log, first = LogFirst, last = LogLast}, First, Last, Func, Acc) ->
     fold_terms_impl(Log, max(First, LogFirst), min(Last, LogLast), Func, Acc);
@@ -575,8 +565,7 @@ term(Log, Index) ->
 %% Gets the log entry at the provided log index. When using a log view
 %% this function may return 'not_found' even if the underlying log entry still
 %% exists if the entry is outside of the log view.
--spec get(LogOrView :: log() | view(), Index :: log_index()) ->
-    {ok, Entry :: log_entry()} | not_found | wa_raft:error().
+-spec get(LogOrView :: log() | view(), Index :: log_index()) -> {ok, Entry :: log_entry()} | not_found | wa_raft:error().
 get(#log_view{first = First, last = Last}, Index) when Index < First orelse Last < Index ->
     not_found;
 get(#log_view{log = Log}, Index) ->
@@ -617,11 +606,8 @@ get(LogOrView, Start, CountLimit, SizeLimit) ->
             {error, Reason}
     catch
         throw:{missing, Index} ->
-            ?LOG_WARNING(
-                "[~0p] detected missing log entry ~0p while folding range ~0p ~~ ~0p",
-                [log_name(LogOrView), Index, Start, End],
-                #{domain => [whatsapp, wa_raft]}
-            ),
+            ?LOG_WARNING("[~0p] detected missing log entry ~0p while folding range ~0p ~~ ~0p",
+                [log_name(LogOrView), Index, Start, End], #{domain => [whatsapp, wa_raft]}),
             {error, corruption}
     end.
 
@@ -697,11 +683,8 @@ entries(LogOrView, Start, CountLimit, SizeLimit) ->
             {error, Reason}
     catch
         throw:{missing, Index} ->
-            ?LOG_WARNING(
-                "[~0p] detected missing log entry ~0p while folding range ~0p ~~ ~0p for heartbeat",
-                [log_name(LogOrView), Index, Start, End],
-                #{domain => [whatsapp, wa_raft]}
-            ),
+            ?LOG_WARNING("[~0p] detected missing log entry ~0p while folding range ~0p ~~ ~0p for heartbeat",
+                [log_name(LogOrView), Index, Start, End], #{domain => [whatsapp, wa_raft]}),
             {error, corruption}
     end.
 
@@ -778,8 +761,7 @@ rotate(#log_view{log = #raft_log{application = App}} = View, Index) ->
 %% Perform a batched trimming (rotate) of the underlying log where
 %% we keep some number of log entries and only trigger trimming operations
 %% every so often.
--spec rotate(View :: view(), Index :: log_index(), Interval :: pos_integer(), Keep :: non_neg_integer()) ->
-    {ok, NewView :: view()}.
+-spec rotate(View :: view(), Index :: log_index(), Interval :: pos_integer(), Keep :: non_neg_integer()) -> {ok, NewView :: view()}.
 rotate(#log_view{first = First} = View, Index, Interval, Keep) when Index - Keep - First >= Interval ->
     ?RAFT_COUNT('raft.log.rotate'),
     trim(View, Index - Keep);
@@ -810,7 +792,7 @@ default_name(Table, Partition) ->
 registered_name(Table, Partition) ->
     case wa_raft_part_sup:options(Table, Partition) of
         undefined -> default_name(Table, Partition);
-        Options -> Options#raft_options.log_name
+        Options   -> Options#raft_options.log_name
     end.
 
 -spec app(LogOrView :: log() | view()) -> App :: atom().
@@ -850,30 +832,27 @@ refresh_config(#log_view{log = Log} = View) ->
 %%-------------------------------------------------------------------
 
 -spec init(Options :: #raft_options{}) -> {ok, State :: #log_state{}}.
-init(#raft_options{
-    application = Application, table = Table, partition = Partition, log_name = Name, log_module = Provider
-}) ->
+init(#raft_options{application = Application, table = Table, partition = Partition, log_name = Name, log_module = Provider}) ->
     process_flag(trap_exit, true),
 
     Log = #raft_log{
-        name = Name,
-        application = Application,
-        table = Table,
-        partition = Partition,
-        provider = Provider
+       name = Name,
+       application = Application,
+       table = Table,
+       partition = Partition,
+       provider = Provider
     },
     ok = Provider:init(Log),
 
     {ok, #log_state{log = Log}}.
 
 -spec handle_call(Request, From :: term(), State :: #log_state{}) ->
-    {reply, Reply :: term(), NewState :: #log_state{}}
-    | {noreply, NewState :: #log_state{}}
-when
-    Request ::
-        {open, Position :: log_pos()}
-        | {reset, Position :: log_pos(), View :: view()}
-        | {truncate, Index :: log_index(), View :: view()}.
+    {reply, Reply :: term(), NewState :: #log_state{}} |
+    {noreply, NewState :: #log_state{}}
+    when Request ::
+        {open, Position :: log_pos()} |
+        {reset, Position :: log_pos(), View :: view()} |
+        {truncate, Index :: log_index(), View :: view()}.
 handle_call({open, Position}, _From, State) ->
     {Reply, NewState} = handle_open(Position, State),
     {reply, Reply, NewState};
@@ -892,15 +871,12 @@ handle_call({truncate, Index, View}, _From, State) ->
             {reply, {error, Reason}, State}
     end;
 handle_call(Request, From, #log_state{log = Log} = State) ->
-    ?LOG_NOTICE(
-        "[~p] got unrecognized call ~p from ~p",
-        [log_name(Log), Request, From],
-        #{domain => [whatsapp, wa_raft]}
-    ),
+    ?LOG_NOTICE("[~p] got unrecognized call ~p from ~p",
+        [log_name(Log), Request, From], #{domain => [whatsapp, wa_raft]}),
     {noreply, State}.
 
--spec handle_cast(Request, State :: #log_state{}) -> {noreply, NewState :: #log_state{}} when
-    Request :: flush | {trim, Index :: log_index()}.
+-spec handle_cast(Request, State :: #log_state{}) -> {noreply, NewState :: #log_state{}}
+    when Request :: flush | {trim, Index :: log_index()}.
 handle_cast(flush, #log_state{log = Log} = State) ->
     Provider = provider(Log),
     Provider:flush(Log),
@@ -910,29 +886,20 @@ handle_cast({trim, Index}, #log_state{log = Log} = State) ->
         {ok, NewState} ->
             {noreply, NewState};
         {error, Reason} ->
-            ?LOG_WARNING(
-                "[~p] failed to trim log due to ~p",
-                [log_name(Log), Reason],
-                #{domain => [whatsapp, wa_raft]}
-            ),
+            ?LOG_WARNING("[~p] failed to trim log due to ~p",
+                [log_name(Log), Reason], #{domain => [whatsapp, wa_raft]}),
             {noreply, State}
     end;
 handle_cast(Request, #log_state{log = Log} = State) ->
-    ?LOG_NOTICE(
-        "[~p] got unrecognized cast ~p",
-        [log_name(Log), Request],
-        #{domain => [whatsapp, wa_raft]}
-    ),
+    ?LOG_NOTICE("[~p] got unrecognized cast ~p",
+        [log_name(Log), Request], #{domain => [whatsapp, wa_raft]}),
     {noreply, State}.
 
 -spec terminate(Reason :: term(), State :: #log_state{}) -> term().
 terminate(Reason, #log_state{log = Log, state = State}) ->
     Provider = provider(Log),
-    ?LOG_NOTICE(
-        "[~p] terminating due to ~p",
-        [Log, Reason],
-        #{domain => [whatsapp, wa_raft]}
-    ),
+    ?LOG_NOTICE("[~p] terminating due to ~p",
+        [Log, Reason], #{domain => [whatsapp, wa_raft]}),
     State =/= ?PROVIDER_NOT_OPENED andalso Provider:close(Log, State).
 
 %%-------------------------------------------------------------------
@@ -941,60 +908,46 @@ terminate(Reason, #log_state{log = Log, state = State}) ->
 
 -spec handle_open(Position :: log_pos(), State :: #log_state{}) ->
     {{ok, NewView :: view()} | wa_raft:error(), NewState :: #log_state{}}.
-handle_open(
-    #raft_log_pos{index = Index, term = Term} = Position,
-    #log_state{log = #raft_log{name = Name, provider = Provider} = Log} = State0
-) ->
+handle_open(#raft_log_pos{index = Index, term = Term} = Position,
+            #log_state{log = #raft_log{name = Name, provider = Provider} = Log} = State0) ->
     ?RAFT_COUNT('raft.log.open'),
     ?LOG_NOTICE("[~p] opening log at position ~p:~p", [Name, Index, Term], #{domain => [whatsapp, wa_raft]}),
     case Provider:open(Log) of
         {ok, ProviderState} ->
-            Action =
-                case Provider:get(Log, Index) of
-                    {ok, {Term, _Op}} ->
-                        none;
-                    {ok, {MismatchTerm, _Op}} ->
-                        ?LOG_WARNING(
-                            "[~p] resetting log due to expecting term ~p at ~p but log contains term ~p",
-                            [Name, Term, Index, MismatchTerm],
-                            #{domain => [whatsapp, wa_raft]}
-                        ),
-                        reset;
-                    not_found ->
-                        reset;
-                    Other ->
-                        {failed, Other}
-                end,
+            Action = case Provider:get(Log, Index) of
+                {ok, {Term, _Op}} ->
+                    none;
+                {ok, {MismatchTerm, _Op}} ->
+                    ?LOG_WARNING("[~p] resetting log due to expecting term ~p at ~p but log contains term ~p",
+                        [Name, Term, Index, MismatchTerm], #{domain => [whatsapp, wa_raft]}),
+                    reset;
+                not_found ->
+                    reset;
+                Other ->
+                    {failed, Other}
+            end,
 
             State1 = State0#log_state{state = ProviderState},
             View0 = #log_view{log = Log},
             case Action of
                 none ->
                     ?RAFT_COUNT('raft.log.open.normal'),
-                    View1 =
-                        case Provider:first_index(Log) of
-                            undefined ->
-                                ?LOG_WARNING(
-                                    "[~p] opened log normally but the first index was not set",
-                                    [Name],
-                                    #{domain => [whatsapp, wa_raft]}
-                                ),
-                                View0;
-                            FirstIndex ->
-                                View0#log_view{first = FirstIndex}
-                        end,
-                    View2 =
-                        case Provider:last_index(Log) of
-                            undefined ->
-                                ?LOG_WARNING(
-                                    "[~p] opened log normally but the last index was not set",
-                                    [Name],
-                                    #{domain => [whatsapp, wa_raft]}
-                                ),
-                                View1;
-                            LastIndex ->
-                                View1#log_view{last = LastIndex}
-                        end,
+                    View1 = case Provider:first_index(Log) of
+                        undefined ->
+                            ?LOG_WARNING("[~p] opened log normally but the first index was not set",
+                                [Name], #{domain => [whatsapp, wa_raft]}),
+                            View0;
+                        FirstIndex ->
+                            View0#log_view{first = FirstIndex}
+                    end,
+                    View2 = case Provider:last_index(Log) of
+                        undefined ->
+                            ?LOG_WARNING("[~p] opened log normally but the last index was not set",
+                                [Name], #{domain => [whatsapp, wa_raft]}),
+                            View1;
+                        LastIndex ->
+                            View1#log_view{last = LastIndex}
+                    end,
                     View3 = refresh_config(View2),
                     {{ok, View3}, State1};
                 reset ->
@@ -1020,15 +973,10 @@ handle_open(
 handle_reset(_Position, _View, #log_state{state = ?PROVIDER_NOT_OPENED}) ->
     {error, not_open};
 handle_reset(#raft_log_pos{index = 0, term = Term}, _View, #log_state{log = Log}) when Term =/= 0 ->
-    ?LOG_ERROR("[~p] rejects reset to index 0 with non-zero term ~p", [log_name(Log), Term], #{
-        domain => [whatsapp, wa_raft]
-    }),
+    ?LOG_ERROR("[~p] rejects reset to index 0 with non-zero term ~p", [log_name(Log), Term], #{domain => [whatsapp, wa_raft]}),
     {error, invalid_position};
-handle_reset(
-    #raft_log_pos{index = Index, term = Term} = Position,
-    View0,
-    #log_state{log = Log, state = ProviderState} = State0
-) ->
+handle_reset(#raft_log_pos{index = Index, term = Term} = Position, View0,
+             #log_state{log = Log, state = ProviderState} = State0) ->
     ?RAFT_COUNT('raft.log.reset'),
     ?LOG_NOTICE("[~p] resetting log to position ~p:~p", [log_name(Log), Index, Term], #{domain => [whatsapp, wa_raft]}),
     Provider = provider(Log),
@@ -1047,11 +995,7 @@ handle_reset(
 handle_truncate(_Index, _View, #log_state{state = ?PROVIDER_NOT_OPENED}) ->
     {error, not_open};
 handle_truncate(Index, #log_view{first = First}, #log_state{log = Log}) when Index =< First ->
-    ?LOG_ERROR(
-        "[~p] rejects log deletion by truncation to ~p for log starting at ~p", [log_name(Log), Index, First], #{
-            domain => [whatsapp, wa_raft]
-        }
-    ),
+    ?LOG_ERROR("[~p] rejects log deletion by truncation to ~p for log starting at ~p", [log_name(Log), Index, First], #{domain => [whatsapp, wa_raft]}),
     {error, invalid_position};
 handle_truncate(Index, #log_view{last = Last} = View0, #log_state{log = Log, state = ProviderState} = State0) ->
     ?RAFT_COUNT('raft.log.truncate'),

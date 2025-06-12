@@ -1,4 +1,3 @@
-%% @format
 %%% Copyright (c) Meta Platforms, Inc. and affiliates. All rights reserved.
 %%%
 %%% This source code is licensed under the Apache 2.0 license found in
@@ -53,7 +52,7 @@ child_spec(Options) ->
         modules => [?MODULE]
     }.
 
--spec start_link(Options :: #raft_options{}) -> gen_server:start_ret().
+-spec start_link(Options :: #raft_options{}) ->  gen_server:start_ret().
 start_link(#raft_options{transport_cleanup_name = Name} = Options) ->
     gen_server:start_link({local, Name}, ?MODULE, Options, []).
 
@@ -73,7 +72,7 @@ default_name(Table, Partition) ->
 registered_name(Table, Partition) ->
     case wa_raft_part_sup:options(Table, Partition) of
         undefined -> default_name(Table, Partition);
-        Options -> Options#raft_options.transport_cleanup_name
+        Options   -> Options#raft_options.transport_cleanup_name
     end.
 
 %%-------------------------------------------------------------------
@@ -88,20 +87,14 @@ init(#raft_options{application = Application, transport_directory = Directory, t
 
 -spec handle_call(Request :: term(), From :: gen_server:from(), State :: #state{}) -> {noreply, NewState :: #state{}}.
 handle_call(Request, From, #state{name = Name} = State) ->
-    ?LOG_WARNING(
-        "~p received unrecognized call ~0P from ~0p",
-        [Name, Request, 25, From],
-        #{domain => [whatsapp, wa_raft]}
-    ),
+    ?LOG_WARNING("~p received unrecognized call ~0P from ~0p",
+        [Name, Request, 25, From], #{domain => [whatsapp, wa_raft]}),
     {noreply, State}.
 
 -spec handle_cast(Request :: term(), State :: #state{}) -> {noreply, NewState :: #state{}}.
 handle_cast(Request, #state{name = Name} = State) ->
-    ?LOG_NOTICE(
-        "~p got unrecognized cast ~0P",
-        [Name, Request, 25],
-        #{domain => [whatsapp, wa_raft]}
-    ),
+    ?LOG_NOTICE("~p got unrecognized cast ~0P",
+        [Name, Request, 25], #{domain => [whatsapp, wa_raft]}),
     {noreply, State}.
 
 -spec handle_info(Info :: term(), State :: #state{}) -> {noreply, NewState :: #state{}}.
@@ -110,11 +103,8 @@ handle_info(scan, #state{} = State) ->
     schedule_scan(),
     {noreply, State};
 handle_info(Info, #state{name = Name} = State) ->
-    ?LOG_NOTICE(
-        "~p got unrecognized info ~p",
-        [Name, Info],
-        #{domain => [whatsapp, wa_raft]}
-    ),
+    ?LOG_NOTICE("~p got unrecognized info ~p",
+        [Name, Info], #{domain => [whatsapp, wa_raft]}),
     {noreply, State}.
 
 -spec maybe_cleanup(State :: #state{}) -> ok | {error, term()}.
@@ -124,38 +114,27 @@ maybe_cleanup(#state{application = App, name = Name, directory = Directory} = St
             RetainMillis = ?RAFT_TRANSPORT_RETAIN_INTERVAL(App) * 1000,
             NowMillis = erlang:system_time(millisecond),
             lists:foreach(
-                fun(Filename) ->
+                fun (Filename) ->
                     Path = filename:join(Directory, Filename),
                     ID = list_to_integer(Filename),
                     case wa_raft_transport:transport_info(ID) of
                         {ok, #{end_ts := EndTs}} when NowMillis - EndTs > RetainMillis ->
-                            ?LOG_NOTICE(
-                                "~p deleting ~p due to expiring after transport ended",
-                                [Name, Filename],
-                                #{domain => [whatsapp, wa_raft]}
-                            ),
+                            ?LOG_NOTICE("~p deleting ~p due to expiring after transport ended",
+                                [Name, Filename], #{domain => [whatsapp, wa_raft]}),
                             cleanup(ID, Path, State);
                         {ok, _Info} ->
                             ok;
                         not_found ->
-                            ?LOG_NOTICE(
-                                "~p deleting ~p due to having no associated transport",
-                                [Name, Filename],
-                                #{domain => [whatsapp, wa_raft]}
-                            ),
+                            ?LOG_NOTICE("~p deleting ~p due to having no associated transport",
+                                [Name, Filename], #{domain => [whatsapp, wa_raft]}),
                             cleanup(ID, Path, State)
                     end
-                end,
-                Files
-            );
+                end, Files);
         {error, enoent} ->
             ok;
         {error, Reason} ->
-            ?LOG_WARNING(
-                "~p failed to list transports for cleanup due to ~p",
-                [Name, Reason],
-                #{domain => [whatsapp, wa_raft]}
-            ),
+            ?LOG_WARNING("~p failed to list transports for cleanup due to ~p",
+                [Name, Reason], #{domain => [whatsapp, wa_raft]}),
             {error, Reason}
     end.
 
@@ -165,11 +144,8 @@ cleanup(ID, Path, #state{name = Name}) ->
         ok ->
             ok;
         {error, Reason} ->
-            ?LOG_WARNING(
-                "~p failed to cleanup transport ~p due to ~p",
-                [Name, ID, Reason],
-                #{domain => [whatsapp, wa_raft]}
-            ),
+            ?LOG_WARNING("~p failed to cleanup transport ~p due to ~p",
+                [Name, ID, Reason], #{domain => [whatsapp, wa_raft]}),
             {error, Reason}
     end.
 

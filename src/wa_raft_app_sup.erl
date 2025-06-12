@@ -1,4 +1,3 @@
-%% @format
 %%% Copyright (c) Meta Platforms, Inc. and affiliates. All rights reserved.
 %%%
 %%% This source code is licensed under the Apache 2.0 license found in
@@ -33,7 +32,7 @@ init(_) ->
     % Cache certain commonly used configuration values.
     case ?RAFT_METRICS_MODULE() of
         {ok, Module} -> wa_raft_metrics:install(Module);
-        _Other -> ok
+        _Other       -> ok
     end,
 
     % Setup tables used by shared services.

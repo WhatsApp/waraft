@@ -1,4 +1,3 @@
-%% @format
 %%% Copyright (c) Meta Platforms, Inc. and affiliates. All rights reserved.
 %%%
 %%% This source code is licensed under the Apache 2.0 license found in
@@ -54,16 +53,12 @@
 -define(SNAPSHOT_NAME(Index, Term), (?SNAPSHOT_PREFIX "." ++ integer_to_list(Index) ++ "." ++ integer_to_list(Term))).
 
 %% Witness Snapshot name
--define(WITNESS_SNAPSHOT_NAME(Index, Term),
-    (?SNAPSHOT_PREFIX "." ++ integer_to_list(Index) ++ "." ++ integer_to_list(Term) ++ ".witness")
-).
+-define(WITNESS_SNAPSHOT_NAME(Index, Term), (?SNAPSHOT_PREFIX "." ++ integer_to_list(Index) ++ "." ++ integer_to_list(Term) ++ ".witness")).
 
 %% Location of a snapshot
 -define(RAFT_SNAPSHOT_PATH(Path, Name), (filename:join(Path, Name))).
 -define(RAFT_SNAPSHOT_PATH(Table, Partition, Name), ?RAFT_SNAPSHOT_PATH(?RAFT_PARTITION_PATH(Table, Partition), Name)).
--define(RAFT_SNAPSHOT_PATH(Table, Partition, Index, Term),
-    ?RAFT_SNAPSHOT_PATH(Table, Partition, ?SNAPSHOT_NAME(Index, Term))
-).
+-define(RAFT_SNAPSHOT_PATH(Table, Partition, Index, Term), ?RAFT_SNAPSHOT_PATH(Table, Partition, ?SNAPSHOT_NAME(Index, Term))).
 
 %% [Transport] Atomics - field index for update timestamp
 -define(RAFT_TRANSPORT_ATOMICS_UPDATED_TS, 1).
@@ -108,9 +103,7 @@
 %% Maximum number of incoming snapshots by snapshot transfer.
 -define(RAFT_MAX_CONCURRENT_INCOMING_SNAPSHOT_TRANSFERS(), ?RAFT_CONFIG(raft_max_incoming_snapshot_transfers, 10)).
 %% Maximum number of incoming witness snapshots by snapshot transfer.
--define(RAFT_MAX_CONCURRENT_INCOMING_WITNESS_SNAPSHOT_TRANSFERS(),
-    ?RAFT_CONFIG(raft_max_incoming_witness_snapshot_transfers, 16)
-).
+-define(RAFT_MAX_CONCURRENT_INCOMING_WITNESS_SNAPSHOT_TRANSFERS(), ?RAFT_CONFIG(raft_max_incoming_witness_snapshot_transfers, 16)).
 
 %% Default cross-node call timeout for heartbeats made for bulk logs catchup
 -define(RAFT_CATCHUP_HEARTBEAT_TIMEOUT(), ?RAFT_CONFIG(raft_catchup_rpc_timeout_ms, 5000)).
@@ -139,9 +132,7 @@
 
 %% Maximum number of pending applies for any single RAFT partition
 -define(RAFT_MAX_PENDING_APPLIES, raft_max_pending_applies).
--define(RAFT_MAX_PENDING_APPLIES(App),
-    ?RAFT_APP_CONFIG(App, {?RAFT_MAX_PENDING_APPLIES, raft_apply_queue_max_size}, 1000)
-).
+-define(RAFT_MAX_PENDING_APPLIES(App), ?RAFT_APP_CONFIG(App, {?RAFT_MAX_PENDING_APPLIES, raft_apply_queue_max_size}, 1000)).
 %% Maximum bytes of pending applies for any single RAFT partition
 -define(RAFT_MAX_PENDING_APPLY_BYTES, raft_max_pending_apply_bytes).
 -define(RAFT_MAX_PENDING_APPLY_BYTES(App), ?RAFT_APP_CONFIG(App, ?RAFT_MAX_PENDING_APPLY_BYTES, 32_000_000)).
@@ -182,9 +173,7 @@
 %% Maximum number of log entries to speculatively retain in the log due to followers
 %% not yet reporting having replicated the log entry locally
 -define(RAFT_MAX_RETAINED_ENTRIES, raft_max_retained_entries).
--define(RAFT_MAX_RETAINED_ENTRIES(App),
-    ?RAFT_APP_CONFIG(App, {?RAFT_MAX_RETAINED_ENTRIES, max_log_rotate_delay}, 1500000)
-).
+-define(RAFT_MAX_RETAINED_ENTRIES(App), ?RAFT_APP_CONFIG(App, {?RAFT_MAX_RETAINED_ENTRIES, max_log_rotate_delay}, 1500000)).
 
 %% Maximum number of log entries to queue for application by storage at once before
 %% continuing to process the incoming message queue on the RAFT server.
@@ -193,9 +182,7 @@
 %% Maximum bytes of log entries to queue for application by storage at once before
 %% continuing to process the incoming message queue on the RAFT server.
 -define(RAFT_MAX_CONSECUTIVE_APPLY_BYTES, raft_apply_batch_max_bytes).
--define(RAFT_MAX_CONSECUTIVE_APPLY_BYTES(App),
-    ?RAFT_APP_CONFIG(App, ?RAFT_MAX_CONSECUTIVE_APPLY_BYTES, 200 * 4 * 1024)
-).
+-define(RAFT_MAX_CONSECUTIVE_APPLY_BYTES(App), ?RAFT_APP_CONFIG(App, ?RAFT_MAX_CONSECUTIVE_APPLY_BYTES, 200 * 4 * 1024)).
 
 %% Minimum time in milliseconds since the receiving the last valid leader heartbeat
 %% before triggering a new election due to term timeout. This time should be much
@@ -235,9 +222,7 @@
 %% handover before they are ready. This defaults to equal to the maximum number
 %% of missing log entries. (See `?RAFT_HANDOVER_MAX_ENTRIES`.)
 -define(RAFT_HANDOVER_MAX_UNAPPLIED_ENTRIES, raft_handover_max_unapplied_entries).
--define(RAFT_HANDOVER_MAX_UNAPPLIED_ENTRIES(App),
-    ?RAFT_APP_CONFIG(App, ?RAFT_HANDOVER_MAX_UNAPPLIED_ENTRIES, undefined)
-).
+-define(RAFT_HANDOVER_MAX_UNAPPLIED_ENTRIES(App), ?RAFT_APP_CONFIG(App, ?RAFT_HANDOVER_MAX_UNAPPLIED_ENTRIES, undefined)).
 %% Maximum total byte size of log entries to include in a Handover RPC.
 -define(RAFT_HANDOVER_MAX_BYTES, raft_max_handover_log_size).
 -define(RAFT_HANDOVER_MAX_BYTES(App), ?RAFT_APP_CONFIG(App, ?RAFT_HANDOVER_MAX_BYTES, 50 * 1024 * 1024)).
@@ -256,9 +241,7 @@
 %% Whether log rotation should be controlled by local log length or by
 %% leader-announced cluster trimming index
 -define(RAFT_LOG_ROTATION_BY_TRIM_INDEX, raft_rotate_by_trim_index).
--define(RAFT_LOG_ROTATION_BY_TRIM_INDEX(App),
-    (?RAFT_APP_CONFIG(App, {?RAFT_LOG_ROTATION_BY_TRIM_INDEX, use_trim_index}, false) =:= true)
-).
+-define(RAFT_LOG_ROTATION_BY_TRIM_INDEX(App), (?RAFT_APP_CONFIG(App, {?RAFT_LOG_ROTATION_BY_TRIM_INDEX, use_trim_index}, false) =:= true)).
 
 %% Whether or not the log should return entries in external term format
 %% when log entries are fetched for heartbeats
@@ -279,24 +262,16 @@
 -define(RAFT_CATCHUP_MAX_ENTRIES_PER_BATCH(App), ?RAFT_APP_CONFIG(App, ?RAFT_CATCHUP_MAX_ENTRIES_PER_BATCH, 800)).
 %% Maximum bytes per heartbeat for catchup by bulk log transfer
 -define(RAFT_CATCHUP_MAX_BYTES_PER_BATCH, raft_catchup_log_batch_bytes).
--define(RAFT_CATCHUP_MAX_BYTES_PER_BATCH(App),
-    ?RAFT_APP_CONFIG(App, ?RAFT_CATCHUP_MAX_BYTES_PER_BATCH, 4 * 1024 * 1024)
-).
+-define(RAFT_CATCHUP_MAX_BYTES_PER_BATCH(App), ?RAFT_APP_CONFIG(App, ?RAFT_CATCHUP_MAX_BYTES_PER_BATCH, 4 * 1024 * 1024)).
 % Time to wait before retrying snapshot transport to a overloaded peer.
 -define(RAFT_SNAPSHOT_CATCHUP_OVERLOADED_BACKOFF_MS, snapshot_catchup_overloaded_backoff_ms).
--define(RAFT_SNAPSHOT_CATCHUP_OVERLOADED_BACKOFF_MS(App),
-    ?RAFT_APP_CONFIG(App, ?RAFT_SNAPSHOT_CATCHUP_OVERLOADED_BACKOFF_MS, 1000)
-).
+-define(RAFT_SNAPSHOT_CATCHUP_OVERLOADED_BACKOFF_MS(App), ?RAFT_APP_CONFIG(App, ?RAFT_SNAPSHOT_CATCHUP_OVERLOADED_BACKOFF_MS, 1000)).
 % Time to wait before allowing a rerun of a completed snapshot transport.
 -define(RAFT_SNAPSHOT_CATCHUP_COMPLETED_BACKOFF_MS, raft_snapshot_catchup_completed_backoff_ms).
--define(RAFT_SNAPSHOT_CATCHUP_COMPLETED_BACKOFF_MS(App),
-    ?RAFT_APP_CONFIG(App, ?RAFT_SNAPSHOT_CATCHUP_COMPLETED_BACKOFF_MS, 20 * 1000)
-).
+-define(RAFT_SNAPSHOT_CATCHUP_COMPLETED_BACKOFF_MS(App), ?RAFT_APP_CONFIG(App, ?RAFT_SNAPSHOT_CATCHUP_COMPLETED_BACKOFF_MS, 20 * 1000)).
 % Time to wait before allowing a rerun of a failed snapshot transport.
 -define(RAFT_SNAPSHOT_CATCHUP_FAILED_BACKOFF_MS, raft_snapshot_catchup_failed_backoff_ms).
--define(RAFT_SNAPSHOT_CATCHUP_FAILED_BACKOFF_MS(App),
-    ?RAFT_APP_CONFIG(App, ?RAFT_SNAPSHOT_CATCHUP_FAILED_BACKOFF_MS, 10 * 1000)
-).
+-define(RAFT_SNAPSHOT_CATCHUP_FAILED_BACKOFF_MS(App), ?RAFT_APP_CONFIG(App, ?RAFT_SNAPSHOT_CATCHUP_FAILED_BACKOFF_MS, 10 * 1000)).
 
 %% Number of omitted log entries to skip actually applying to storage when
 %% operating as a witness.

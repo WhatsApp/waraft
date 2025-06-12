@@ -1,4 +1,3 @@
-%% @format
 %%% Copyright (c) Meta Platforms, Inc. and affiliates. All rights reserved.
 %%%
 %%% This source code is licensed under the Apache 2.0 license found in
@@ -79,8 +78,7 @@
 ]).
 
 -include_lib("kernel/include/logger.hrl").
-% used by ets:fun2ms
--include_lib("stdlib/include/ms_transform.hrl").
+-include_lib("stdlib/include/ms_transform.hrl"). % used by ets:fun2ms
 -include_lib("wa_raft/include/wa_raft.hrl").
 
 %%-------------------------------------------------------------------
@@ -143,7 +141,7 @@ commit_queue_size(#queues{counters = Counters}) ->
 commit_queue_size(Table, Partition) ->
     case queues(Table, Partition) of
         undefined -> 0;
-        Queue -> commit_queue_size(Queue)
+        Queue     -> commit_queue_size(Queue)
     end.
 
 -spec commit_queue_full(Queues :: queues()) -> boolean().
@@ -154,7 +152,7 @@ commit_queue_full(#queues{application = App, counters = Counters}) ->
 commit_queue_full(Table, Partition) ->
     case queues(Table, Partition) of
         undefined -> false;
-        Queues -> commit_queue_full(Queues)
+        Queues    -> commit_queue_full(Queues)
     end.
 
 -spec apply_queue_size(Queues :: queues()) -> non_neg_integer().
@@ -165,7 +163,7 @@ apply_queue_size(#queues{counters = Counters}) ->
 apply_queue_size(Table, Partition) ->
     case queues(Table, Partition) of
         undefined -> 0;
-        Queues -> apply_queue_size(Queues)
+        Queues    -> apply_queue_size(Queues)
     end.
 
 -spec apply_queue_byte_size(Queues :: queues()) -> non_neg_integer().
@@ -176,7 +174,7 @@ apply_queue_byte_size(#queues{counters = Counters}) ->
 apply_queue_byte_size(Table, Partition) ->
     case queues(Table, Partition) of
         undefined -> 0;
-        Queues -> apply_queue_byte_size(Queues)
+        Queues    -> apply_queue_byte_size(Queues)
     end.
 
 -spec apply_queue_full(Queues :: queues()) -> boolean().
@@ -188,7 +186,7 @@ apply_queue_full(#queues{application = App, counters = Counters}) ->
 apply_queue_full(Table, Partition) ->
     case queues(Table, Partition) of
         undefined -> false;
-        Queues -> apply_queue_full(Queues)
+        Queues    -> apply_queue_full(Queues)
     end.
 
 %%-------------------------------------------------------------------
@@ -224,7 +222,7 @@ default_read_queue_name(Table, Partition) ->
 registered_name(Table, Partition) ->
     case wa_raft_part_sup:options(Table, Partition) of
         undefined -> default_name(Table, Partition);
-        Options -> Options#raft_options.queue_name
+        Options   -> Options#raft_options.queue_name
     end.
 
 %%-------------------------------------------------------------------
@@ -274,7 +272,7 @@ fulfill_incomplete_commit(Queues, Reference, Error) ->
 -spec fulfill_all_commits(Queues :: queues(), wa_raft_acceptor:commit_error()) -> ok.
 fulfill_all_commits(#queues{counters = Counters, commits = Commits}, Reply) ->
     lists:foreach(
-        fun({Reference, _}) ->
+        fun ({Reference, _}) ->
             case ets:take(Commits, Reference) of
                 [{Reference, From}] ->
                     atomics:sub(Counters, ?RAFT_COMMIT_QUEUE_SIZE_COUNTER, 1),
@@ -282,9 +280,7 @@ fulfill_all_commits(#queues{counters = Counters, commits = Commits}, Reply) ->
                 [] ->
                     ok
             end
-        end,
-        ets:tab2list(Commits)
-    ).
+        end, ets:tab2list(Commits)).
 
 %%-------------------------------------------------------------------
 %% PENDING READ QUEUE API
@@ -300,12 +296,10 @@ fulfill_all_commits(#queues{counters = Counters, commits = Commits}, Reply) ->
 reserve_read(#queues{application = App, counters = Counters}) ->
     PendingReads = atomics:get(Counters, ?RAFT_READ_QUEUE_SIZE_COUNTER),
     case PendingReads >= ?RAFT_MAX_PENDING_READS(App) of
-        true ->
-            read_queue_full;
+        true -> read_queue_full;
         false ->
             case atomics:get(Counters, ?RAFT_APPLY_QUEUE_SIZE_COUNTER) >= ?RAFT_MAX_PENDING_APPLIES(App) of
-                true ->
-                    apply_queue_full;
+                true -> apply_queue_full;
                 false ->
                     ?RAFT_GATHER('raft.acceptor.strong_read.request.pending', PendingReads + 1),
                     atomics:add(Counters, ?RAFT_READ_QUEUE_SIZE_COUNTER, 1),
@@ -321,8 +315,7 @@ submit_read(#queues{reads = Reads}, ReadIndex, From, Command) ->
     ets:insert(Reads, {{ReadIndex, make_ref()}, From, Command}),
     ok.
 
--spec query_reads(Queues :: queues(), wa_raft_log:log_index() | infinity) ->
-    [{{wa_raft_log:log_index(), reference()}, term()}].
+-spec query_reads(Queues :: queues(), wa_raft_log:log_index() | infinity) -> [{{wa_raft_log:log_index(), reference()}, term()}].
 query_reads(#queues{reads = Reads}, MaxLogIndex) ->
     MatchSpec = ets:fun2ms(
         fun({{LogIndex, Reference}, _, Command}) when LogIndex =< MaxLogIndex ->
@@ -352,7 +345,7 @@ fulfill_incomplete_read(#queues{counters = Counters}, From, Reply) ->
 -spec fulfill_all_reads(Queues :: queues(), wa_raft_acceptor:read_error()) -> ok.
 fulfill_all_reads(#queues{counters = Counters, reads = Reads}, Reply) ->
     lists:foreach(
-        fun({Reference, _, _}) ->
+        fun ({Reference, _, _}) ->
             case ets:take(Reads, Reference) of
                 [{Reference, From, _}] ->
                     atomics:sub(Counters, ?RAFT_READ_QUEUE_SIZE_COUNTER, 1),
@@ -360,9 +353,7 @@ fulfill_all_reads(#queues{counters = Counters, reads = Reads}, Reply) ->
                 [] ->
                     ok
             end
-        end,
-        ets:tab2list(Reads)
-    ).
+        end, ets:tab2list(Reads)).
 
 %%-------------------------------------------------------------------
 %% APPLY QUEUE API
@@ -413,11 +404,8 @@ init(
 ) ->
     process_flag(trap_exit, true),
 
-    ?LOG_NOTICE(
-        "Queue[~p] starting for partition ~0p/~0p with read queue ~0p and commit queue ~0p",
-        [Name, Table, Partition, ReadsName, CommitsName],
-        #{domain => [whatsapp, wa_raft]}
-    ),
+    ?LOG_NOTICE("Queue[~p] starting for partition ~0p/~0p with read queue ~0p and commit queue ~0p",
+        [Name, Table, Partition, ReadsName, CommitsName], #{domain => [whatsapp, wa_raft]}),
 
     % The queue process is the first process in the supervision for a single
     % RAFT partition. The supervisor is configured to restart all processes if
@@ -433,26 +421,17 @@ init(
 
 -spec handle_call(Request :: term(), From :: gen_server:from(), State :: #state{}) -> {noreply, #state{}}.
 handle_call(Request, From, #state{name = Name} = State) ->
-    ?LOG_NOTICE(
-        "Queue[~p] got unexpected request ~0P from ~0p",
-        [Name, Request, 100, From],
-        #{domain => [whatsapp, wa_raft]}
-    ),
+    ?LOG_NOTICE("Queue[~p] got unexpected request ~0P from ~0p",
+        [Name, Request, 100, From], #{domain => [whatsapp, wa_raft]}),
     {noreply, State}.
 
 -spec handle_cast(Request :: term(), State :: #state{}) -> {noreply, #state{}}.
 handle_cast(Request, #state{name = Name} = State) ->
-    ?LOG_NOTICE(
-        "Queue[~p] got unexpected call ~0P",
-        [Name, Request, 100],
-        #{domain => [whatsapp, wa_raft]}
-    ),
+    ?LOG_NOTICE("Queue[~p] got unexpected call ~0P",
+        [Name, Request, 100], #{domain => [whatsapp, wa_raft]}),
     {noreply, State}.
 
 -spec terminate(Reason :: term(), State :: #state{}) -> term().
 terminate(Reason, #state{name = Name}) ->
-    ?LOG_NOTICE(
-        "Queue[~p] terminating due to ~0P",
-        [Name, Reason, 100],
-        #{domain => [whatsapp, wa_raft]}
-    ).
+    ?LOG_NOTICE("Queue[~p] terminating due to ~0P",
+        [Name, Reason, 100], #{domain => [whatsapp, wa_raft]}).

@@ -1,4 +1,3 @@
-%% @format
 %%% Copyright (c) Meta Platforms, Inc. and affiliates. All rights reserved.
 %%%
 %%% This source code is licensed under the Apache 2.0 license found in
@@ -53,26 +52,22 @@
 first_index(#raft_log{name = Name}) ->
     case ets:first(Name) of
         '$end_of_table' -> undefined;
-        Key -> Key
+        Key             -> Key
     end.
 
 -spec last_index(Log :: wa_raft_log:log()) -> undefined | wa_raft_log:log_index().
 last_index(#raft_log{name = Name}) ->
     case ets:last(Name) of
         '$end_of_table' -> undefined;
-        Key -> Key
+        Key             -> Key
     end.
 
--spec fold(
-    Log :: wa_raft_log:log(),
-    Start :: wa_raft_log:log_index() | '$end_of_table',
-    End :: wa_raft_log:log_index(),
-    SizeLimit :: non_neg_integer() | infinity,
-    Func :: fun(
-        (Index :: wa_raft_log:log_index(), Size :: non_neg_integer(), Entry :: wa_raft_log:log_entry(), Acc) -> Acc
-    ),
-    Acc
-) -> {ok, Acc}.
+-spec fold(Log :: wa_raft_log:log(),
+           Start :: wa_raft_log:log_index() | '$end_of_table',
+           End :: wa_raft_log:log_index(),
+           SizeLimit :: non_neg_integer() | infinity,
+           Func :: fun((Index :: wa_raft_log:log_index(), Size :: non_neg_integer(), Entry :: wa_raft_log:log_entry(), Acc) -> Acc),
+           Acc) -> {ok, Acc}.
 fold(Log, Start, End, SizeLimit, Func, Acc) ->
     fold_impl(Log, Start, End, 0, SizeLimit, Func, Acc).
 
@@ -82,9 +77,7 @@ fold(Log, Start, End, SizeLimit, Func, Acc) ->
     End :: wa_raft_log:log_index(),
     Size :: non_neg_integer(),
     SizeLimit :: non_neg_integer() | infinity,
-    Func :: fun(
-        (Index :: wa_raft_log:log_index(), Size :: non_neg_integer(), Entry :: wa_raft_log:log_entry(), Acc) -> Acc
-    ),
+    Func :: fun((Index :: wa_raft_log:log_index(), Size :: non_neg_integer(), Entry :: wa_raft_log:log_entry(), Acc) -> Acc),
     Acc
 ) -> {ok, Acc}.
 fold_impl(_Log, Start, End, Size, SizeLimit, _Func, Acc) when End < Start orelse Size >= SizeLimit ->
@@ -93,20 +86,16 @@ fold_impl(#raft_log{name = Name} = Log, Start, End, Size, SizeLimit, Func, Acc) 
     case ets:lookup(Name, Start) of
         [{Start, Entry}] ->
             EntrySize = erlang:external_size(Entry),
-            fold_impl(
-                Log, ets:next(Name, Start), End, Size + EntrySize, SizeLimit, Func, Func(Start, EntrySize, Entry, Acc)
-            );
+            fold_impl(Log, ets:next(Name, Start), End, Size + EntrySize, SizeLimit, Func, Func(Start, EntrySize, Entry, Acc));
         [] ->
             fold_impl(Log, ets:next(Name, Start), End, Size, SizeLimit, Func, Acc)
     end.
 
--spec fold_terms(
-    Log :: wa_raft_log:log(),
+-spec fold_terms(Log :: wa_raft_log:log(),
     Start :: wa_raft_log:log_index() | '$end_of_table',
     End :: wa_raft_log:log_index(),
     Func :: fun((Index :: wa_raft_log:log_index(), Entry :: wa_raft_log:log_term(), Acc) -> Acc),
-    Acc
-) -> {ok, Acc}.
+    Acc) -> {ok, Acc}.
 fold_terms(Log, Start, End, Func, Acc) ->
     fold_terms_impl(Log, Start, End, Func, Acc).
 
@@ -116,7 +105,7 @@ fold_terms(Log, Start, End, Func, Acc) ->
     End :: wa_raft_log:log_index(),
     Func :: fun((Index :: wa_raft_log:log_index(), Term :: wa_raft_log:log_term(), Acc) -> Acc),
     Acc
-) -> {ok, Acc}.
+    ) -> {ok, Acc}.
 fold_terms_impl(_Log, Start, End, _Func, Acc) when End < Start ->
     {ok, Acc};
 fold_terms_impl(#raft_log{name = Name} = Log, Start, End, Func, Acc) ->
@@ -125,30 +114,27 @@ fold_terms_impl(#raft_log{name = Name} = Log, Start, End, Func, Acc) ->
             fold_terms_impl(Log, ets:next(Name, Start), End, Func, Func(Start, Term, Acc));
         [] ->
             fold_terms_impl(Log, ets:next(Name, Start), End, Func, Acc)
-    end.
+        end.
 
--spec get(Log :: wa_raft_log:log(), Index :: wa_raft_log:log_index()) ->
-    {ok, Entry :: wa_raft_log:log_entry()} | not_found.
+-spec get(Log :: wa_raft_log:log(), Index :: wa_raft_log:log_index()) -> {ok, Entry :: wa_raft_log:log_entry()} | not_found.
 get(#raft_log{name = Name}, Index) ->
     case ets:lookup(Name, Index) of
         [{Index, Entry}] -> {ok, Entry};
-        [] -> not_found
+        []               -> not_found
     end.
 
--spec term(Log :: wa_raft_log:log(), Index :: wa_raft_log:log_index()) ->
-    {ok, Term :: wa_raft_log:log_term()} | not_found.
+-spec term(Log :: wa_raft_log:log(), Index :: wa_raft_log:log_index()) -> {ok, Term :: wa_raft_log:log_term()} | not_found.
 term(Log, Index) ->
     case get(Log, Index) of
         {ok, {Term, _Op}} -> {ok, Term};
-        not_found -> not_found
+        not_found         -> not_found
     end.
 
--spec config(Log :: wa_raft_log:log()) ->
-    {ok, Index :: wa_raft_log:log_index(), Entry :: wa_raft_server:config()} | not_found.
+-spec config(Log :: wa_raft_log:log()) -> {ok, Index :: wa_raft_log:log_index(), Entry :: wa_raft_server:config()} | not_found.
 config(#raft_log{name = Name}) ->
     case ets:select_reverse(Name, [{{'$1', {'_', {'_', {config, '$2'}}}}, [], [{{'$1', '$2'}}]}], 1) of
         {[{Index, Config}], _Cont} -> {ok, Index, Config};
-        _ -> not_found
+        _                          -> not_found
     end.
 
 %%-------------------------------------------------------------------
