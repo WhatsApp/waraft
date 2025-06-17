@@ -196,11 +196,11 @@ start_link() ->
 %%%  Internal API
 %%%
 
--spec start_transport(Peer :: atom(), Meta :: meta(), Root :: string(), Timeout :: timeout()) -> {ok, ID :: transport_id()} | wa_raft:error().
+-spec start_transport(Peer :: atom(), Meta :: meta(), Root :: string(), Timeout :: timeout()) -> {ok, ID :: transport_id()} | {error, Reason :: term()}.
 start_transport(Peer, Meta, Root, Timeout) ->
     gen_server:call(?MODULE, {start, Peer, Meta, Root}, Timeout).
 
--spec start_transport_and_wait(Peer :: atom(), Meta :: meta(), Root :: string(), Timeout :: timeout()) -> {ok, ID :: transport_id()} | wa_raft:error().
+-spec start_transport_and_wait(Peer :: atom(), Meta :: meta(), Root :: string(), Timeout :: timeout()) -> {ok, ID :: transport_id()} | {error, Reason :: term()}.
 start_transport_and_wait(Peer, Meta, Root, Timeout) ->
     gen_server:call(?MODULE, {start_wait, Peer, Meta, Root}, Timeout).
 
@@ -208,15 +208,15 @@ start_transport_and_wait(Peer, Meta, Root, Timeout) ->
 %%%  Bulk Transfer API
 %%%
 
--spec start_transfer(Peer :: atom(), Table :: wa_raft:table(), Partition :: wa_raft:partition(), Root :: string()) -> {ok, ID :: transport_id()} | wa_raft:error().
+-spec start_transfer(Peer :: atom(), Table :: wa_raft:table(), Partition :: wa_raft:partition(), Root :: string()) -> {ok, ID :: transport_id()} | {error, Reason :: term()}.
 start_transfer(Peer, Table, Partition, Root) ->
     start_transfer(Peer, Table, Partition, Root, 10000).
 
--spec start_transfer(Peer :: atom(), Table :: wa_raft:table(), Partition :: wa_raft:partition(), Root :: string(), Timeout :: timeout()) -> {ok, ID :: transport_id()} | wa_raft:error().
+-spec start_transfer(Peer :: atom(), Table :: wa_raft:table(), Partition :: wa_raft:partition(), Root :: string(), Timeout :: timeout()) -> {ok, ID :: transport_id()} | {error, Reason :: term()}.
 start_transfer(Peer, Table, Partition, Root, Timeout) ->
     start_transport(Peer, #{type => transfer, table => Table, partition => Partition}, Root, Timeout).
 
--spec transfer(Peer :: atom(), Table :: wa_raft:table(), Partition :: wa_raft:partition(), Root :: string(), Timeout :: timeout()) -> {ok, ID :: transport_id()} | wa_raft:error().
+-spec transfer(Peer :: atom(), Table :: wa_raft:table(), Partition :: wa_raft:partition(), Root :: string(), Timeout :: timeout()) -> {ok, ID :: transport_id()} | {error, Reason :: term()}.
 transfer(Peer, Table, Partition, Root, Timeout) ->
     start_transport_and_wait(Peer, #{type => transfer, table => Table, partition => Partition}, Root, Timeout).
 
@@ -224,15 +224,15 @@ transfer(Peer, Table, Partition, Root, Timeout) ->
 %%%  Snapshot Transfer API
 %%%
 
--spec start_snapshot_transfer(Peer :: atom(), Table :: wa_raft:table(), Partition :: wa_raft:partition(), LogPos :: wa_raft_log:log_pos(), Root :: string(), Witness :: boolean()) -> {ok, ID :: transport_id()} | wa_raft:error().
+-spec start_snapshot_transfer(Peer :: atom(), Table :: wa_raft:table(), Partition :: wa_raft:partition(), LogPos :: wa_raft_log:log_pos(), Root :: string(), Witness :: boolean()) -> {ok, ID :: transport_id()} | {error, Reason :: term()}.
 start_snapshot_transfer(Peer, Table, Partition, LogPos, Root, Witness) ->
     start_snapshot_transfer(Peer, Table, Partition, LogPos, Root, Witness, 10000).
 
--spec start_snapshot_transfer(Peer :: atom(), Table :: wa_raft:table(), Partition :: wa_raft:partition(), LogPos :: wa_raft_log:log_pos(), Root :: string(), Witness :: boolean(), Timeout :: timeout()) -> {ok, ID :: transport_id()} | wa_raft:error().
+-spec start_snapshot_transfer(Peer :: atom(), Table :: wa_raft:table(), Partition :: wa_raft:partition(), LogPos :: wa_raft_log:log_pos(), Root :: string(), Witness :: boolean(), Timeout :: timeout()) -> {ok, ID :: transport_id()} | {error, Reason :: term()}.
 start_snapshot_transfer(Peer, Table, Partition, LogPos, Root, Witness, Timeout) ->
     start_transport(Peer, #{type => snapshot, table => Table, partition => Partition, position => LogPos, witness => Witness}, Root, Timeout).
 
--spec transfer_snapshot(Peer :: atom(), Table :: wa_raft:table(), Partition :: wa_raft:partition(), LogPos :: wa_raft_log:log_pos(), Root :: string(), Witness :: boolean(), Timeout :: timeout()) -> {ok, ID :: transport_id()} | wa_raft:error().
+-spec transfer_snapshot(Peer :: atom(), Table :: wa_raft:table(), Partition :: wa_raft:partition(), LogPos :: wa_raft_log:log_pos(), Root :: string(), Witness :: boolean(), Timeout :: timeout()) -> {ok, ID :: transport_id()} | {error, Reason :: term()}.
 transfer_snapshot(Peer, Table, Partition, LogPos, Root, Witness, Timeout) ->
     start_transport_and_wait(Peer, #{type => snapshot, table => Table, partition => Partition, position => LogPos, witness => Witness}, Root, Timeout).
 
@@ -240,7 +240,7 @@ transfer_snapshot(Peer, Table, Partition, LogPos, Root, Witness, Timeout) ->
 %%%  Transport API
 %%%
 
--spec cancel(ID :: transport_id(), Reason :: term()) -> ok | wa_raft:error().
+-spec cancel(ID :: transport_id(), Reason :: term()) -> ok | {error, Reason :: term()}.
 cancel(ID, Reason) ->
     gen_server:call(?MODULE, {cancel, ID, Reason}).
 
@@ -663,7 +663,7 @@ make_id() ->
         not_found   -> ID
     end.
 
--spec handle_transport_start(From :: gen_server:from() | undefined, Peer :: node(), Meta :: meta(), Root :: string(), Counters :: counters:counters_ref()) -> {ok, ID :: transport_id()} | wa_raft:error().
+-spec handle_transport_start(From :: gen_server:from() | undefined, Peer :: node(), Meta :: meta(), Root :: string(), Counters :: counters:counters_ref()) -> {ok, ID :: transport_id()} | {error, Reason :: term()}.
 handle_transport_start(From, Peer, Meta, Root, Counters) ->
     ID = make_id(),
 

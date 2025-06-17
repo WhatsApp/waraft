@@ -62,7 +62,6 @@
 -export_type([
     storage_handle/0,
     metadata/0,
-    error/0,
     status/0
 ]).
 
@@ -126,7 +125,7 @@
 %% Issue a read command to get the label associated with the most
 %% recent command that was applied with a label. See the optional
 %% callback `storage_apply/4` for details.
--callback storage_label(Handle :: storage_handle()) -> {ok, Label :: wa_raft_label:label()} | error().
+-callback storage_label(Handle :: storage_handle()) -> {ok, Label :: wa_raft_label:label()} | {error, Reason :: term()}.
 -optional_callbacks([storage_label/1]).
 
 
@@ -190,7 +189,7 @@
 %% If the command could not be applied in a manner so as to preserve the
 %% desired consistency guarantee then implementations can raise an error to be
 %% aborted safely.
--callback storage_apply_config(Config :: wa_raft_server:config(), Position :: wa_raft_log:log_pos(), Handle :: storage_handle()) -> {Result :: ok | error(), NewHandle :: storage_handle()}.
+-callback storage_apply_config(Config :: wa_raft_server:config(), Position :: wa_raft_log:log_pos(), Handle :: storage_handle()) -> {Result :: ok | {error, Reason :: term()}, NewHandle :: storage_handle()}.
 
 %%-----------------------------------------------------------------------------
 %% RAFT Storage Provider - Read Commands
@@ -233,14 +232,14 @@
 %% producing a directory tree rooted at the provided path that represents the
 %% current storage state. The produced snapshot should retain the current
 %% position when loaded.
--callback storage_create_snapshot(Path :: file:filename(), Handle :: storage_handle()) -> ok | error().
+-callback storage_create_snapshot(Path :: file:filename(), Handle :: storage_handle()) -> ok | {error, Reason :: term()}.
 
 %% Create a new witness snapshot at the provided path which must contain the current
 %% position in storage and configuration.
 %% The snapshot will be empty (without actual storage data) but will retain all
 %% necessary metadata. When loaded, this witness snapshot will reflect the exact
 %% position state of the original storage without the storage contents.
--callback storage_create_witness_snapshot(Path :: file:filename(), Handle :: storage_handle()) -> ok | error().
+-callback storage_create_witness_snapshot(Path :: file:filename(), Handle :: storage_handle()) -> ok | {error, Reason :: term()}.
 -optional_callback([storage_create_witness_snapshot/2]).
 
 %% Load a snapshot previously created by the same storage provider, possibly
@@ -249,7 +248,7 @@
 %% If a recoverable error occured, the storage state should remain unchanged.
 %% If the storage state is no longer suitable for use, an error should be
 %% raised.
--callback storage_open_snapshot(Path :: file:filename(), ExpectedPosition :: wa_raft_log:log_pos(), Handle :: storage_handle()) -> {ok, NewHandle :: storage_handle()} | error().
+-callback storage_open_snapshot(Path :: file:filename(), ExpectedPosition :: wa_raft_log:log_pos(), Handle :: storage_handle()) -> {ok, NewHandle :: storage_handle()} | {error, Reason :: term()}.
 
 %%-----------------------------------------------------------------------------
 %% RAFT Storage Provider - Bootstrapping
@@ -262,7 +261,7 @@
 %% version and the config as the value. Extra data may be used by implementors
 %% to provide extra state via arguments to external APIs that use this
 %% endpoint, such as the partition bootstrapping API.
--callback storage_make_empty_snapshot(Options :: #raft_options{}, Path :: file:filename(), Position :: wa_raft_log:log_pos(), Config :: wa_raft_server:config(), Data :: dynamic()) -> ok | error().
+-callback storage_make_empty_snapshot(Options :: #raft_options{}, Path :: file:filename(), Position :: wa_raft_log:log_pos(), Config :: wa_raft_server:config(), Data :: dynamic()) -> ok | {error, Reason :: term()}.
 -optional_callback([storage_make_empty_snapshot/5]).
 
 %%-----------------------------------------------------------------------------
@@ -271,7 +270,6 @@
 
 -type metadata() :: config | atom().
 -type storage_handle() :: dynamic().
--type error() :: {error, term()}.
 
 -type status() :: [status_element()].
 -type status_element() ::
@@ -381,11 +379,11 @@ status(Storage) ->
 position(Storage) ->
     gen_server:call(Storage, ?POSITION_REQUEST, ?RAFT_STORAGE_CALL_TIMEOUT()).
 
--spec label(Storage :: gen_server:server_ref()) -> {ok, Label :: wa_raft_label:label()} | wa_raft_storage:error().
+-spec label(Storage :: gen_server:server_ref()) -> {ok, Label :: wa_raft_label:label()} | {error, Reason :: term()}.
 label(Storage) ->
     gen_server:call(Storage, ?LABEL_REQUEST, ?RAFT_STORAGE_CALL_TIMEOUT()).
 
--spec config(Storage :: gen_server:server_ref()) -> {ok, wa_raft_log:log_pos(), wa_raft_server:config()} | undefined | wa_raft_storage:error().
+-spec config(Storage :: gen_server:server_ref()) -> {ok, wa_raft_log:log_pos(), wa_raft_server:config()} | undefined | {error, Reason :: term()}.
 config(Storage) ->
     gen_server:call(Storage, ?CONFIG_REQUEST, ?RAFT_STORAGE_CALL_TIMEOUT()).
 
@@ -418,11 +416,11 @@ apply(Storage, Record, Size, EffectiveTerm) ->
 apply_read(Storage, From, Command) ->
     gen_server:cast(Storage, ?APPLY_READ_REQUEST(From, Command)).
 
--spec open_snapshot(Storage :: gen_server:server_ref(), Path :: file:filename(), Position :: wa_raft_log:log_pos()) -> ok | error().
+-spec open_snapshot(Storage :: gen_server:server_ref(), Path :: file:filename(), Position :: wa_raft_log:log_pos()) -> ok | {error, Reason :: term()}.
 open_snapshot(Storage, Path, Position) ->
     gen_server:call(Storage, ?OPEN_SNAPSHOT_REQUEST(Path, Position), ?RAFT_STORAGE_CALL_TIMEOUT()).
 
--spec create_snapshot(Storage :: gen_server:server_ref()) -> {ok, Pos :: wa_raft_log:log_pos()} | error().
+-spec create_snapshot(Storage :: gen_server:server_ref()) -> {ok, Pos :: wa_raft_log:log_pos()} | {error, Reason :: term()}.
 create_snapshot(Storage) ->
     gen_server:call(Storage, ?CREATE_SNAPSHOT_REQUEST(), ?RAFT_STORAGE_CALL_TIMEOUT()).
 
@@ -430,11 +428,11 @@ create_snapshot(Storage) ->
 %% server will not recreate an existing snapshot even if the storage state has
 %% advanced since the snapshot was created; however, this method will always
 %% return the current position upon success.
--spec create_snapshot(Storage :: gen_server:server_ref(), Name :: string()) -> {ok, Pos :: wa_raft_log:log_pos()} | error().
+-spec create_snapshot(Storage :: gen_server:server_ref(), Name :: string()) -> {ok, Pos :: wa_raft_log:log_pos()} | {error, Reason :: term()}.
 create_snapshot(Storage, Name) ->
     gen_server:call(Storage, ?CREATE_SNAPSHOT_REQUEST(Name), ?RAFT_STORAGE_CALL_TIMEOUT()).
 
--spec create_witness_snapshot(Storage :: gen_server:server_ref()) -> {ok, Pos :: wa_raft_log:log_pos()} | error().
+-spec create_witness_snapshot(Storage :: gen_server:server_ref()) -> {ok, Pos :: wa_raft_log:log_pos()} | {error, Reason :: term()}.
 create_witness_snapshot(Storage) ->
     gen_server:call(Storage, ?CREATE_WITNESS_SNAPSHOT_REQUEST(), ?RAFT_STORAGE_CALL_TIMEOUT()).
 
@@ -442,7 +440,7 @@ create_witness_snapshot(Storage) ->
 %% server will not recreate an existing snapshot even if the storage state has
 %% advanced since the snapshot was created; however, this method will always
 %% return the current position upon success.
--spec create_witness_snapshot(Storage :: gen_server:server_ref(), Name :: string()) -> {ok, Pos :: wa_raft_log:log_pos()} | error().
+-spec create_witness_snapshot(Storage :: gen_server:server_ref(), Name :: string()) -> {ok, Pos :: wa_raft_log:log_pos()} | {error, Reason :: term()}.
 create_witness_snapshot(Storage, Name) ->
     gen_server:call(Storage, ?CREATE_WITNESS_SNAPSHOT_REQUEST(Name), ?RAFT_STORAGE_CALL_TIMEOUT()).
 
@@ -450,7 +448,7 @@ create_witness_snapshot(Storage, Name) ->
 delete_snapshot(Storage, Name) ->
     gen_server:cast(Storage, ?DELETE_SNAPSHOT_REQUEST(Name)).
 
--spec make_empty_snapshot(Storage :: gen_server:server_ref(), Path :: file:filename(), Position :: wa_raft_log:log_pos(), Config :: wa_raft_server:config(), Data :: term()) -> ok | error().
+-spec make_empty_snapshot(Storage :: gen_server:server_ref(), Path :: file:filename(), Position :: wa_raft_log:log_pos(), Config :: wa_raft_server:config(), Data :: term()) -> ok | {error, Reason :: term()}.
 make_empty_snapshot(Storage, Path, Position, Config, Data) ->
     gen_server:call(Storage, ?MAKE_EMPTY_SNAPSHOT_REQUEST(Path, Position, Config, Data), ?RAFT_STORAGE_CALL_TIMEOUT()).
 
@@ -730,7 +728,7 @@ handle_delayed_reads(#state{queues = Queues, module = Module, handle = Handle, p
     ],
     ok.
 
--spec handle_create_snapshot(SnapshotName :: string(), Storage :: #state{}) -> {ok, wa_raft_log:log_pos()} | error().
+-spec handle_create_snapshot(SnapshotName :: string(), Storage :: #state{}) -> {ok, wa_raft_log:log_pos()} | {error, Reason :: term()}.
 handle_create_snapshot(SnapshotName, #state{name = Name, path = Path, module = Module, handle = Handle, position = Position} = State) ->
     SnapshotPath = filename:join(Path, SnapshotName),
     case filelib:is_dir(SnapshotPath) of
@@ -748,7 +746,7 @@ handle_create_snapshot(SnapshotName, #state{name = Name, path = Path, module = M
             end
     end.
 
--spec handle_create_witness_snapshot(SnapshotName :: string(), Storage :: #state{}) -> {ok, wa_raft_log:log_pos()} | error().
+-spec handle_create_witness_snapshot(SnapshotName :: string(), Storage :: #state{}) -> {ok, wa_raft_log:log_pos()} | {error, Reason :: term()}.
 handle_create_witness_snapshot(SnapshotName, #state{name = Name, path = Path, module = Module, handle = Handle, position = Position} = State) ->
     SnapshotPath = filename:join(Path, SnapshotName),
     case filelib:is_dir(SnapshotPath) of

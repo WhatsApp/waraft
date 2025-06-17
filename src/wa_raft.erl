@@ -14,14 +14,12 @@
 -export_type([
     table/0,
     partition/0,
-    error/0,
     args/0,
     identity/0
 ]).
 
 -type table() :: atom().
 -type partition() :: pos_integer().
--type error() :: {error, term()}.
 
 %% Specification for starting a RAFT partition.
 -type args() ::

@@ -17,7 +17,7 @@
     sync/1
 ]).
 
--spec load(StateIn :: #raft_state{}) -> {ok, StateOut :: #raft_state{}} | no_state | wa_raft:error().
+-spec load(StateIn :: #raft_state{}) -> {ok, StateOut :: #raft_state{}} | no_state | {error, Reason :: term()}.
 load(#raft_state{name = Name, partition_path = PartitionPath} = State) ->
     StateItems = [
         {current_term,   fun is_integer/1, fun (V, S) -> S#raft_state{current_term = V} end,   required},
@@ -69,7 +69,7 @@ load(#raft_state{name = Name, partition_path = PartitionPath} = State) ->
             {error, Reason}
     end.
 
--spec store(#raft_state{}) -> ok | wa_raft:error().
+-spec store(#raft_state{}) -> ok | {error, Reason :: term()}.
 store(#raft_state{name = Name, partition_path = PartitionPath, current_term = CurrentTerm, voted_for = VotedFor, disable_reason = DisableReason}) ->
     StateList = [
         {current_term, CurrentTerm},

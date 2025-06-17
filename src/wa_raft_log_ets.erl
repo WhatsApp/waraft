@@ -141,8 +141,7 @@ config(#raft_log{name = Name}) ->
 %% RAFT log provider interface for writing new log data
 %%-------------------------------------------------------------------
 
--spec append(View :: wa_raft_log:view(), Entries :: [wa_raft_log:log_entry() | binary()], Mode :: strict | relaxed) ->
-    ok | skipped | wa_raft_log:error().
+-spec append(View :: wa_raft_log:view(), Entries :: [wa_raft_log:log_entry() | binary()], Mode :: strict | relaxed) -> ok.
 append(View, Entries, _Mode) ->
     Name = wa_raft_log:log_name(View),
     Last = wa_raft_log:last_index(View),

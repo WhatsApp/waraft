@@ -293,7 +293,7 @@ child_spec(Options) ->
         modules => [?MODULE]
     }.
 
--spec start_link(Options :: #raft_options{}) -> {ok, Pid :: pid()} | ignore | wa_raft:error().
+-spec start_link(Options :: #raft_options{}) -> gen_statem:start_ret().
 start_link(#raft_options{server_name = Name} = Options) ->
     gen_statem:start_link({local, Name}, ?MODULE, Options, []).
 
@@ -481,14 +481,14 @@ parse_rpc(#raft_identity{name = Name} = Self, ?LEGACY_RAFT_RPC(Procedure, Term, 
 -spec commit(
     Server :: gen_statem:server_ref(),
     Op :: wa_raft_acceptor:op()
-) -> ok | wa_raft:error().
+) -> ok.
 commit(Server, Op) ->
     gen_statem:cast(Server, ?COMMIT_COMMAND(Op)).
 
 -spec read(
     Server :: gen_statem:server_ref(),
     Op :: wa_raft_acceptor:read_op()
-) -> ok | wa_raft:error().
+) -> ok.
 read(Server, Op) ->
     gen_statem:cast(Server, ?READ_COMMAND(Op)).
 
@@ -496,7 +496,7 @@ read(Server, Op) ->
     Server :: gen_statem:server_ref(),
     Root :: file:filename(),
     Position :: wa_raft_log:log_pos()
-) -> ok | wa_raft:error().
+) -> ok | {error, Reason :: term()}.
 snapshot_available(Server, Root, Position) ->
     % Use the storage call timeout because this command requires the RAFT
     % server to make a potentially expensive call against the RAFT storage
@@ -507,7 +507,7 @@ snapshot_available(Server, Root, Position) ->
     Server :: gen_statem:server_ref(),
     Action :: add | remove | add_witness | remove_witness,
     Peer :: peer()
-) -> {ok, Position :: wa_raft_log:log_pos()} | wa_raft:error().
+) -> {ok, Position :: wa_raft_log:log_pos()} | {error, Reason :: term()}.
 adjust_membership(Server, Action, Peer) ->
     adjust_membership(Server, Action, Peer, undefined).
 
@@ -516,30 +516,30 @@ adjust_membership(Server, Action, Peer) ->
     Action :: add | remove | add_witness | remove_witness,
     Peer :: peer(),
     ConfigIndex :: wa_raft_log:log_index() | undefined
-) -> {ok, Position :: wa_raft_log:log_pos()} | wa_raft:error().
+) -> {ok, Position :: wa_raft_log:log_pos()} | {error, Reason :: term()}.
 adjust_membership(Server, Action, Peer, ConfigIndex) ->
     gen_statem:call(Server, ?ADJUST_MEMBERSHIP_COMMAND(Action, Peer, ConfigIndex), ?RAFT_RPC_CALL_TIMEOUT()).
 
 %% Request the specified RAFT server to start an election in the next term.
--spec trigger_election(Server :: gen_statem:server_ref()) -> ok | wa_raft:error().
+-spec trigger_election(Server :: gen_statem:server_ref()) -> ok | {error, Reason :: term()}.
 trigger_election(Server) ->
     trigger_election(Server, current).
 
 %% Request the specified RAFT server to trigger a new election in the term *after* the specified term.
--spec trigger_election(Server :: gen_statem:server_ref(), Term :: term_or_offset()) -> ok | wa_raft:error().
+-spec trigger_election(Server :: gen_statem:server_ref(), Term :: term_or_offset()) -> ok | {error, Reason :: term()}.
 trigger_election(Server, Term) ->
     gen_statem:call(Server, ?TRIGGER_ELECTION_COMMAND(Term), ?RAFT_RPC_CALL_TIMEOUT()).
 
 %% Request the specified RAFT server to promote itself to leader of the specified term.
--spec promote(Server :: gen_statem:server_ref(), Term :: term_or_offset()) -> ok | wa_raft:error().
+-spec promote(Server :: gen_statem:server_ref(), Term :: term_or_offset()) -> ok | {error, Reason :: term()}.
 promote(Server, Term) ->
     promote(Server, Term, false).
 
--spec promote(Server :: gen_statem:server_ref(), Term :: term_or_offset(), Force :: boolean()) -> ok | wa_raft:error().
+-spec promote(Server :: gen_statem:server_ref(), Term :: term_or_offset(), Force :: boolean()) -> ok | {error, Reason :: term()}.
 promote(Server, Term, Force) ->
     gen_statem:call(Server, ?PROMOTE_COMMAND(Term, Force), ?RAFT_RPC_CALL_TIMEOUT()).
 
--spec resign(Server :: gen_statem:server_ref()) -> ok | wa_raft:error().
+-spec resign(Server :: gen_statem:server_ref()) -> ok | {error, Reason :: term()}.
 resign(Server) ->
     gen_statem:call(Server, ?RESIGN_COMMAND, ?RAFT_RPC_CALL_TIMEOUT()).
 
@@ -551,11 +551,11 @@ handover(Server) ->
 %% Instruct a RAFT leader to attempt a handover to the specified peer node.
 %% If an `undefined` peer node is specified, then handover to a random handover candidate.
 %% Returns which peer node the handover was sent to or otherwise an error.
--spec handover(Server :: gen_statem:server_ref(), Peer :: node() | undefined) -> {ok, Peer :: node()} | wa_raft:error().
+-spec handover(Server :: gen_statem:server_ref(), Peer :: node() | undefined) -> {ok, Peer :: node()} | {error, Reason :: term()}.
 handover(Server, Peer) ->
     gen_statem:call(Server, ?HANDOVER_COMMAND(Peer), ?RAFT_RPC_CALL_TIMEOUT()).
 
--spec handover_candidates(Server :: gen_statem:server_ref()) -> {ok, Candidates :: [node()]} | wa_raft:error().
+-spec handover_candidates(Server :: gen_statem:server_ref()) -> {ok, Candidates :: [node()]} | {error, Reason :: term()}.
 handover_candidates(Server) ->
     gen_statem:call(Server, ?HANDOVER_CANDIDATES_COMMAND, ?RAFT_RPC_CALL_TIMEOUT()).
 
@@ -572,7 +572,7 @@ enable(Server) ->
     Position :: wa_raft_log:log_pos(),
     Config :: config(),
     Data :: dynamic()
-) -> ok | wa_raft:error().
+) -> ok | {error, Reason :: term()}.
 bootstrap(Server, Position, Config, Data) ->
     gen_statem:call(Server, ?BOOTSTRAP_COMMAND(Position, Config, Data), ?RAFT_STORAGE_CALL_TIMEOUT()).
 
@@ -2984,13 +2984,17 @@ append_entries(
             % of the log.
             {ok, View1} = wa_raft_log:append(View0, NewEntries),
             {ok, true, PrevLogIndex + EntryCount, Data#raft_state{log_view = View1}};
-        {conflict, ConflictIndex, [{ConflictTerm, _} | _]} when ConflictIndex =< CommitIndex ->
+        {conflict, ConflictIndex, [ConflictEntry | _]} when ConflictIndex =< CommitIndex ->
             % A conflict is detected that would result in the truncation of a
             % log entry that the local replica has committed. We cannot validly
             % delete log entries that are already committed because doing so
             % may potenially cause the log entry to be no longer present on a
             % majority of replicas.
             {ok, LocalTerm} = wa_raft_log:term(View0, ConflictIndex),
+            {ConflictTerm, _} = if
+                is_binary(ConflictEntry) -> binary_to_term(ConflictEntry);
+                true -> ConflictEntry
+            end,
             ?RAFT_COUNT({raft, State, 'heartbeat.error.corruption.excessive_truncation'}),
             ?RAFT_LOG_WARNING(State, Data, "refuses heartbeat at ~0p to ~0p that requires truncation past ~0p (term ~0p vs ~0p) when log entries up to ~0p are already committed.",
                 [PrevLogIndex, PrevLogIndex + EntryCount, ConflictIndex, ConflictTerm, LocalTerm, CommitIndex]),
@@ -3021,7 +3025,7 @@ append_entries(
                         [ConflictIndex, PrevLogIndex, PrevLogIndex + EntryCount, Reason, 30]),
                     {ok, false, wa_raft_log:last_index(View0), Data}
             end;
-        {error, out_of_range} ->
+        {invalid, out_of_range} ->
             % If the heartbeat is out of range (generally past the end of the
             % log) then ignore and notify the leader of what log entry is
             % required by this replica.
@@ -3097,7 +3101,7 @@ request_vote_impl(State, Candidate, _, _,  #raft_state{voted_for = VotedFor} = D
 %%------------------------------------------------------------------------------
 
 %% Generic reply function for non-RPC requests that operates based on event type.
--spec reply(Type :: enter | gen_statem:event_type(), Message :: term()) -> ok | wa_raft:error().
+-spec reply(Type :: enter | gen_statem:event_type(), Message :: term()) -> ok | {error, Reason :: term()}.
 reply(cast, _) ->
     ok;
 reply({call, From}, Message) ->
