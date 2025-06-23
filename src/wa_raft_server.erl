@@ -1006,7 +1006,7 @@ leader(enter, PreviousStateName, #raft_state{self = Self, log_view = View0} = St
     % quorum in the new term by starting replication and clearing out
     % any log mismatches on follower replicas.
     {State4, LogEntry} = get_log_entry(State3, {make_ref(), noop}),
-    {ok, View1} = wa_raft_log:append(View0, [LogEntry], strict),
+    {ok, View1} = wa_raft_log:append(View0, [LogEntry]),
     TermStartIndex = wa_raft_log:last_index(View1),
     State5 = State4#raft_state{log_view = View1, first_current_term_log_index = TermStartIndex},
 
@@ -1308,7 +1308,7 @@ leader(
                                     % soon as possible.
                                     Op = {make_ref(), {config, NewConfig}},
                                     {State1, LogEntry} = get_log_entry(State0, Op),
-                                    {ok, View1} = wa_raft_log:append(View0, [LogEntry], strict),
+                                    {ok, View1} = wa_raft_log:append(View0, [LogEntry]),
                                     LogIndex = wa_raft_log:last_index(View1),
                                     ?RAFT_LOG_NOTICE(State1, "appended configuration change from ~0p to ~0p at log index ~0p.", [Config, NewConfig, LogIndex]),
                                     State2 = State1#raft_state{log_view = View1},
@@ -2637,7 +2637,7 @@ commit_pending(#raft_state{pending = [], pending_read = false} = Data) ->
     Data;
 commit_pending(#raft_state{log_view = View} = Data0) ->
     {Entries, Data1} = collect_pending(Data0),
-    case wa_raft_log:append(View, Entries, relaxed) of
+    case wa_raft_log:try_append(View, Entries) of
         {ok, NewView} ->
             % We can clear pending read flag as we've successfully added at
             % least one new log entry so the leader will proceed to replicate
@@ -2982,8 +2982,16 @@ append_entries(
             % No conflicting log entries were found in the heartbeat, but the
             % heartbeat does contain new log entries to be appended to the end
             % of the log.
-            {ok, View1} = wa_raft_log:append(View0, NewEntries),
-            {ok, true, PrevLogIndex + EntryCount, Data#raft_state{log_view = View1}};
+            case wa_raft_log:try_append(View0, NewEntries) of
+                {ok, View1} ->
+                    {ok, true, PrevLogIndex + EntryCount, Data#raft_state{log_view = View1}};
+                skipped ->
+                    NewCount = length(NewEntries),
+                    Last = wa_raft_log:last_index(View0),
+                    ?RAFT_LOG_WARNING(State, Data, "is not ready to append ~0p log entries in range ~0p to ~0p to log ending at ~0p.",
+                        [NewCount, Last + 1, Last + NewCount, Last]),
+                    {ok, false, Last, Data}
+            end;
         {conflict, ConflictIndex, [ConflictEntry | _]} when ConflictIndex =< CommitIndex ->
             % A conflict is detected that would result in the truncation of a
             % log entry that the local replica has committed. We cannot validly
@@ -3016,8 +3024,16 @@ append_entries(
                         false ->
                             % Otherwise, we can replace the truncated log
                             % entries with those from the current heartbeat.
-                            {ok, View2} = wa_raft_log:append(View1, NewEntries),
-                            {ok, true, PrevLogIndex + EntryCount, Data#raft_state{log_view = View2}}
+                            case wa_raft_log:try_append(View1, NewEntries) of
+                                {ok, View2} ->
+                                    {ok, true, PrevLogIndex + EntryCount, Data#raft_state{log_view = View2}};
+                                skipped ->
+                                    NewCount = length(NewEntries),
+                                    NewLast = wa_raft_log:last_index(View1),
+                                    ?RAFT_LOG_WARNING(State, Data, "is not ready to append ~0p log entries in range ~0p to ~0p to log ending at ~0p.",
+                                        [NewCount, NewLast + 1, NewLast + NewCount, NewLast]),
+                                    {ok, false, NewLast, Data}
+                            end
                     end;
                 {error, Reason} ->
                     ?RAFT_COUNT({raft, State, 'heartbeat.truncate.error'}),

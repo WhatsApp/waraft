@@ -19,7 +19,7 @@
 %% APIs for writing new log data
 -export([
     append/2,
-    append/3,
+    try_append/2,
     check_heartbeat/3
 ]).
 
@@ -327,6 +327,13 @@ start_link(#raft_options{log_name = Name} = Options) ->
 append(View, Entries) ->
     % eqwalizer:ignore - strict append cannot return skipped
     append(View, Entries, strict).
+
+%% Attempt to append new log entries to the end of the log if an append can be
+%% serviced immediately.
+-spec try_append(View :: view(), Entries :: [log_entry() | binary()]) ->
+    {ok, NewView :: view()} | skipped | {error, Reason :: term()}.
+try_append(View, Entries) ->
+    append(View, Entries, relaxed).
 
 %% Append new log entries to the end of the log.
 -spec append(View :: view(), Entries :: [log_entry() | binary()], Mode :: strict | relaxed) ->
