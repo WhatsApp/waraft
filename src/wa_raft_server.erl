@@ -2480,8 +2480,6 @@ apply_log(
             ApplyQueueSize = wa_raft_queue:apply_queue_size(Queues),
             ?RAFT_COUNT('raft.apply.delay'),
             ?RAFT_GATHER('raft.apply.queue', ApplyQueueSize),
-            LastApplied rem 10 =:= 0 andalso
-                ?RAFT_LOG_WARNING(State, Data0, "delays applying for long queue ~0p with last applied ~0p.", [ApplyQueueSize, LastApplied]),
             ?RAFT_GATHER('raft.apply_log.latency_us', timer:now_diff(os:timestamp(), StartT)),
             Data0
     end;
