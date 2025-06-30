@@ -49,6 +49,11 @@
     normalize_config/1
 ]).
 
+% Stubbing log entries for witnesses
+-export([
+    stub_entries_for_witness/1
+]).
+
 %% Modification of cluster configuration
 -export([
     set_config_members/2,
@@ -2722,11 +2727,12 @@ heartbeat(
             MaxLogEntries = ?RAFT_HEARTBEAT_MAX_ENTRIES(App),
             MaxHeartbeatSize = ?RAFT_HEARTBEAT_MAX_BYTES(App),
             Witnesses = config_witnesses(config(State0)),
-            {ok, RawEntries} = wa_raft_log:entries(View, FollowerNextIndex, MaxLogEntries, MaxHeartbeatSize),
             Entries = case lists:member({Name, FollowerId}, Witnesses) of
                 true ->
+                    {ok, RawEntries} = wa_raft_log:get(View, FollowerNextIndex, MaxLogEntries, MaxHeartbeatSize),
                     stub_entries_for_witness(RawEntries);
                 false ->
+                    {ok, RawEntries} = wa_raft_log:entries(View, FollowerNextIndex, MaxLogEntries, MaxHeartbeatSize),
                     RawEntries
             end,
             {ok, PrevLogTerm} = PrevLogTermRes,
@@ -3293,16 +3299,18 @@ request_snapshot_for_follower(
     State :: #raft_state{}
 ) -> ok.
 request_bulk_logs_for_follower(
-    Peer,
+    ?IDENTITY_REQUIRES_MIGRATION(_, FollowerId) = Peer,
     FollowerLastIndex,
     #raft_state{
+        name = Name,
         catchup = Catchup,
         current_term = CurrentTerm,
         commit_index = CommitIndex
     } = State
 ) ->
     ?RAFT_LOG_DEBUG(leader, State, "requesting bulk logs catchup for follower ~0p.", [Peer]),
-    wa_raft_log_catchup:start_catchup_request(Catchup, Peer, FollowerLastIndex, CurrentTerm, CommitIndex).
+    Witness = lists:member({Name, FollowerId}, config_witnesses(config(State))),
+    wa_raft_log_catchup:start_catchup_request(Catchup, Peer, FollowerLastIndex, CurrentTerm, CommitIndex, Witness).
 
 -spec cancel_bulk_logs_for_follower(Peer :: #raft_identity{}, State :: #raft_state{}) -> ok.
 cancel_bulk_logs_for_follower(Peer, #raft_state{catchup = Catchup}) ->
