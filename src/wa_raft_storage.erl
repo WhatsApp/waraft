@@ -312,7 +312,7 @@
 -define(OPEN_REQUEST, open).
 -define(CANCEL_REQUEST, cancel).
 -define(FULFILL_REQUEST(Key, Result), {fulfill, Key, Result}).
--define(APPLY_REQUEST(Record, Size, EffectiveTerm), {apply, Record, Size, EffectiveTerm}).
+-define(APPLY_REQUEST(From, Record, Size), {apply, From, Record, Size}).
 -define(APPLY_READ_REQUEST(From, Command), {apply_read, From, Command}).
 
 -define(CREATE_SNAPSHOT_REQUEST(), create_snapshot).
@@ -339,7 +339,7 @@
 -type open_request() :: ?OPEN_REQUEST.
 -type cancel_request() :: ?CANCEL_REQUEST.
 -type fulfill_request() :: ?FULFILL_REQUEST(Key :: wa_raft_acceptor:key(), Result :: wa_raft_acceptor:commit_result()).
--type apply_request() :: ?APPLY_REQUEST(Record :: wa_raft_log:log_record(), Size :: non_neg_integer(), EffectiveTerm :: wa_raft_log:log_term() | undefined).
+-type apply_request() :: ?APPLY_REQUEST(From :: gen_server:from() | undefined, Record :: wa_raft_log:log_record(), Size :: non_neg_integer()).
 -type apply_read_request() :: ?APPLY_READ_REQUEST(From :: gen_server:from(), Comman :: wa_raft_acceptor:command()).
 
 -type create_snapshot_request() :: ?CREATE_SNAPSHOT_REQUEST() | ?CREATE_SNAPSHOT_REQUEST(Name :: string()).
@@ -405,12 +405,12 @@ cancel(Storage) ->
 
 -spec apply(
     Storage :: gen_server:server_ref(),
+    From :: gen_server:from() | undefined,
     Record :: wa_raft_log:log_record(),
-    Size :: non_neg_integer(),
-    EffectiveTerm :: wa_raft_log:log_term() | undefined
+    Size :: non_neg_integer()
 ) -> ok.
-apply(Storage, Record, Size, EffectiveTerm) ->
-    gen_server:cast(Storage, ?APPLY_REQUEST(Record, Size, EffectiveTerm)).
+apply(Storage, From, Record, Size) ->
+    gen_server:cast(Storage, ?APPLY_REQUEST(From, Record, Size)).
 
 -spec apply_read(Storage :: gen_server:server_ref(), From :: gen_server:from(), Command :: wa_raft_acceptor:command()) -> ok.
 apply_read(Storage, From, Command) ->
@@ -593,16 +593,15 @@ handle_call(Request, From, #state{name = Name} = State) ->
     {noreply, NewState :: #state{}}.
 
 handle_cast(?CANCEL_REQUEST, #state{name = Name, queues = Queues} = State) ->
-    ?LOG_NOTICE("Storage[~0p] cancels all pending commits and reads.", [Name], #{domain => [whatsapp, wa_raft]}),
-    wa_raft_queue:fulfill_all_commits(Queues, {error, not_leader}),
+    ?LOG_NOTICE("Storage[~0p] cancels all pending reads.", [Name], #{domain => [whatsapp, wa_raft]}),
     wa_raft_queue:fulfill_all_reads(Queues, {error, not_leader}),
     {noreply, State};
 
-handle_cast(?APPLY_REQUEST({LogIndex, {LogTerm, {Reference, Label, Command}}}, Size, EffectiveTerm), #state{name = Name, queues = Queues} = State0) ->
+handle_cast(?APPLY_REQUEST(From, {LogIndex, {LogTerm, {_, Label, Command}}}, Size), #state{name = Name, queues = Queues} = State0) ->
     wa_raft_queue:fulfill_apply(Queues, Size),
     LogPosition = #raft_log_pos{index = LogIndex, term = LogTerm},
     ?LOG_DEBUG("Storage[~0p] is starting to apply ~0p", [Name, LogPosition], #{domain => [whatsapp, wa_raft]}),
-    {noreply, handle_apply(LogPosition, Reference, Label, Command, EffectiveTerm, State0)};
+    {noreply, handle_apply(From, LogPosition, Label, Command, State0)};
 
 handle_cast(?APPLY_READ_REQUEST(From, Command), #state{module = Module, handle = Handle, position = Position} = State) ->
     gen_server:reply(From, Module:storage_read(Command, Position, Handle)),
@@ -630,19 +629,18 @@ terminate(Reason, #state{name = Name, module = Module, handle = Handle, position
 %%-------------------------------------------------------------------
 
 -spec handle_apply(
+    From :: gen_server:from() | undefined,
     LogPosition :: wa_raft_log:log_pos(),
-    Reference :: wa_raft_acceptor:key(),
     Label :: wa_raft_label:label(),
     Command :: wa_raft_acceptor:command(),
-    EffectiveTerm :: wa_raft_log:log_term() | undefined,
     State :: #state{}
 ) -> NewState :: #state{}.
 %% In the case that a log entry is reapplied, fulfill any new pending reads at that index.
-handle_apply(#raft_log_pos{index = LogIndex},
-    _Reference,
+handle_apply(
+    _From,
+    #raft_log_pos{index = LogIndex},
     _Label,
     _Command,
-    _EffectiveTerm,
     #state{position = #raft_log_pos{index = Index}} = State
 ) when LogIndex =:= Index ->
     handle_delayed_reads(State),
@@ -650,11 +648,10 @@ handle_apply(#raft_log_pos{index = LogIndex},
 %% Issue an apply request to storage when the next log entry is to be applied,
 %% and respond if the current effect term is equal to the log entry's term.
 handle_apply(
-    #raft_log_pos{index = LogIndex, term = LogTerm} = LogPosition,
-    Reference,
+    From,
+    #raft_log_pos{index = LogIndex} = LogPosition,
     Label,
     Command,
-    EffectiveTerm,
     #state{
         application = Application,
         name = Name,
@@ -666,8 +663,7 @@ handle_apply(
     ?RAFT_COUNT('raft.storage.apply'),
     StartT = os:timestamp(),
     {Reply, NewState} = handle_command(Label, Command, LogPosition, State),
-    LogTerm =:= EffectiveTerm andalso
-        wa_raft_queue:fulfill_commit(Queues, Reference, Reply),
+    From =/= undefined andalso wa_raft_queue:commit_completed(Queues, From, Reply),
     handle_delayed_reads(NewState),
     wa_raft_queue:apply_queue_size(Queues) =:= 0 andalso ?RAFT_STORAGE_NOTIFY_COMPLETE(Application) andalso
         wa_raft_server:notify_complete(Server),
@@ -676,7 +672,7 @@ handle_apply(
     ?RAFT_GATHER('raft.storage.apply.func', timer:now_diff(os:timestamp(), StartT)),
     NewState;
 %% Otherwise, the apply is out of order.
-handle_apply(LogPosition, _Reference, _Label, _Command, _EffectiveTerm, #state{name = Name, position = Position}) ->
+handle_apply(_From, LogPosition, _Label, _Command, #state{name = Name, position = Position}) ->
     ?LOG_ERROR("Storage[~0p] at ~0p received an out-of-order operation at ~0p.",
         [Name, Position, LogPosition], #{domain => [whatsapp, wa_raft]}),
     error(out_of_order_apply).

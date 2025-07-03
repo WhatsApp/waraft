@@ -82,11 +82,11 @@
 -type commit_async_request() :: {commit, From :: gen_server:from(), Op :: op()}.
 -type commit_error_type() ::
     not_leader |
-    {duplicate_request, Key :: key()} |
     {commit_queue_full, Key :: key()} |
     {apply_queue_full, Key :: key()} |
     {notify_redirect, Peer :: node()} |
-    commit_stalled.
+    commit_stalled |
+    cancelled.
 -type commit_error() :: {error, commit_error_type()}.
 -type commit_result() :: Result :: dynamic() | Error :: commit_error() | call_error().
 
@@ -244,24 +244,19 @@ commit_impl(From, {Key, _} = Op, #state{name = Name, server = Server, queues = Q
     try
         ?LOG_DEBUG("Acceptor[~0p] starts to handle commit of ~0P from ~0p.",
             [Name, Op, 30, From], #{domain => [whatsapp, wa_raft]}),
-        case wa_raft_queue:commit(Queues, Key, From) of
-            duplicate ->
-                ?LOG_WARNING("Acceptor[~0p] is rejecting commit request from ~0p because it has duplicate key ~0p.",
-                    [Name, From, Key], #{domain => [whatsapp, wa_raft]}),
-                ?RAFT_COUNT('raft.acceptor.error.duplicate_commit'),
-                {error, {duplicate_request, Key}};
+        case wa_raft_queue:commit_started(Queues) of
             commit_queue_full ->
-                ?LOG_WARNING("Acceptor[~0p] is rejecting commit request from ~0p with key ~0p because the commit queue is full.",
-                    [Name, From, Key], #{domain => [whatsapp, wa_raft]}),
+                ?LOG_WARNING("Acceptor[~0p] is rejecting commit request from ~0p because the commit queue is full.",
+                    [Name, From], #{domain => [whatsapp, wa_raft]}),
                 ?RAFT_COUNT('raft.acceptor.error.commit_queue_full'),
                 {error, {commit_queue_full, Key}};
             apply_queue_full ->
-                ?LOG_WARNING("Acceptor[~0p] is rejecting commit request from ~0p with key ~0p because the apply queue is full.",
-                    [Name, From, Key], #{domain => [whatsapp, wa_raft]}),
+                ?LOG_WARNING("Acceptor[~0p] is rejecting commit request from ~0p because the apply queue is full.",
+                    [Name, From], #{domain => [whatsapp, wa_raft]}),
                 ?RAFT_COUNT('raft.acceptor.error.apply_queue_full'),
                 {error, {apply_queue_full, Key}};
             ok ->
-                wa_raft_server:commit(Server, Op),
+                wa_raft_server:commit(Server, From, Op),
                 continue
         end
     after

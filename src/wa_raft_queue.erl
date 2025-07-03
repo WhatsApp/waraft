@@ -29,17 +29,15 @@
 -export([
     default_name/2,
     default_counters/0,
-    default_commit_queue_name/2,
     default_read_queue_name/2,
     registered_name/2
 ]).
 
 %% PENDING COMMIT QUEUE API
 -export([
-    commit/3,
-    fulfill_commit/3,
-    fulfill_incomplete_commit/3,
-    fulfill_all_commits/2
+    commit_started/1,
+    commit_cancelled/3,
+    commit_completed/3
 ]).
 
 %% PENDING READ API
@@ -108,7 +106,6 @@
 -record(queues, {
     application :: atom(),
     counters :: atomics:atomics_ref(),
-    commits :: atom(),
     reads :: atom()
 }).
 -opaque queues() :: #queues{}.
@@ -122,7 +119,6 @@ queues(Options) ->
     #queues{
         application = Options#raft_options.application,
         counters = Options#raft_options.queue_counters,
-        commits = Options#raft_options.queue_commits,
         reads = Options#raft_options.queue_reads
     }.
 
@@ -204,12 +200,6 @@ default_name(Table, Partition) ->
 default_counters() ->
     atomics:new(?RAFT_NUMBER_OF_QUEUE_SIZE_COUNTERS, []).
 
-%% Get the default name for the RAFT commit queue ETS table associated with the
-%% provided RAFT partition.
--spec default_commit_queue_name(Table :: wa_raft:table(), Partition :: wa_raft:partition()) -> Name :: atom().
-default_commit_queue_name(Table, Partition) ->
-    binary_to_atom(<<"raft_commit_queue_", (atom_to_binary(Table))/bytes, "_", (integer_to_binary(Partition))/bytes>>).
-
 %% Get the default name for the RAFT read queue ETS table associated with the
 %% provided RAFT partition.
 -spec default_read_queue_name(Table :: wa_raft:table(), Partition :: wa_raft:partition()) -> Name :: atom().
@@ -229,9 +219,8 @@ registered_name(Table, Partition) ->
 %% PENDING COMMIT QUEUE API
 %%-------------------------------------------------------------------
 
--spec commit(Queues :: queues(), Key :: wa_raft_acceptor:key(), From :: gen_server:from()) ->
-    ok | apply_queue_full | commit_queue_full | duplicate.
-commit(#queues{counters = Counters, commits = Commits} = Queues, Reference, From) ->
+-spec commit_started(Queues :: queues()) -> ok | apply_queue_full | commit_queue_full.
+commit_started(#queues{counters = Counters} = Queues) ->
     case commit_queue_full(Queues) of
         true ->
             commit_queue_full;
@@ -240,47 +229,24 @@ commit(#queues{counters = Counters, commits = Commits} = Queues, Reference, From
                 true ->
                     apply_queue_full;
                 false ->
-                    case ets:insert_new(Commits, {Reference, From}) of
-                        true ->
-                            PendingCommits = atomics:add_get(Counters, ?RAFT_COMMIT_QUEUE_SIZE_COUNTER, 1),
-                            ?RAFT_GATHER('raft.acceptor.commit.request.pending', PendingCommits),
-                            ok;
-                        false ->
-                            duplicate
-                    end
-            end
-    end.
-
-% Fulfill a pending commit with the result of the application of the command contained
-% within the commit.
--spec fulfill_commit(Queues :: queues(), term(), dynamic()) -> ok | not_found.
-fulfill_commit(#queues{counters = Counters, commits = Commits}, Reference, Reply) ->
-    case ets:take(Commits, Reference) of
-        [{Reference, From}] ->
-            atomics:sub(Counters, ?RAFT_COMMIT_QUEUE_SIZE_COUNTER, 1),
-            gen_server:reply(From, Reply);
-        [] ->
-            not_found
-    end.
-
-% Fulfill a pending commit with an error that indicates that the commit was not completed.
--spec fulfill_incomplete_commit(Queues :: queues(), term(), wa_raft_acceptor:commit_error()) -> ok | not_found.
-fulfill_incomplete_commit(Queues, Reference, Error) ->
-    fulfill_commit(Queues, Reference, Error).
-
-% Fulfill a pending commit with an error that indicates that the commit was not completed.
--spec fulfill_all_commits(Queues :: queues(), wa_raft_acceptor:commit_error()) -> ok.
-fulfill_all_commits(#queues{counters = Counters, commits = Commits}, Reply) ->
-    lists:foreach(
-        fun ({Reference, _}) ->
-            case ets:take(Commits, Reference) of
-                [{Reference, From}] ->
-                    atomics:sub(Counters, ?RAFT_COMMIT_QUEUE_SIZE_COUNTER, 1),
-                    gen_server:reply(From, Reply);
-                [] ->
+                    PendingCommits = atomics:add_get(Counters, ?RAFT_COMMIT_QUEUE_SIZE_COUNTER, 1),
+                    ?RAFT_GATHER('raft.acceptor.commit.request.pending', PendingCommits),
                     ok
             end
-        end, ets:tab2list(Commits)).
+    end.
+
+
+-spec commit_cancelled(Queues :: queues(), From :: gen_server:from(), Reason :: wa_raft_acceptor:commit_error() | undefined) -> ok.
+commit_cancelled(#queues{counters = Counters}, From, Reason) ->
+    atomics:sub(Counters, ?RAFT_COMMIT_QUEUE_SIZE_COUNTER, 1),
+    Reason =/= undefined andalso gen_server:reply(From, Reason),
+    ok.
+
+-spec commit_completed(Queues :: queues(), From :: gen_server:from(), Reply :: term()) -> ok.
+commit_completed(#queues{counters = Counters}, From, Reply) ->
+    atomics:sub(Counters, ?RAFT_COMMIT_QUEUE_SIZE_COUNTER, 1),
+    gen_server:reply(From, Reply),
+    ok.
 
 %%-------------------------------------------------------------------
 %% PENDING READ QUEUE API
@@ -398,14 +364,13 @@ init(
         partition = Partition,
         queue_name = Name,
         queue_counters = Counters,
-        queue_commits = CommitsName,
         queue_reads = ReadsName
     }
 ) ->
     process_flag(trap_exit, true),
 
-    ?LOG_NOTICE("Queue[~p] starting for partition ~0p/~0p with read queue ~0p and commit queue ~0p",
-        [Name, Table, Partition, ReadsName, CommitsName], #{domain => [whatsapp, wa_raft]}),
+    ?LOG_NOTICE("Queue[~p] starting for partition ~0p/~0p with read queue ~0p",
+        [Name, Table, Partition, ReadsName], #{domain => [whatsapp, wa_raft]}),
 
     % The queue process is the first process in the supervision for a single
     % RAFT partition. The supervisor is configured to restart all processes if
@@ -413,8 +378,7 @@ init(
     % queues tracked should be empty so reset all counters.
     [atomics:put(Counters, Index, 0) || Index <- lists:seq(1, ?RAFT_NUMBER_OF_QUEUE_SIZE_COUNTERS)],
 
-    % Create ETS tables for pending commits and reads.
-    CommitsName = ets:new(CommitsName, [set | ?RAFT_QUEUE_TABLE_OPTIONS]),
+    % Create ETS table for pending reads.
     ReadsName = ets:new(ReadsName, [ordered_set | ?RAFT_QUEUE_TABLE_OPTIONS]),
 
     {ok, #state{name = Name}}.

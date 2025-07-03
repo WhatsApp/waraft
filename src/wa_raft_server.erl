@@ -93,7 +93,7 @@
 %%------------------------------------------------------------------------------
 
 -export([
-    commit/2,
+    commit/3,
     read/2,
     snapshot_available/3,
     adjust_membership/3,
@@ -234,6 +234,9 @@
     | {commit_index, wa_raft_log:log_index()}
     | {last_applied, wa_raft_log:log_index()}
     | {leader_id, node()}
+    | {pending, non_neg_integer()}
+    | {pending_read, boolean()}
+    | {queued, non_neg_integer()}
     | {next_indices, #{node() => wa_raft_log:log_index()}}
     | {match_indices, #{node() => wa_raft_log:log_index()}}
     | {log_module, module()}
@@ -261,7 +264,7 @@
                    snapshot_available_command() | handover_candidates_command() | handover_command() |
                    enable_command() | disable_command() | bootstrap_command() | notify_complete_command().
 
--type commit_command()              :: ?COMMIT_COMMAND(wa_raft_acceptor:op()).
+-type commit_command()              :: ?COMMIT_COMMAND(gen_server:from(), wa_raft_acceptor:op()).
 -type read_command()                :: ?READ_COMMAND(wa_raft_acceptor:read_op()).
 -type status_command()              :: ?STATUS_COMMAND.
 -type trigger_election_command()    :: ?TRIGGER_ELECTION_COMMAND(term_or_offset()).
@@ -485,10 +488,11 @@ parse_rpc(#raft_identity{name = Name} = Self, ?LEGACY_RAFT_RPC(Procedure, Term, 
 
 -spec commit(
     Server :: gen_statem:server_ref(),
+    From :: gen_server:from(),
     Op :: wa_raft_acceptor:op()
 ) -> ok.
-commit(Server, Op) ->
-    gen_statem:cast(Server, ?COMMIT_COMMAND(Op)).
+commit(Server, From, Op) ->
+    gen_statem:cast(Server, ?COMMIT_COMMAND(From, Op)).
 
 -spec read(
     Server :: gen_statem:server_ref(),
@@ -1010,7 +1014,7 @@ leader(enter, PreviousStateName, #raft_state{self = Self, log_view = View0} = St
     % entry that will start the process of establishing the first
     % quorum in the new term by starting replication and clearing out
     % any log mismatches on follower replicas.
-    {State4, LogEntry} = get_log_entry(State3, {make_ref(), noop}),
+    {LogEntry, State4} = make_log_entry({make_ref(), noop}, State3),
     {ok, View1} = wa_raft_log:append(View0, [LogEntry]),
     TermStartIndex = wa_raft_log:last_index(View1),
     State5 = State4#raft_state{log_view = View1, first_current_term_log_index = TermStartIndex},
@@ -1183,27 +1187,27 @@ leader(state_timeout, _, #raft_state{application = App} = State0) ->
 %% [Commit] If a handover is in progress, then try to redirect to handover target
 leader(
     cast,
-    ?COMMIT_COMMAND({Reference, _}),
+    ?COMMIT_COMMAND(From, _),
     #raft_state{
         queues = Queues,
         handover = {Peer, _, _}
     } = State
 ) ->
     ?RAFT_COUNT('raft.commit.handover'),
-    wa_raft_queue:fulfill_incomplete_commit(Queues, Reference, {error, {notify_redirect, Peer}}), % Optimistically redirect to handover peer
+    wa_raft_queue:commit_cancelled(Queues, From, {error, {notify_redirect, Peer}}), % Optimistically redirect to handover peer
     {keep_state, State};
 
 %% [Commit] Otherwise, add a new commit to the RAFT log
 leader(
     cast,
-    ?COMMIT_COMMAND(Op),
+    ?COMMIT_COMMAND(From, Op),
     #raft_state{
         application = App,
         pending = Pending
     } = State0
 ) ->
     ?RAFT_COUNT('raft.commit'),
-    State1 = apply_single_node_cluster(State0#raft_state{pending = [Op | Pending]}), % apply immediately for single node cluster
+    State1 = apply_single_node_cluster(State0#raft_state{pending = [{From, Op} | Pending]}), % apply immediately for single node cluster
     PendingCount = length(State1#raft_state.pending),
     case ?RAFT_COMMIT_BATCH_INTERVAL(App) > 0 andalso PendingCount =< ?RAFT_COMMIT_BATCH_MAX_ENTRIES(App) of
         true ->
@@ -1312,7 +1316,7 @@ leader(
                                     % attempt to change the config. We heartbeat immediately to make the change as
                                     % soon as possible.
                                     Op = {make_ref(), {config, NewConfig}},
-                                    {State1, LogEntry} = get_log_entry(State0, Op),
+                                    {LogEntry, State1} = make_log_entry(Op, State0),
                                     {ok, View1} = wa_raft_log:append(View0, [LogEntry]),
                                     LogIndex = wa_raft_log:last_index(View1),
                                     ?RAFT_LOG_NOTICE(State1, "appended configuration change from ~0p to ~0p at log index ~0p.", [Config, NewConfig, LogIndex]),
@@ -1901,14 +1905,14 @@ witness(Type, Event, #raft_state{} = State) ->
 command(
     State,
     cast,
-    ?COMMIT_COMMAND({Key, _}),
+    ?COMMIT_COMMAND(From, _),
     #raft_state{
         queues = Queues,
         leader_id = LeaderId
     } = Data
 ) when State =/= leader ->
-    ?RAFT_LOG_WARNING(State, Data, "commit with key ~0p fails. Leader is ~0p.", [Key, LeaderId]),
-    wa_raft_queue:fulfill_incomplete_commit(Queues, Key, {error, not_leader}),
+    ?RAFT_LOG_WARNING(State, Data, "commit fails as leader is currently ~0p.", [LeaderId]),
+    wa_raft_queue:commit_cancelled(Queues, From, {error, not_leader}),
     keep_state_and_data;
 
 %% [Strong Read] Non-leader nodes are not eligible for strong reads.
@@ -1938,7 +1942,7 @@ command(
         0 ->
             NewState = case State of
                 leader -> apply_log_leader(Data);
-                _ -> apply_log_follower(State, infinity, Data)
+                _ -> apply_log(State, infinity, Data)
             end,
             {keep_state, NewState};
         _ ->
@@ -1960,6 +1964,9 @@ command(State, {call, From}, ?STATUS_COMMAND, #raft_state{} = Data) ->
         {commit_index, Data#raft_state.commit_index},
         {last_applied, Data#raft_state.last_applied},
         {leader_id, Data#raft_state.leader_id},
+        {pending, length(Data#raft_state.pending)},
+        {pending_read, Data#raft_state.pending_read},
+        {queued, maps:size(Data#raft_state.queued)},
         {next_indices, Data#raft_state.next_indices},
         {match_indices, Data#raft_state.match_indices},
         {log_module, wa_raft_log:provider(Data#raft_state.log_view)},
@@ -2291,13 +2298,10 @@ load_label_state(_) ->
 -spec maybe_update_config(
     Index :: wa_raft_log:log_index(),
     Term :: wa_raft_log:log_term(),
-    Op :: wa_raft_log:log_op() | undefined,
+    Op :: wa_raft_acceptor:command(),
     State :: #raft_state{}
 ) -> NewState :: #raft_state{}.
-maybe_update_config(Index, _, {_, {config, Config}}, #raft_state{table = Table, partition = Partition} = State) ->
-    wa_raft_info:set_membership(Table, Partition, maps:get(membership, Config, [])),
-    State#raft_state{cached_config = {Index, Config}};
-maybe_update_config(Index, _, {_, _, {config, Config}}, #raft_state{table = Table, partition = Partition} = State) ->
+maybe_update_config(Index, _, {config, Config}, #raft_state{table = Table, partition = Partition} = State) ->
     wa_raft_info:set_membership(Table, Partition, maps:get(membership, Config, [])),
     State#raft_state{cached_config = {Index, Config}};
 maybe_update_config(_, _, _, #raft_state{} = State) ->
@@ -2324,20 +2328,47 @@ random_election_timeout(#raft_state{application = App}) ->
             Timeout * ?RAFT_ELECTION_DEFAULT_WEIGHT
     end.
 
--spec get_log_entry(State0 :: #raft_state{}, Op :: wa_raft_acceptor:op()) -> {State1 :: #raft_state{}, LogEntry :: wa_raft_log:log_entry()}.
-get_log_entry(#raft_state{current_term = CurrentTerm, label_module = undefined} = State0, Op) ->
-    {State0, {CurrentTerm, Op}};
-get_log_entry(#raft_state{current_term = CurrentTerm, last_label = undefined} = State0, {_, noop} = Op) ->
-    {State0, {CurrentTerm, Op}};
-get_log_entry(#raft_state{current_term = CurrentTerm, last_label = LastLabel} = State0, {Ref, noop}) ->
-    {State0, {CurrentTerm, {Ref, LastLabel, noop}}};
-get_log_entry(#raft_state{current_term = CurrentTerm, last_label = undefined} = State0, {_, {config, _}} = Op) ->
-    {State0, {CurrentTerm, Op}};
-get_log_entry(#raft_state{current_term = CurrentTerm, last_label = LastLabel} = State0, {Ref, {config, _} = Command}) ->
-    {State0, {CurrentTerm, {Ref, LastLabel, Command}}};
-get_log_entry(#raft_state{current_term = CurrentTerm, label_module = LabelModule, last_label = LastLabel} = State0, {Ref, Command}) ->
-    NewLabel = LabelModule:new_label(LastLabel, Command),
-    {State0#raft_state{last_label = NewLabel}, {CurrentTerm, {Ref, NewLabel, Command}}}.
+-spec make_log_entry(Op :: wa_raft_acceptor:op(), Data :: #raft_state{}) -> {wa_raft_log:log_entry(), #raft_state{}}.
+make_log_entry(Op, #raft_state{last_label = LastLabel} = Data) ->
+    {Entry, NewLabel} = make_log_entry_impl(Op, LastLabel, Data),
+    {Entry, Data#raft_state{last_label = NewLabel}}.
+
+-spec make_log_entry_impl(
+    Op :: wa_raft_acceptor:op(),
+    Data :: #raft_state{}
+) -> {wa_raft_log:log_entry(), wa_raft_label:label() | undefined}.
+make_log_entry_impl(Op, #raft_state{last_label = LastLabel} = Data) ->
+    make_log_entry_impl(Op, LastLabel, Data).
+
+-spec make_log_entry_impl(
+    Op :: wa_raft_acceptor:op(),
+    LastLabel :: wa_raft_label:label() | undefined,
+    Data :: #raft_state{}
+) -> {wa_raft_log:log_entry(), wa_raft_label:label() | undefined}.
+make_log_entry_impl({Key, Command}, LastLabel, #raft_state{label_module = undefined} = Data) ->
+    {make_log_entry_impl(Key, LastLabel, Command, Data), LastLabel};
+make_log_entry_impl({Key, Command}, LastLabel, #raft_state{label_module = LabelModule} = Data) ->
+    NewLabel = case requires_new_label(Command) of
+        true -> LabelModule:new_label(LastLabel, Command);
+        false -> LastLabel
+    end,
+    {make_log_entry_impl(Key, NewLabel, Command, Data), NewLabel}.
+
+-spec make_log_entry_impl(
+    Key :: wa_raft_acceptor:key(),
+    Label :: wa_raft_label:label() | undefined,
+    Command :: wa_raft_acceptor:command(),
+    Data :: #raft_state{}
+) -> wa_raft_log:log_entry().
+make_log_entry_impl(Key, undefined, Command, #raft_state{current_term = CurrentTerm}) ->
+    {CurrentTerm, {Key, Command}};
+make_log_entry_impl(Key, Label, Command, #raft_state{current_term = CurrentTerm}) ->
+    {CurrentTerm, {Key, Label, Command}}.
+
+-spec requires_new_label(Command :: wa_raft_acceptor:command()) -> boolean().
+requires_new_label(noop) -> false;
+requires_new_label({config, _}) -> false;
+requires_new_label(_) -> true.
 
 -spec apply_single_node_cluster(Data :: #raft_state{}) -> #raft_state{}.
 apply_single_node_cluster(#raft_state{self = Self} = Data0) ->
@@ -2427,30 +2458,19 @@ compute_quorum([_|_] = Values) ->
 apply_log_leader(
     #raft_state{
         last_applied = LastApplied,
-        current_term = CurrentTerm,
         match_indices = MatchIndices
     } = Data
 ) ->
     TrimIndex = lists:min(to_member_list(MatchIndices#{node() => LastApplied}, 0, config(Data))),
-    apply_log(leader, CurrentTerm, TrimIndex, Data).
-
--spec apply_log_follower(
-    State :: state(),
-    TrimIndex :: wa_raft_log:log_index() | infinity,
-    Data :: #raft_state{}
-) -> #raft_state{}.
-apply_log_follower(State, TrimIndex, Data) ->
-    apply_log(State, undefined, TrimIndex, Data).
+    apply_log(leader, TrimIndex, Data).
 
 -spec apply_log(
     State :: state(),
-    EffectiveTerm :: wa_raft_log:log_term() | undefined,
     TrimIndex :: wa_raft_log:log_index() | infinity,
     Data :: #raft_state{}
 ) -> #raft_state{}.
 apply_log(
     State,
-    EffectiveTerm,
     TrimIndex,
     #raft_state{
         application = App,
@@ -2469,7 +2489,7 @@ apply_log(
             {ok, {_, #raft_state{log_view = View1, last_applied = NewLastApplied} = Data1}} = wa_raft_log:fold(View, LastApplied + 1, LimitedIndex, LimitBytes,
                 fun (Index, Size, Entry, {Index, AccData}) ->
                     wa_raft_queue:reserve_apply(Queues, Size),
-                    {Index + 1, apply_op(State, Index, Size, Entry, EffectiveTerm, AccData)}
+                    {Index + 1, apply_op(State, Index, Size, Entry, AccData)}
                 end, {LastApplied + 1, Data0}),
 
             % Perform log trimming since we've now applied some log entries, only keeping
@@ -2488,7 +2508,7 @@ apply_log(
             ?RAFT_GATHER('raft.apply_log.latency_us', timer:now_diff(os:timestamp(), StartT)),
             Data0
     end;
-apply_log(_, _, _, #raft_state{} = Data) ->
+apply_log(_, _, #raft_state{} = Data) ->
     Data.
 
 -spec apply_op(
@@ -2496,27 +2516,43 @@ apply_log(_, _, _, #raft_state{} = Data) ->
     Index :: wa_raft_log:log_index(),
     Size :: non_neg_integer(),
     Entry :: wa_raft_log:log_entry() | undefined,
-    EffectiveTerm :: wa_raft_log:log_term() | undefined,
     Data :: #raft_state{}
 ) -> #raft_state{}.
-apply_op(State, LogIndex, _, _, _, #raft_state{last_applied = LastApplied} = Data) when LogIndex =< LastApplied ->
+apply_op(State, LogIndex, _, _, #raft_state{last_applied = LastApplied} = Data) when LogIndex =< LastApplied ->
     ?RAFT_LOG_WARNING(State, Data, "is skipping applying log entry ~0p because log entries up to ~0p are already applied.", [LogIndex, LastApplied]),
     Data;
-apply_op(_, LogIndex, Size, {Term, {Ref, Command} = Op}, EffectiveTerm, #raft_state{storage = Storage} = Data) ->
-    wa_raft_storage:apply(Storage, {LogIndex, {Term, {Ref, undefined, Command}}}, Size, EffectiveTerm),
-    maybe_update_config(LogIndex, Term, Op, Data#raft_state{last_applied = LogIndex});
-apply_op(_, LogIndex, Size, {Term, {_, _, _} = Op}, EffectiveTerm, #raft_state{storage = Storage} = Data) ->
-    wa_raft_storage:apply(Storage, {LogIndex, {Term, Op}}, Size, EffectiveTerm),
-    maybe_update_config(LogIndex, Term, Op, Data#raft_state{last_applied = LogIndex});
-apply_op(State, LogIndex, _, undefined, _, #raft_state{log_view = View} = Data) ->
+apply_op(_, Index, Size, {Term, {Key, Command}}, #raft_state{} = Data) ->
+    Record = {Index, {Term, {Key, undefined, Command}}},
+    NewData = send_op_to_storage(Index, Record, Size, Data),
+    maybe_update_config(Index, Term, Command, NewData);
+apply_op(_, Index, Size, {Term, {_, _, Command}} = Entry, #raft_state{} = Data) ->
+    Record = {Index, Entry},
+    NewData = send_op_to_storage(Index, Record, Size, Data),
+    maybe_update_config(Index, Term, Command, NewData);
+apply_op(State, LogIndex, _, undefined, #raft_state{log_view = View} = Data) ->
     ?RAFT_COUNT('raft.server.missing.log.entry'),
     ?RAFT_LOG_ERROR(State, Data, "failed to apply ~0p because log entry is missing from log covering ~0p to ~0p.",
         [LogIndex, wa_raft_log:first_index(View), wa_raft_log:last_index(View)]),
     exit({invalid_op, LogIndex});
-apply_op(State, LogIndex, _, Entry, _, #raft_state{} = Data) ->
+apply_op(State, LogIndex, _, Entry, #raft_state{} = Data) ->
     ?RAFT_COUNT('raft.server.corrupted.log.entry'),
     ?RAFT_LOG_ERROR(State, Data, "failed to apply unrecognized entry ~0P at ~0p.", [Entry, 20, LogIndex]),
     exit({invalid_op, LogIndex, Entry}).
+
+-spec send_op_to_storage(
+    Index :: wa_raft_log:log_index(),
+    Record :: wa_raft_log:log_record(),
+    Size :: non_neg_integer(),
+    Data :: #raft_state{}
+) -> #raft_state{}.
+send_op_to_storage(Index, Record, Size, #raft_state{storage = Storage, queued = Queued} = Data) ->
+    {From, NewQueued} =
+        case maps:take(Index, Queued) of
+            error -> {undefined, Queued};
+            Value -> Value
+        end,
+    wa_raft_storage:apply(Storage, From, Record, Size),
+    Data#raft_state{last_applied = Index, queued = NewQueued}.
 
 %%------------------------------------------------------------------------------
 %% RAFT Server - State Machine Implementation - State Management
@@ -2638,50 +2674,66 @@ append_entries_to_followers(Data0) ->
 -spec commit_pending(Data :: #raft_state{}) -> #raft_state{}.
 commit_pending(#raft_state{pending = [], pending_read = false} = Data) ->
     Data;
-commit_pending(#raft_state{log_view = View} = Data0) ->
-    {Entries, Data1} = collect_pending(Data0),
+commit_pending(#raft_state{log_view = View, pending = Pending, queued = Queued} = Data) ->
+    {Entries, NewLabel} = collect_pending(Data),
     case wa_raft_log:try_append(View, Entries) of
         {ok, NewView} ->
+            % Add the newly appended log entries to the pending queue (which
+            % is kept in reverse order).
+            Last = wa_raft_log:last_index(NewView),
+            {_, NewQueued} =
+                lists:foldl(
+                    fun ({From, _}, {Index, AccQueued}) ->
+                        {Index - 1, AccQueued#{Index => From}}
+                    end,
+                    {Last, Queued},
+                    Pending
+                ),
             % We can clear pending read flag as we've successfully added at
             % least one new log entry so the leader will proceed to replicate
             % and establish a new quorum is it is still up to date.
-            Data1#raft_state{log_view = NewView, pending = [], pending_read = false};
+            Data#raft_state{
+                log_view = NewView,
+                last_label = NewLabel,
+                pending = [],
+                pending_read = false,
+                queued = NewQueued
+            };
         skipped ->
-            % Since the append failed, we roll back the label state to before
-            % we constructed the entries.
-            ?RAFT_LOG_WARNING(leader, Data0, "skipped pre-heartbeat sync for ~0p log entr(ies).", [length(Entries)]),
-            cancel_pending({error, commit_stalled}, Data0);
+            % Since the append failed, we do not advance to the new label.
+            ?RAFT_LOG_WARNING(leader, Data, "skipped pre-heartbeat sync for ~0p log entr(ies).", [length(Entries)]),
+            cancel_pending({error, commit_stalled}, Data);
         {error, Error} ->
-            ?RAFT_LOG_ERROR(leader, Data0, "sync failed due to ~0P.", [Error, 20]),
+            ?RAFT_LOG_ERROR(leader, Data, "sync failed due to ~0P.", [Error, 20]),
             error(Error)
     end.
 
--spec collect_pending(Data :: #raft_state{}) -> {[wa_raft_log:log_entry()], #raft_state{}}.
+-spec collect_pending(Data :: #raft_state{}) -> {[wa_raft_log:log_entry()], wa_raft_label:label() | undefined}.
 collect_pending(#raft_state{pending = [], pending_read = true} = Data) ->
     % If the pending queue is empty, then we have at least one pending
     % read but no commits to go along with it.
-    {NewData, ReadEntry} = get_log_entry(Data, {?READ_OP, noop}),
-    {[ReadEntry], NewData};
-collect_pending(#raft_state{pending = Pending} = Data) ->
+    {ReadEntry, NewLabel} = make_log_entry_impl({?READ_OP, noop}, Data),
+    {[ReadEntry], NewLabel};
+collect_pending(#raft_state{last_label = LastLabel, pending = Pending} = Data) ->
     % Otherwise, the pending queue is kept in reverse order so fold
     % from the right to ensure that the log entries are labeled
     % in the correct order.
-    {Entries, NewData} = lists:foldr(
-        fun (Op, {AccEntries, AccData}) ->
-            {NewAccData, Entry} = get_log_entry(AccData, Op),
-            {[Entry | AccEntries], NewAccData}
+    {Entries, NewLabel} = lists:foldr(
+        fun ({_, Op}, {AccEntries, AccLabel}) ->
+            {Entry, NewAccLabel} = make_log_entry_impl(Op, AccLabel, Data),
+            {[Entry | AccEntries], NewAccLabel}
         end,
-        {[], Data},
+        {[], LastLabel},
         Pending
     ),
-    {lists:reverse(Entries), NewData}.
+    {lists:reverse(Entries), NewLabel}.
 
 -spec cancel_pending(Reason :: wa_raft_acceptor:commit_error(), Data :: #raft_state{}) -> #raft_state{}.
 cancel_pending(_, #raft_state{pending = []} = Data) ->
     Data;
 cancel_pending(Reason, #raft_state{queues = Queues, pending = Pending} = Data) ->
     % Pending commits are kept in reverse order.
-    [wa_raft_queue:fulfill_incomplete_commit(Queues, Reference, Reason) || {Reference, _} <- lists:reverse(Pending)],
+    [wa_raft_queue:commit_cancelled(Queues, From, Reason) || {From, _} <- lists:reverse(Pending)],
     Data#raft_state{pending = []}.
 
 -spec heartbeat(Peer :: #raft_identity{}, State :: #raft_state{}) -> #raft_state{}.
@@ -2857,12 +2909,14 @@ adjust_config(Action, Config, #raft_state{self = Self}) ->
 %%------------------------------------------------------------------------------
 
 -spec reset_log(Position :: wa_raft_log:log_pos(), Data :: #raft_state{}) -> #raft_state{}.
-reset_log(#raft_log_pos{index = Index} = Position, #raft_state{log_view = View} = Data) ->
+reset_log(#raft_log_pos{index = Index} = Position, #raft_state{queues = Queues, log_view = View, queued = Queued} = Data) ->
     {ok, NewView} = wa_raft_log:reset(View, Position),
+    [wa_raft_queue:commit_cancelled(Queues, From, {error, cancelled}) || _ := From <- maps:iterator(Queued, ordered)],
     NewData = Data#raft_state{
         log_view = NewView,
         last_applied = Index,
-        commit_index = Index
+        commit_index = Index,
+        queued = #{}
     },
     load_config(NewData).
 
@@ -2932,7 +2986,7 @@ handle_heartbeat(
                         false -> infinity
                     end,
                     NewCommitIndex = max(CommitIndex, min(LeaderCommitIndex, NewMatchIndex)),
-                    apply_log_follower(State, LocalTrimIndex, Data2#raft_state{commit_index = NewCommitIndex});
+                    apply_log(State, LocalTrimIndex, Data2#raft_state{commit_index = NewCommitIndex});
                 _ ->
                     Data2
             end,
@@ -2970,9 +3024,11 @@ append_entries(
     EntryCount,
     #raft_state{
         log_view = View0,
+        queues = Queues,
         commit_index = CommitIndex,
         current_term = CurrentTerm,
-        leader_id = LeaderId
+        leader_id = LeaderId,
+        queued = Queued
     } = Data
 ) ->
     % Compare the incoming heartbeat with the local log to determine what
@@ -3016,21 +3072,23 @@ append_entries(
         {conflict, ConflictIndex, NewEntries} when ConflictIndex >= PrevLogIndex ->
             % A truncation is required as there is a conflict between the local
             % log and the incoming heartbeat.
+            Last = wa_raft_log:last_index(View0),
             ?RAFT_LOG_NOTICE(State, Data, "handling heartbeat at ~0p by truncating local log ending at ~0p to past ~0p.",
-                [PrevLogIndex, wa_raft_log:last_index(View0), ConflictIndex]),
+                [PrevLogIndex, Last, ConflictIndex]),
             case wa_raft_log:truncate(View0, ConflictIndex) of
                 {ok, View1} ->
+                    NewQueued = cancel_queued(Queues, ConflictIndex, Last, {error, not_leader}, Queued),
                     case ConflictIndex =:= PrevLogIndex of
                         true ->
                             % If the conflict precedes the heartbeat's log
                             % entries then no append can be performed.
-                            {ok, false, wa_raft_log:last_index(View1), Data#raft_state{log_view = View1}};
+                            {ok, false, wa_raft_log:last_index(View1), Data#raft_state{log_view = View1, queued = NewQueued}};
                         false ->
                             % Otherwise, we can replace the truncated log
                             % entries with those from the current heartbeat.
                             case wa_raft_log:try_append(View1, NewEntries) of
                                 {ok, View2} ->
-                                    {ok, true, PrevLogIndex + EntryCount, Data#raft_state{log_view = View2}};
+                                    {ok, true, PrevLogIndex + EntryCount, Data#raft_state{log_view = View2, queued = NewQueued}};
                                 skipped ->
                                     NewCount = length(NewEntries),
                                     NewLast = wa_raft_log:last_index(View1),
@@ -3059,6 +3117,24 @@ append_entries(
             ?RAFT_LOG_WARNING(State, Data, "fails to check heartbeat at ~0p to ~0p for validity due to ~0P",
                 [PrevLogIndex, PrevLogIndex + EntryCount, Reason, 30]),
             {ok, false, wa_raft_log:last_index(View0), Data}
+    end.
+
+-spec cancel_queued(
+    Queues :: wa_raft_queue:queues(),
+    Start :: wa_raft_log:log_index(),
+    End :: wa_raft_log:log_index(),
+    Reason :: wa_raft_acceptor:commit_error() | undefined,
+    Queued :: #{wa_raft_log:log_index() => gen_server:from()}
+) -> #{wa_raft_log:log_index() => gen_server:from()}.
+cancel_queued(_, Start, End, _, Queued) when Start > End; Queued =:= #{} ->
+    Queued;
+cancel_queued(Queues, Start, End, Reason, Queued) ->
+    case maps:take(Start, Queued) of
+        {From, NewQueued} ->
+            wa_raft_queue:commit_cancelled(Queues, From, Reason),
+            cancel_queued(Queues, Start + 1, End, Reason, NewQueued);
+        error ->
+            cancel_queued(Queues, Start + 1, End, Reason, Queued)
     end.
 
 %%------------------------------------------------------------------------------

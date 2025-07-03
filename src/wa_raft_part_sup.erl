@@ -155,7 +155,6 @@ normalize_spec(Application, #{table := Table, partition := Partition} = Spec) ->
         log_catchup_name = wa_raft_log_catchup:default_name(Table, Partition),
         queue_name = wa_raft_queue:default_name(Table, Partition),
         queue_counters = wa_raft_queue:default_counters(),
-        queue_commits = wa_raft_queue:default_commit_queue_name(Table, Partition),
         queue_reads = wa_raft_queue:default_read_queue_name(Table, Partition),
         server_name = ServerName,
         storage_name = StorageName,

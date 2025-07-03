@@ -373,7 +373,6 @@
     % Queue options
     queue_name :: atom(),
     queue_counters :: atomics:atomics_ref(),
-    queue_commits :: atom(),
     queue_reads :: atom(),
 
     % Server options
@@ -463,10 +462,13 @@
     %%          that are in queue to be appended and replicated after a short
     %%          wait to see if multiple commits can be handled at once to
     %%          reduce overhead
-    pending = [] :: [wa_raft_acceptor:op()],
+    pending = [] :: [{gen_server:from(), wa_raft_acceptor:op()}],
     %% [Leader] Whether or not a read has been accepted and is waiting for the
     %%          leader to establish a new quorum to be handled.
     pending_read = false :: boolean(),
+    %% [Leader] The queue of accepted commit requests that are waiting to be
+    %%          committed and applied for response to the client.
+    queued = #{} :: #{wa_raft_log:log_index() => gen_server:from()},
     %% [Leader] The index of the next log entry to send in the next heartbeat
     %%          to each peer
     next_indices = #{} :: #{node() => wa_raft_log:log_index()},
