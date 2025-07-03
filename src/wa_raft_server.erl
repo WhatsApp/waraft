@@ -1032,10 +1032,8 @@ leader(
 ) when NewTerm > CurrentTerm ->
     ?RAFT_COUNT('raft.leader.advance_term'),
     ?RAFT_LOG_NOTICE(State0, "advancing to new term ~0p.", [NewTerm]),
-    %% Drop any pending log entries in the current batch before advancing
-    State1 = cancel_pending({error, not_leader}, State0),
-    State2 = advance_term(?FUNCTION_NAME, NewTerm, undefined, State1),
-    {next_state, follower_or_witness_state(State2), State2};
+    State1 = advance_term(?FUNCTION_NAME, NewTerm, undefined, State0),
+    {next_state, follower_or_witness_state(State1), State1};
 
 %% [Protocol] Parse any RPCs in network formats
 leader(Type, Event, #raft_state{} = State) when is_tuple(Event), element(1, Event) =:= rpc ->
@@ -1178,60 +1176,47 @@ leader(state_timeout, _, #raft_state{application = App} = State0) ->
             {keep_state, State1, ?HEARTBEAT_TIMEOUT(State2)};
         false ->
             ?RAFT_LOG_NOTICE(State0, "resigns from leadership because this node is ineligible.", []),
-            %% Drop any pending log entries queued in the log view before resigning
-            State1 = cancel_pending({error, not_leader}, State0),
-            State2 = clear_leader(?FUNCTION_NAME, State1),
-            {next_state, follower_or_witness_state(State2), State2}
+            State1 = clear_leader(?FUNCTION_NAME, State0),
+            {next_state, follower_or_witness_state(State1), State1}
     end;
 
-%% [Commit] If a handover is in progress, then try to redirect to handover target
-leader(
-    cast,
-    ?COMMIT_COMMAND(From, _),
-    #raft_state{
-        queues = Queues,
-        handover = {Peer, _, _}
-    } = State
-) ->
-    ?RAFT_COUNT('raft.commit.handover'),
-    wa_raft_queue:commit_cancelled(Queues, From, {error, {notify_redirect, Peer}}), % Optimistically redirect to handover peer
-    {keep_state, State};
-
-%% [Commit] Otherwise, add a new commit to the RAFT log
+%% [Commit]
+%%   Add a new commit request to the pending list. If the cluster consists only
+%%   of the local node, then immediately apply the commit. Otherwise, if a
+%%   handover is not in progress, then immediately append the pending list if
+%%   enough pending commit requests have accumulated.
 leader(
     cast,
     ?COMMIT_COMMAND(From, Op),
     #raft_state{
         application = App,
-        pending = Pending
+        pending = Pending,
+        handover = Handover
     } = State0
 ) ->
+    % No size limit is imposed here as the pending queue cannot grow larger
+    % than the limit on the number of pending commits.
     ?RAFT_COUNT('raft.commit'),
-    State1 = apply_single_node_cluster(State0#raft_state{pending = [{From, Op} | Pending]}), % apply immediately for single node cluster
-    PendingCount = length(State1#raft_state.pending),
-    case ?RAFT_COMMIT_BATCH_INTERVAL(App) > 0 andalso PendingCount =< ?RAFT_COMMIT_BATCH_MAX_ENTRIES(App) of
-        true ->
-            ?RAFT_COUNT('raft.commit.batch.delay'),
-            {keep_state, State1, ?COMMIT_BATCH_TIMEOUT(State1)};
-        false ->
-            State2 = append_entries_to_followers(State1),
-            {keep_state, State2, ?HEARTBEAT_TIMEOUT(State2)}
+    State1 = State0#raft_state{pending = [{From, Op} | Pending]},
+    case Handover of
+        undefined ->
+            State2 = apply_single_node_cluster(State1),
+            PendingCount = length(State2#raft_state.pending),
+            case ?RAFT_COMMIT_BATCH_INTERVAL(App) > 0 andalso PendingCount =< ?RAFT_COMMIT_BATCH_MAX_ENTRIES(App) of
+                true ->
+                    ?RAFT_COUNT('raft.commit.batch.delay'),
+                    {keep_state, State2, ?COMMIT_BATCH_TIMEOUT(State2)};
+                false ->
+                    State3 = append_entries_to_followers(State2),
+                    {keep_state, State3, ?HEARTBEAT_TIMEOUT(State3)}
+            end;
+        _ ->
+            {keep_state, State1}
     end;
 
-%% [Strong Read] If a handover is in progress, then try to redirect to handover target
-leader(
-    cast,
-    ?READ_COMMAND({From, _}),
-    #raft_state{
-        queues = Queues,
-        handover = {Peer, _, _}
-    } = State
-) ->
-    ?RAFT_COUNT('raft.read.handover'),
-    wa_raft_queue:fulfill_incomplete_read(Queues, From, {error, {notify_redirect, Peer}}), % Optimistically redirect to handover peer
-    {keep_state, State};
-
-%% [Strong Read] Leader is eligible to serve strong reads.
+%% [Strong Read]
+%%   For an incoming read request, record the effective index for which it must
+%%   be executed after.
 leader(
     cast,
     ?READ_COMMAND({From, Command}),
@@ -1262,10 +1247,8 @@ leader(
 %% [Resign] Leader resigns by switching to follower state.
 leader({call, From}, ?RESIGN_COMMAND, #raft_state{} = State0) ->
     ?RAFT_LOG_NOTICE(State0, "resigns.", []),
-    %% Drop any pending log entries queued in the log view before resigning
-    State1 = cancel_pending({error, not_leader}, State0),
-    State2 = clear_leader(?FUNCTION_NAME, State1),
-    {next_state, follower_or_witness_state(State2), State2, {reply, From, ok}};
+    State1 = clear_leader(?FUNCTION_NAME, State0),
+    {next_state, follower_or_witness_state(State1), State1, {reply, From, ok}};
 
 %% [Adjust Membership] Leader attempts to commit a single-node membership change.
 leader(
@@ -2567,12 +2550,15 @@ set_leader(
     #raft_state{
         table = Table,
         partition = Partition,
+        storage = Storage,
         current_term = CurrentTerm
     } = Data
 ) ->
     ?RAFT_LOG_NOTICE(State, Data, "changes leader to ~0p.", [Node]),
     wa_raft_info:set_current_term_and_leader(Table, Partition, CurrentTerm, Node),
-    Data#raft_state{leader_id = Node}.
+    NewData = Data#raft_state{leader_id = Node, pending_read = false},
+    wa_raft_storage:cancel(Storage),
+    cancel_pending({error, not_leader}, NewData).
 
 -spec clear_leader(state(), #raft_state{}) -> #raft_state{}.
 clear_leader(_, #raft_state{leader_id = undefined} = Data) ->
@@ -2584,12 +2570,11 @@ clear_leader(State, #raft_state{table = Table, partition = Partition, current_te
 
 %% Setup the RAFT state upon entry into a new RAFT server state.
 -spec enter_state(State :: state(), Data :: #raft_state{}) -> #raft_state{}.
-enter_state(State, #raft_state{table = Table, partition = Partition, storage = Storage} = Data0) ->
+enter_state(State, #raft_state{table = Table, partition = Partition} = Data0) ->
     Now = erlang:monotonic_time(millisecond),
     Data1 = Data0#raft_state{state_start_ts = Now},
     true = wa_raft_info:set_state(Table, Partition, State),
     ok = check_stale_upon_entry(State, Now, Data1),
-    ok = wa_raft_storage:cancel(Storage),
     Data1.
 
 -spec check_stale_upon_entry(State :: state(), Now :: integer(), Data :: #raft_state{}) -> ok.
@@ -2648,8 +2633,6 @@ advance_term(
         current_term = NewTerm,
         voted_for = VotedFor,
         votes = #{},
-        pending = [],
-        pending_read = false,
         next_indices = #{},
         match_indices = #{},
         last_applied_indices = #{},
