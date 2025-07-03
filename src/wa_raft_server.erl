@@ -2145,6 +2145,10 @@ command(
     wa_raft_durable_state:store(Data2),
     {next_state, disabled, Data2, {reply, From, ok}};
 
+%% [Bootstrap] Non-stalled nodes are already bootstrapped.
+command(_State, {call, From}, ?BOOTSTRAP_COMMAND(_Position, _Config, _Data), #raft_state{}) ->
+    {keep_state_and_data, {reply, From, {error, already_bootstrapped}}};
+
 %% [Fallback] Drop unknown command calls.
 command(State, Type, Event, #raft_state{} = Data) ->
     ?RAFT_LOG_NOTICE(State, Data, "dropping unhandled ~0p command ~0P", [Type, Event, 20]),
