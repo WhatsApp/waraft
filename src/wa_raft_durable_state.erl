@@ -8,8 +8,8 @@
 -module(wa_raft_durable_state).
 -compile(warn_missing_spec_all).
 
--include_lib("kernel/include/logger.hrl").
 -include_lib("wa_raft/include/wa_raft.hrl").
+-include_lib("wa_raft/include/wa_raft_logger.hrl").
 
 -export([
     load/1,
@@ -34,8 +34,7 @@ load(#raft_state{name = Name, partition_path = PartitionPath} = State) ->
                             fun ({Item, Validator, Updater, Default}, StateN) ->
                                     case proplists:lookup(Item, StateTerms) of
                                         none when Default =:= required ->
-                                            ?LOG_ERROR("~p read state file but cannot find ~p.",
-                                                [Name, Item], #{domain => [whatsapp, wa_raft]}),
+                                            ?RAFT_LOG_ERROR("~p read state file but cannot find ~p.", [Name, Item]),
                                             throw({error, {missing, Item}});
                                         none ->
                                             Updater(Default, StateN);
@@ -44,8 +43,7 @@ load(#raft_state{name = Name, partition_path = PartitionPath} = State) ->
                                                 true ->
                                                     Updater(Value, StateN);
                                                 false ->
-                                                    ?LOG_ERROR("~p read state file but ~p has an invalid value `~p`.",
-                                                        [Name, Item, Value], #{domain => [whatsapp, wa_raft]}),
+                                                    ?RAFT_LOG_ERROR("~p read state file but ~p has an invalid value `~p`.", [Name, Item, Value]),
                                                     throw({error, {invalid, Item}})
                                             end
                                     end
@@ -54,18 +52,17 @@ load(#raft_state{name = Name, partition_path = PartitionPath} = State) ->
                         throw:{error, Reason} -> {error, Reason}
                     end;
                 InvalidCRC ->
-                    ?LOG_ERROR("~p read state file but CRCs did not match. (saved crc: ~p, computed crc: ~p)",
-                        [Name, InvalidCRC, CRC], #{domain => [whatsapp, wa_raft]}),
+                    ?RAFT_LOG_ERROR("~p read state file but CRCs did not match. (saved crc: ~p, computed crc: ~p)", [Name, InvalidCRC, CRC]),
                     {error, invalid_crc}
             end;
         {ok, _} ->
-            ?LOG_ERROR("~p read state file but no CRC was found", [Name], #{domain => [whatsapp, wa_raft]}),
+            ?RAFT_LOG_ERROR("~p read state file but no CRC was found", [Name]),
             {error, no_crc};
         {error, enoent} ->
-            ?LOG_NOTICE("~p is not loading non-existant state file.", [Name], #{domain => [whatsapp, wa_raft]}),
+            ?RAFT_LOG_NOTICE("~p is not loading non-existant state file.", [Name]),
             no_state;
         {error, Reason} ->
-            ?LOG_ERROR("~p could not read state file due to ~p.", [Name, Reason], #{domain => [whatsapp, wa_raft]}),
+            ?RAFT_LOG_ERROR("~p could not read state file due to ~p.", [Name, Reason]),
             {error, Reason}
     end.
 
@@ -89,17 +86,17 @@ store(#raft_state{name = Name, partition_path = PartitionPath, current_term = Cu
                             ok;
                         {error, Reason} ->
                             ?RAFT_COUNT({'raft.server.persist_state.error.rename', Reason}),
-                            ?LOG_ERROR("~p failed to rename temporary state file due to ~p.", [Name, Reason], #{domain => [whatsapp, wa_raft]}),
+                            ?RAFT_LOG_ERROR("~p failed to rename temporary state file due to ~p.", [Name, Reason]),
                             {error, {rename, Reason}}
                     end;
                 {error, Reason} ->
                     ?RAFT_COUNT({'raft.server.persist_state.error.write', Reason}),
-                    ?LOG_ERROR("~p failed to write current state to temporary file due to ~p.", [Name, Reason], #{domain => [whatsapp, wa_raft]}),
+                    ?RAFT_LOG_ERROR("~p failed to write current state to temporary file due to ~p.", [Name, Reason]),
                     {error, {write, Reason}}
             end;
         {error, Reason} ->
             ?RAFT_COUNT({'raft.server.persist_state.error.ensure_dir', Reason}),
-            ?LOG_ERROR("~p failed to ensure directory exists due to ~p.", [Name, Reason], #{domain => [whatsapp, wa_raft]}),
+            ?RAFT_LOG_ERROR("~p failed to ensure directory exists due to ~p.", [Name, Reason]),
             {error, {ensure_dir, Reason}}
     end.
 

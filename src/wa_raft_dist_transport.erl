@@ -27,8 +27,8 @@
     terminate/2
 ]).
 
--include_lib("kernel/include/logger.hrl").
 -include_lib("wa_raft/include/wa_raft.hrl").
+-include_lib("wa_raft/include/wa_raft_logger.hrl").
 
 -record(sender_state, {
 }).
@@ -58,8 +58,7 @@ transport_init(_Node) ->
     {ok, NewState :: #sender_state{}} |
     {stop, Reason :: term(), NewState :: #sender_state{}}.
 transport_send(ID, FileID, State) ->
-    ?LOG_DEBUG("wa_raft_dist_transport starting to send file ~p/~p",
-        [ID, FileID], #{domain => [whatsapp, wa_raft]}),
+    ?RAFT_LOG_DEBUG("wa_raft_dist_transport starting to send file ~p/~p", [ID, FileID]),
     case wa_raft_transport:transport_info(ID) of
         {ok, #{peer := Peer}} ->
             case wa_raft_transport:file_info(ID, FileID) of
@@ -78,8 +77,10 @@ transport_send(ID, FileID, State) ->
                                 prim_file:close(Fd)
                             end;
                         {error, Reason} ->
-                            ?LOG_ERROR("wa_raft_dist_transport failed to open file ~p/~p (~s) due to ~p",
-                                [ID, FileID, File, Reason], #{domain => [whatsapp, wa_raft]}),
+                            ?RAFT_LOG_ERROR(
+                                "wa_raft_dist_transport failed to open file ~p/~p (~s) due to ~p",
+                                [ID, FileID, File, Reason]
+                            ),
                             {stop, {failed_to_open_file, ID, FileID, Reason}, State}
                     end;
                 _ ->
@@ -121,16 +122,13 @@ transport_send_loop(ID, FileID, Fd, Offset, Peer, [RequestId | Chunks], ChunkSiz
         {reply, ok} ->
             transport_send_loop(ID, FileID, Fd, Offset, Peer, Chunks, ChunkSize, MaxInflight, State);
         {reply, {error, Reason}} ->
-            ?LOG_ERROR("wa_raft_dist_transport failed to send file ~p/~p due to receiver error ~p",
-                [ID, FileID, Reason], #{domain => [whatsapp, wa_raft]}),
+            ?RAFT_LOG_ERROR("wa_raft_dist_transport failed to send file ~p/~p due to receiver error ~p", [ID, FileID, Reason]),
             {error, {receiver_error, ID, FileID, Reason}, State};
         timeout ->
-            ?LOG_ERROR("wa_raft_dist_transport timed out while sending file ~p/~p",
-                [ID, FileID], #{domain => [whatsapp, wa_raft]}),
+            ?RAFT_LOG_ERROR("wa_raft_dist_transport timed out while sending file ~p/~p", [ID, FileID]),
             {error, {send_timed_out, ID, FileID}, State};
         {error, {Reason, _}} ->
-            ?LOG_ERROR("wa_raft_dist_transport failed to send file ~p/~p due to ~p",
-                [ID, FileID, Reason], #{domain => [whatsapp, wa_raft]}),
+            ?RAFT_LOG_ERROR("wa_raft_dist_transport failed to send file ~p/~p due to ~p", [ID, FileID, Reason]),
             {error, {send_failed, ID, FileID, Reason}, State}
     end;
 transport_send_loop(ID, FileID, Fd, Offset, Peer, Chunks, ChunkSize, MaxInflight, State) when is_integer(Offset) ->
@@ -145,8 +143,7 @@ transport_send_loop(ID, FileID, Fd, Offset, Peer, Chunks, ChunkSize, MaxInflight
         eof ->
             transport_send_loop(ID, FileID, Fd, eof, Peer, Chunks, ChunkSize, MaxInflight, State);
         {error, Reason} ->
-            ?LOG_ERROR("wa_raft_dist_transport failed to read file ~p/~p due to ~p",
-                [ID, FileID, Reason], #{domain => [whatsapp, wa_raft]}),
+            ?RAFT_LOG_ERROR("wa_raft_dist_transport failed to read file ~p/~p due to ~p", [ID, FileID, Reason]),
             {error, {read_failed, ID, FileID, Reason}, State}
     end.
 
@@ -170,19 +167,22 @@ handle_call({chunk, ID, FileID, Offset, Data}, _From, #receiver_state{} = State0
 
                     {ok, State1};
                 {error, Reason} ->
-                    ?LOG_WARNING("wa_raft_dist_transport receiver failed to write file chunk ~p/~p @ ~p due to ~p",
-                        [ID, FileID, Offset, Reason], #{domain => [whatsapp, wa_raft]}),
+                    ?RAFT_LOG_WARNING(
+                        "wa_raft_dist_transport receiver failed to write file chunk ~p/~p @ ~p due to ~p",
+                        [ID, FileID, Offset, Reason]
+                    ),
                     {{write_failed, Reason}, State1}
             end;
         {error, Reason, State1} ->
-            ?LOG_WARNING("wa_raft_dist_transport receiver failed to handle file chunk ~p/~p @ ~p due to open failing due to ~p",
-                [ID, FileID, Offset, Reason], #{domain => [whatsapp, wa_raft]}),
+            ?RAFT_LOG_WARNING(
+                "wa_raft_dist_transport receiver failed to handle file chunk ~p/~p @ ~p due to open failing due to ~p",
+                [ID, FileID, Offset, Reason]
+            ),
             {{open_failed, Reason}, State1}
     end,
     {reply, Reply, NewState};
 handle_call(Request, From, #receiver_state{} = State) ->
-    ?LOG_NOTICE("wa_raft_dist_transport got unrecognized call ~p from ~p",
-        [Request, From], #{domain => [whatsapp, wa_raft]}),
+    ?RAFT_LOG_NOTICE("wa_raft_dist_transport got unrecognized call ~p from ~p", [Request, From]),
     {noreply, State}.
 
 -spec handle_cast(Request, State :: #receiver_state{}) -> {noreply, NewState :: #receiver_state{}}
@@ -194,19 +194,19 @@ handle_cast({complete, ID, FileID}, #receiver_state{} = State0) ->
             wa_raft_transport:complete(ID, FileID, ok),
             {noreply, State2};
         {error, Reason, State1} ->
-            ?LOG_WARNING("wa_raft_dist_transport receiver failed to handle file complete ~p/~p due to open failing due to ~p",
-                [ID, FileID, Reason], #{domain => [whatsapp, wa_raft]}),
+            ?RAFT_LOG_WARNING(
+                "wa_raft_dist_transport receiver failed to handle file complete ~p/~p due to open failing due to ~p",
+                [ID, FileID, Reason]
+            ),
             {noreply, State1}
     end;
 handle_cast(Request, #receiver_state{} = State) ->
-    ?LOG_NOTICE("wa_raft_dist_transport got unrecognized cast ~p",
-        [Request], #{domain => [whatsapp, wa_raft]}),
+    ?RAFT_LOG_NOTICE("wa_raft_dist_transport got unrecognized cast ~p", [Request]),
     {noreply, State}.
 
 -spec terminate(Reason :: term(), State :: #receiver_state{}) -> term().
 terminate(Reason, #receiver_state{}) ->
-    ?LOG_NOTICE("wa_raft_dist_transport terminating due to ~p",
-        [Reason], #{domain => [whatsapp, wa_raft]}),
+    ?RAFT_LOG_NOTICE("wa_raft_dist_transport terminating due to ~p", [Reason]),
     ok.
 
 -spec open_file(ID :: wa_raft_transport:transport_id(), FileID :: wa_raft_transport:file_id(), State :: #receiver_state{}) ->
@@ -224,8 +224,10 @@ open_file(ID, FileID, #receiver_state{fds = Fds} = State0) ->
                             State1 = State0#receiver_state{fds = Fds#{{ID, FileID} => Fd}},
                             {ok, Fd, State1};
                         {error, Reason} ->
-                            ?LOG_WARNING("wa_raft_dist_transport receiver failed to open file ~p/~p (~p) due to ~p",
-                                [ID, FileID, File, Reason], #{domain => [whatsapp, wa_raft]}),
+                            ?RAFT_LOG_WARNING(
+                                "wa_raft_dist_transport receiver failed to open file ~p/~p (~p) due to ~p",
+                                [ID, FileID, File, Reason]
+                            ),
                             {error, {open_failed, Reason}, State0}
                     end;
                 _ ->

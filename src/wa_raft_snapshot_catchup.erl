@@ -10,8 +10,8 @@
 -compile(warn_missing_spec_all).
 -behaviour(gen_server).
 
--include_lib("kernel/include/logger.hrl").
 -include_lib("wa_raft/include/wa_raft.hrl").
+-include_lib("wa_raft/include/wa_raft_logger.hrl").
 
 % elp:ignore W0048 (no_dialyzer_attribute): improper list expected by gen interface
 -dialyzer({no_improper_lists, [handle_cast/2]}).
@@ -133,7 +133,7 @@ init_tables() ->
 handle_call(?WHICH_TRANSPORTS, _From, #state{transports = Transports} = State) ->
     {reply, [ID || #transport{id = ID} <- maps:values(Transports)], State};
 handle_call(Request, From, #state{} = State) ->
-    ?LOG_NOTICE("received unrecognized call ~P from ~0p", [Request, 25, From], #{domain => [whatsapp, wa_raft]}),
+    ?RAFT_LOG_NOTICE("received unrecognized call ~P from ~0p", [Request, 25, From]),
     {noreply, State}.
 
 -spec handle_cast(Request :: cast(), State :: #state{}) -> {noreply, #state{}}.
@@ -148,14 +148,18 @@ handle_cast(?CATCHUP(App, Name, Node, Table, Partition, Witness), State0) ->
                 {#raft_log_pos{index = Index, term = Term} = LogPos, Path} = create_snapshot(Table, Partition, Witness),
                 case wa_raft_transport:start_snapshot_transfer(Node, Table, Partition, LogPos, Path, Witness, infinity) of
                     {error, receiver_overloaded} ->
-                        ?LOG_NOTICE("destination node ~0p is overloaded, abort new transport for ~0p:~0p and try again later",
-                            [Node, Table, Partition], #{domain => [whatsapp, wa_raft]}),
+                        ?RAFT_LOG_NOTICE(
+                            "destination node ~0p is overloaded, abort new transport for ~0p:~0p and try again later",
+                            [Node, Table, Partition]
+                        ),
                         NewOverloadBackoff = Now + ?RAFT_SNAPSHOT_CATCHUP_OVERLOADED_BACKOFF_MS(App),
                         NewOverloadBackoffs = OverloadBackoffs#{Node => NewOverloadBackoff},
                         {noreply, State1#state{overload_backoffs = NewOverloadBackoffs}};
                     {ok, ID} ->
-                        ?LOG_NOTICE("started sending snapshot for ~0p:~0p at ~0p:~0p over transport ~0p",
-                            [Table, Partition, Index, Term, ID], #{domain => [whatsapp, wa_raft]}),
+                        ?RAFT_LOG_NOTICE(
+                            "started sending snapshot for ~0p:~0p at ~0p:~0p over transport ~0p",
+                            [Table, Partition, Index, Term, ID]
+                        ),
                         NewTransport = #transport{
                             app = App,
                             table = Table,
@@ -169,15 +173,17 @@ handle_cast(?CATCHUP(App, Name, Node, Table, Partition, Witness), State0) ->
                 end
             catch
                 _T:_E:S ->
-                    ?LOG_ERROR("failed to start accepted snapshot transport of ~0p:~0p to ~0p at ~p",
-                        [Table, Partition, Node, S], #{domain => [whatsapp, wa_raft]}),
+                    ?RAFT_LOG_ERROR(
+                        "failed to start accepted snapshot transport of ~0p:~0p to ~0p at ~p",
+                        [Table, Partition, Node, S]
+                    ),
                     {noreply, State1}
             end;
         {false, State1} ->
             {noreply, State1}
     end;
 handle_cast(Request, #state{} = State) ->
-    ?LOG_NOTICE("received unrecognized cast ~P", [Request, 25], #{domain => [whatsapp, wa_raft]}),
+    ?RAFT_LOG_NOTICE("received unrecognized cast ~P", [Request, 25]),
     {noreply, State}.
 
 -spec handle_info(term(), #state{}) -> {noreply, #state{}}.
@@ -186,7 +192,7 @@ handle_info(scan, #state{transports = Transports} = State) ->
     schedule_scan(),
     {noreply, NewState};
 handle_info(Info, #state{} = State) ->
-    ?LOG_NOTICE("received unrecognized info ~P", [Info, 25], #{domain => [whatsapp, wa_raft]}),
+    ?RAFT_LOG_NOTICE("received unrecognized info ~P", [Info, 25]),
     {noreply, State}.
 
 -spec terminate(Reason :: term(), #state{}) -> term().

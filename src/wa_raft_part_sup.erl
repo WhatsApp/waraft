@@ -42,8 +42,8 @@
     prepare_spec/2
 ]).
 
--include_lib("kernel/include/logger.hrl").
 -include_lib("wa_raft/include/wa_raft.hrl").
+-include_lib("wa_raft/include/wa_raft_logger.hrl").
 
 %% Key in persistent_term for the options associated with a RAFT partition.
 -define(OPTIONS_KEY(Table, Partition), {?MODULE, Table, Partition}).
@@ -87,8 +87,10 @@ start_link(Application, Spec) ->
     %% result in any GC load. Warn if this is case.
     PrevOptions = persistent_term:get(?OPTIONS_KEY(Table, Partition), Options),
     PrevOptions =/= Options andalso
-        ?LOG_WARNING(?MODULE_STRING " storing changed options for RAFT partitition ~0p/~0p",
-            [Table, Partition], #{domain => [whatsapp, wa_raft]}),
+        ?RAFT_LOG_WARNING(
+            ?MODULE_STRING " storing changed options for RAFT partitition ~0p/~0p",
+            [Table, Partition]
+        ),
     ok = persistent_term:put(?OPTIONS_KEY(Table, Partition), Options),
 
     supervisor:start_link({local, Name}, ?MODULE, Options).

@@ -89,8 +89,8 @@
     view/0
 ]).
 
--include_lib("kernel/include/logger.hrl").
 -include_lib("wa_raft/include/wa_raft.hrl").
+-include_lib("wa_raft/include/wa_raft_logger.hrl").
 
 %% Atom indicating that the provider has not been opened yet.
 -define(PROVIDER_NOT_OPENED, '$not_opened').
@@ -606,8 +606,10 @@ get(LogOrView, Start, CountLimit, SizeLimit) ->
             {error, Reason}
     catch
         throw:{missing, Index} ->
-            ?LOG_WARNING("[~0p] detected missing log entry ~0p while folding range ~0p ~~ ~0p",
-                [log_name(LogOrView), Index, Start, End], #{domain => [whatsapp, wa_raft]}),
+            ?RAFT_LOG_WARNING(
+                "[~0p] detected missing log entry ~0p while folding range ~0p ~~ ~0p",
+                [log_name(LogOrView), Index, Start, End]
+            ),
             {error, corruption}
     end.
 
@@ -629,10 +631,9 @@ get_terms(LogOrView, Start, CountLimit) ->
             {error, Reason}
     catch
         throw:{missing, Index} ->
-            ?LOG_WARNING(
+            ?RAFT_LOG_WARNING(
                 "[~0p] detected missing log entry ~0p while folding range ~0p ~~ ~0p for terms",
-                [log_name(LogOrView), Index, Start, End],
-                #{domain => [whatsapp, wa_raft]}
+                [log_name(LogOrView), Index, Start, End]
             ),
             {error, corruption}
     end.
@@ -683,8 +684,10 @@ entries(LogOrView, Start, CountLimit, SizeLimit) ->
             {error, Reason}
     catch
         throw:{missing, Index} ->
-            ?LOG_WARNING("[~0p] detected missing log entry ~0p while folding range ~0p ~~ ~0p for heartbeat",
-                [log_name(LogOrView), Index, Start, End], #{domain => [whatsapp, wa_raft]}),
+            ?RAFT_LOG_WARNING(
+                "[~0p] detected missing log entry ~0p while folding range ~0p ~~ ~0p for heartbeat",
+                [log_name(LogOrView), Index, Start, End]
+            ),
             {error, corruption}
     end.
 
@@ -871,8 +874,7 @@ handle_call({truncate, Index, View}, _From, State) ->
             {reply, {error, Reason}, State}
     end;
 handle_call(Request, From, #log_state{log = Log} = State) ->
-    ?LOG_NOTICE("[~p] got unrecognized call ~p from ~p",
-        [log_name(Log), Request, From], #{domain => [whatsapp, wa_raft]}),
+    ?RAFT_LOG_NOTICE("[~p] got unrecognized call ~p from ~p", [log_name(Log), Request, From]),
     {noreply, State}.
 
 -spec handle_cast(Request, State :: #log_state{}) -> {noreply, NewState :: #log_state{}}
@@ -886,20 +888,17 @@ handle_cast({trim, Index}, #log_state{log = Log} = State) ->
         {ok, NewState} ->
             {noreply, NewState};
         {error, Reason} ->
-            ?LOG_WARNING("[~p] failed to trim log due to ~p",
-                [log_name(Log), Reason], #{domain => [whatsapp, wa_raft]}),
+            ?RAFT_LOG_WARNING("[~p] failed to trim log due to ~p", [log_name(Log), Reason]),
             {noreply, State}
     end;
 handle_cast(Request, #log_state{log = Log} = State) ->
-    ?LOG_NOTICE("[~p] got unrecognized cast ~p",
-        [log_name(Log), Request], #{domain => [whatsapp, wa_raft]}),
+    ?RAFT_LOG_NOTICE("[~p] got unrecognized cast ~p", [log_name(Log), Request]),
     {noreply, State}.
 
 -spec terminate(Reason :: term(), State :: #log_state{}) -> term().
 terminate(Reason, #log_state{log = Log, state = State}) ->
     Provider = provider(Log),
-    ?LOG_NOTICE("[~p] terminating due to ~p",
-        [Log, Reason], #{domain => [whatsapp, wa_raft]}),
+    ?RAFT_LOG_NOTICE("[~p] terminating due to ~p", [Log, Reason]),
     State =/= ?PROVIDER_NOT_OPENED andalso Provider:close(Log, State).
 
 %%-------------------------------------------------------------------
@@ -911,15 +910,17 @@ terminate(Reason, #log_state{log = Log, state = State}) ->
 handle_open(#raft_log_pos{index = Index, term = Term} = Position,
             #log_state{log = #raft_log{name = Name, provider = Provider} = Log} = State0) ->
     ?RAFT_COUNT('raft.log.open'),
-    ?LOG_NOTICE("[~p] opening log at position ~p:~p", [Name, Index, Term], #{domain => [whatsapp, wa_raft]}),
+    ?RAFT_LOG_NOTICE("[~p] opening log at position ~p:~p", [Name, Index, Term]),
     case Provider:open(Log) of
         {ok, ProviderState} ->
             Action = case Provider:get(Log, Index) of
                 {ok, {Term, _Op}} ->
                     none;
                 {ok, {MismatchTerm, _Op}} ->
-                    ?LOG_WARNING("[~p] resetting log due to expecting term ~p at ~p but log contains term ~p",
-                        [Name, Term, Index, MismatchTerm], #{domain => [whatsapp, wa_raft]}),
+                    ?RAFT_LOG_WARNING(
+                        "[~p] resetting log due to expecting term ~p at ~p but log contains term ~p",
+                        [Name, Term, Index, MismatchTerm]
+                    ),
                     reset;
                 not_found ->
                     reset;
@@ -934,16 +935,20 @@ handle_open(#raft_log_pos{index = Index, term = Term} = Position,
                     ?RAFT_COUNT('raft.log.open.normal'),
                     View1 = case Provider:first_index(Log) of
                         undefined ->
-                            ?LOG_WARNING("[~p] opened log normally but the first index was not set",
-                                [Name], #{domain => [whatsapp, wa_raft]}),
+                            ?RAFT_LOG_WARNING(
+                                "[~p] opened log normally but the first index was not set",
+                                [Name]
+                            ),
                             View0;
                         FirstIndex ->
                             View0#log_view{first = FirstIndex}
                     end,
                     View2 = case Provider:last_index(Log) of
                         undefined ->
-                            ?LOG_WARNING("[~p] opened log normally but the last index was not set",
-                                [Name], #{domain => [whatsapp, wa_raft]}),
+                            ?RAFT_LOG_WARNING(
+                                "[~p] opened log normally but the last index was not set",
+                                [Name]
+                            ),
                             View1;
                         LastIndex ->
                             View1#log_view{last = LastIndex}
@@ -973,12 +978,12 @@ handle_open(#raft_log_pos{index = Index, term = Term} = Position,
 handle_reset(_Position, _View, #log_state{state = ?PROVIDER_NOT_OPENED}) ->
     {error, not_open};
 handle_reset(#raft_log_pos{index = 0, term = Term}, _View, #log_state{log = Log}) when Term =/= 0 ->
-    ?LOG_ERROR("[~p] rejects reset to index 0 with non-zero term ~p", [log_name(Log), Term], #{domain => [whatsapp, wa_raft]}),
+    ?RAFT_LOG_ERROR("[~p] rejects reset to index 0 with non-zero term ~p", [log_name(Log), Term]),
     {error, invalid_position};
 handle_reset(#raft_log_pos{index = Index, term = Term} = Position, View0,
              #log_state{log = Log, state = ProviderState} = State0) ->
     ?RAFT_COUNT('raft.log.reset'),
-    ?LOG_NOTICE("[~p] resetting log to position ~p:~p", [log_name(Log), Index, Term], #{domain => [whatsapp, wa_raft]}),
+    ?RAFT_LOG_NOTICE("[~p] resetting log to position ~p:~p", [log_name(Log), Index, Term]),
     Provider = provider(Log),
     case Provider:reset(Log, Position, ProviderState) of
         {ok, NewProviderState} ->
@@ -995,11 +1000,11 @@ handle_reset(#raft_log_pos{index = Index, term = Term} = Position, View0,
 handle_truncate(_Index, _View, #log_state{state = ?PROVIDER_NOT_OPENED}) ->
     {error, not_open};
 handle_truncate(Index, #log_view{first = First}, #log_state{log = Log}) when Index =< First ->
-    ?LOG_ERROR("[~p] rejects log deletion by truncation to ~p for log starting at ~p", [log_name(Log), Index, First], #{domain => [whatsapp, wa_raft]}),
+    ?RAFT_LOG_ERROR("[~p] rejects log deletion by truncation to ~p for log starting at ~p", [log_name(Log), Index, First]),
     {error, invalid_position};
 handle_truncate(Index, #log_view{last = Last} = View0, #log_state{log = Log, state = ProviderState} = State0) ->
     ?RAFT_COUNT('raft.log.truncate'),
-    ?LOG_NOTICE("[~p] truncating log from ~p to past ~p", [log_name(Log), Last, Index], #{domain => [whatsapp, wa_raft]}),
+    ?RAFT_LOG_NOTICE("[~p] truncating log from ~p to past ~p", [log_name(Log), Last, Index]),
     Provider = provider(Log),
     case Provider:truncate(Log, Index, ProviderState) of
         {ok, NewProviderState} ->
@@ -1021,7 +1026,7 @@ handle_trim(_Index, #log_state{state = ?PROVIDER_NOT_OPENED}) ->
     {error, not_open};
 handle_trim(Index, #log_state{log = Log, state = ProviderState} = State) ->
     ?RAFT_COUNT('raft.log.trim'),
-    ?LOG_DEBUG("[~p] trimming log to ~p", [log_name(Log), Index], #{domain => [whatsapp, wa_raft]}),
+    ?RAFT_LOG_DEBUG("[~p] trimming log to ~p", [log_name(Log), Index]),
     Provider = provider(Log),
     case Provider:trim(Log, Index, ProviderState) of
         {ok, NewProviderState} ->

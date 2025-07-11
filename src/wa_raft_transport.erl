@@ -8,8 +8,8 @@
 -behaviour(gen_server).
 
 -include_lib("kernel/include/file.hrl").
--include_lib("kernel/include/logger.hrl").
 -include_lib("wa_raft/include/wa_raft.hrl").
+-include_lib("wa_raft/include/wa_raft_logger.hrl").
 
 %% OTP supervision
 -export([
@@ -467,15 +467,13 @@ handle_call({transport, ID, Peer, Module, Meta, Files}, From, #state{counters = 
         ShouldThrottle = NumActiveReceives >= MaxIncomingSnapshotTransfers,
         case {transport_info(ID), ShouldThrottle} of
             {{ok, _Info}, _} ->
-                ?LOG_WARNING("wa_raft_transport got duplicate transport receive start for ~p from ~p",
-                    [ID, From], #{domain => [whatsapp, wa_raft]}),
+                ?RAFT_LOG_WARNING("wa_raft_transport got duplicate transport receive start for ~p from ~p", [ID, From]),
                 {reply, duplicate, State};
             {not_found, true} ->
                 {reply, {error, receiver_overloaded}, State};
             {not_found, _} ->
                 ?RAFT_COUNT('raft.transport.receive'),
-                ?LOG_NOTICE("wa_raft_transport starting transport receive for ~p",
-                    [ID], #{domain => [whatsapp, wa_raft]}),
+                ?RAFT_LOG_NOTICE("wa_raft_transport starting transport receive for ~p", [ID]),
 
                 TransportAtomics = atomics:new(?RAFT_TRANSPORT_TRANSPORT_ATOMICS_COUNT, []),
                 RootDir = transport_destination(ID, Meta),
@@ -534,8 +532,7 @@ handle_call({transport, ID, Peer, Module, Meta, Files}, From, #state{counters = 
     catch
         T:E:S ->
             ?RAFT_COUNT('raft.transport.receive.error'),
-            ?LOG_WARNING("wa_raft_transport failed to accept transport ~p due to ~p ~p: ~n~p",
-                [ID, T, E, S], #{domain => [whatsapp, wa_raft]}),
+            ?RAFT_LOG_WARNING("wa_raft_transport failed to accept transport ~p due to ~p ~p: ~n~p", [ID, T, E, S]),
             update_and_get_transport_info(
                 ID,
                 fun (Info) ->
@@ -550,8 +547,7 @@ handle_call({transport, ID, Peer, Module, Meta, Files}, From, #state{counters = 
             {reply, {error, failed}, State}
     end;
 handle_call({cancel, ID, Reason}, _From, #state{counters = Counters} = State) ->
-    ?LOG_NOTICE("wa_raft_transport got cancellation request for ~p for reason ~p",
-        [ID, Reason], #{domain => [whatsapp, wa_raft]}),
+    ?RAFT_LOG_NOTICE("wa_raft_transport got cancellation request for ~p for reason ~p", [ID, Reason]),
     Reply =
         case
             update_and_get_transport_info(
@@ -571,8 +567,7 @@ handle_call({cancel, ID, Reason}, _From, #state{counters = Counters} = State) ->
         end,
     {reply, Reply, State};
 handle_call(Request, _From, #state{} = State) ->
-    ?LOG_WARNING("wa_raft_transport received unrecognized call ~p",
-        [Request], #{domain => [whatsapp, wa_raft]}),
+    ?RAFT_LOG_WARNING("wa_raft_transport received unrecognized call ~p", [Request]),
     {noreply, State}.
 
 -spec handle_cast(Request, State :: #state{}) -> {noreply, NewState :: #state{}}
@@ -594,8 +589,7 @@ handle_cast({complete, ID, FileID, Status}, #state{counters = Counters} = State)
             end
         end),
     Result0 =:= not_found andalso
-        ?LOG_WARNING("wa_raft_transport got complete report for unknown file ~p:~p",
-            [ID, FileID], #{domain => [whatsapp, wa_raft]}),
+        ?RAFT_LOG_WARNING("wa_raft_transport got complete report for unknown file ~p:~p", [ID, FileID]),
     Result1 =
         update_and_get_transport_info(
             ID,
@@ -621,11 +615,10 @@ handle_cast({complete, ID, FileID, Status}, #state{counters = Counters} = State)
             Counters
         ),
     Result1 =:= not_found andalso
-        ?LOG_WARNING("wa_raft_transport got complete report for unknown transfer ~p",
-            [ID], #{domain => [whatsapp, wa_raft]}),
+        ?RAFT_LOG_WARNING("wa_raft_transport got complete report for unknown transfer ~p", [ID]),
     {noreply, State};
 handle_cast(Request, State) ->
-    ?LOG_NOTICE("wa_raft_transport got unrecognized cast ~p", [Request], #{domain => [whatsapp, wa_raft]}),
+    ?RAFT_LOG_NOTICE("wa_raft_transport got unrecognized cast ~p", [Request]),
     {noreply, State}.
 
 -spec handle_info(Info :: term(), State :: #state{}) -> {noreply, NewState :: #state{}}.
@@ -647,7 +640,7 @@ handle_info(scan, #state{counters = Counters} = State) ->
     schedule_scan(),
     {noreply, State};
 handle_info(Info, State) ->
-    ?LOG_NOTICE("wa_raft_transport got unrecognized info ~p", [Info], #{domain => [whatsapp, wa_raft]}),
+    ?RAFT_LOG_NOTICE("wa_raft_transport got unrecognized info ~p", [Info]),
     {noreply, State}.
 
 %%% ------------------------------------------------------------------------
@@ -668,8 +661,10 @@ handle_transport_start(From, Peer, Meta, Root, Counters) ->
     ID = make_id(),
 
     ?RAFT_COUNT('raft.transport.start'),
-    ?LOG_NOTICE("wa_raft_transport starting transport ~p of ~p to ~p with metadata ~p",
-        [ID, Root, Peer, Meta], #{domain => [whatsapp, wa_raft]}),
+    ?RAFT_LOG_NOTICE(
+        "wa_raft_transport starting transport ~p of ~p to ~p with metadata ~p",
+        [ID, Root, Peer, Meta]
+    ),
 
     try
         Files = collect_files(Root),
@@ -740,8 +735,7 @@ handle_transport_start(From, Peer, Meta, Root, Counters) ->
                 {ok, ID};
             {error, receiver_overloaded} ->
                 ?RAFT_COUNT('raft.transport.rejected.receiver_overloaded'),
-                ?LOG_WARNING("wa_raft_transport peer ~p rejected transport ~p because of overload",
-                    [Peer, ID], #{domain => [whatsapp, wa_raft]}),
+                ?RAFT_LOG_WARNING("wa_raft_transport peer ~p rejected transport ~p because of overload", [Peer, ID]),
                 update_and_get_transport_info(
                     ID,
                     fun (Info) ->
@@ -756,9 +750,8 @@ handle_transport_start(From, Peer, Meta, Root, Counters) ->
                 {error, receiver_overloaded};
             Error ->
                 ?RAFT_COUNT('raft.transport.rejected'),
-                ?LOG_WARNING("wa_raft_transport peer ~p rejected transport ~p with error ~p",
-                    [Peer, ID, Error], #{domain => [whatsapp, wa_raft]}),
-                    update_and_get_transport_info(
+                ?RAFT_LOG_WARNING("wa_raft_transport peer ~p rejected transport ~p with error ~p", [Peer, ID, Error]),
+                update_and_get_transport_info(
                     ID,
                     fun (Info) ->
                         Info#{
@@ -774,8 +767,10 @@ handle_transport_start(From, Peer, Meta, Root, Counters) ->
     catch
         T:E:S ->
             ?RAFT_COUNT('raft.transport.start.error'),
-            ?LOG_WARNING("wa_raft_transport failed to start transport ~p due to ~p ~p: ~n~p",
-                [ID, T, E, S], #{domain => [whatsapp, wa_raft]}),
+            ?RAFT_LOG_WARNING(
+                "wa_raft_transport failed to start transport ~p due to ~p ~p: ~n~p",
+                [ID, T, E, S]
+            ),
             update_and_get_transport_info(
                 ID,
                 fun (Info) ->
@@ -827,17 +822,14 @@ collect_files_impl(Root, [Filename | Queue], Fun, Acc0) ->
                     NewQueue = lists:foldl(fun (Subfile, Acc) -> [join_names(Filename, Subfile) | Acc] end, Queue, Files),
                     collect_files_impl(Root, NewQueue, Fun, Acc0);
                 {error, Reason} ->
-                    ?LOG_ERROR("wa_raft_transport failed to list files in ~p due to ~p",
-                        [filename:flatten(Path), Reason], #{domain => [whatsapp, wa_raft]}),
+                    ?RAFT_LOG_ERROR("wa_raft_transport failed to list files in ~p due to ~p", [filename:flatten(Path), Reason]),
                     throw({list_dir, Reason})
             end;
         {ok, #file_info{type = Type}} ->
-            ?LOG_WARNING("wa_raft_transport skipping file ~p with unknown type ~p",
-                [filename:flatten(Path), Type], #{domain => [whatsapp, wa_raft]}),
+            ?RAFT_LOG_WARNING("wa_raft_transport skipping file ~p with unknown type ~p", [filename:flatten(Path), Type]),
             collect_files_impl(Root, Queue, Fun, Acc0);
         {error, Reason} ->
-            ?LOG_ERROR("wa_raft_transport failed to read info of file ~p due to ~p",
-                [filename:flatten(Path), Reason], #{domain => [whatsapp, wa_raft]}),
+            ?RAFT_LOG_ERROR("wa_raft_transport failed to read info of file ~p due to ~p", [filename:flatten(Path), Reason]),
             throw({read_file_info, Reason})
     end.
 
@@ -855,18 +847,21 @@ maybe_notify_complete(ID, #{type := receiver, root := Root, meta := #{type := sn
         ok ->
             ok;
         {error, Reason} ->
-            ?LOG_NOTICE("wa_raft_transport failed to notify ~p of transport ~p completion due to ~p",
-                [wa_raft_server:registered_name(Table, Partition), ID, Reason], #{domain => [whatsapp, wa_raft]}),
+            ?RAFT_LOG_NOTICE(
+                "wa_raft_transport failed to notify ~p of transport ~p completion due to ~p",
+                [wa_raft_server:registered_name(Table, Partition), ID, Reason]
+            ),
             {error, Reason}
     catch
         T:E:S ->
-            ?LOG_NOTICE("wa_raft_transport failed to notify ~p of transport ~p completion due to ~p ~p: ~n~p",
-                [wa_raft_server:registered_name(Table, Partition), ID, T, E, S], #{domain => [whatsapp, wa_raft]}),
+            ?RAFT_LOG_NOTICE(
+                "wa_raft_transport failed to notify ~p of transport ~p completion due to ~p ~p: ~n~p",
+                [wa_raft_server:registered_name(Table, Partition), ID, T, E, S]
+            ),
             {error, {T, E, S}}
     end;
 maybe_notify_complete(ID, _Info, #state{}) ->
-    ?LOG_NOTICE("wa_raft_transport finished transport ~p but does not know what to do with it",
-        [ID], #{domain => [whatsapp, wa_raft]}).
+    ?RAFT_LOG_NOTICE("wa_raft_transport finished transport ~p but does not know what to do with it", [ID]).
 
 -spec maybe_notify(transport_id(), transport_info()) -> transport_info().
 maybe_notify(ID, #{status := Status, notify := Notify, start_ts := Start, end_ts := End} = Info) when Status =/= requested andalso Status =/= running ->

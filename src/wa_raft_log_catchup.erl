@@ -9,8 +9,8 @@
 -compile(warn_missing_spec_all).
 -behaviour(gen_server).
 
--include_lib("kernel/include/logger.hrl").
 -include_lib("wa_raft/include/wa_raft.hrl").
+-include_lib("wa_raft/include/wa_raft_logger.hrl").
 -include_lib("wa_raft/include/wa_raft_rpc.hrl").
 
 %% Private API
@@ -165,8 +165,7 @@ init(#raft_options{application = Application, table = Table, partition = Partiti
                    log_catchup_name = Name, server_name = Server}) ->
     process_flag(trap_exit, true),
 
-    ?LOG_NOTICE("Catchup[~0p] starting for partition ~0p/~0p",
-        [Name, Table, Partition], #{domain => [whatsapp, wa_raft]}),
+    ?RAFT_LOG_NOTICE("Catchup[~0p] starting for partition ~0p/~0p", [Name, Table, Partition]),
 
     Name = ets:new(Name, [set, public, named_table, {write_concurrency, true}]),
     Log = #raft_log{
@@ -192,12 +191,12 @@ init(#raft_options{application = Application, table = Table, partition = Partiti
 
 -spec handle_call(Request :: term(), From :: gen_server:from(), State :: #state{}) -> {noreply, #state{}, timeout()}.
 handle_call(Request, From, #state{name = Name} = State) ->
-    ?LOG_WARNING("Unexpected call ~0P from ~0p on ~0p", [Request, 30, From, Name], #{domain => [whatsapp, wa_raft]}),
+    ?RAFT_LOG_WARNING("Unexpected call ~0P from ~0p on ~0p", [Request, 30, From, Name]),
     {noreply, State, ?CONTINUE_TIMEOUT}.
 
 -spec handle_cast(Request :: term(), State :: #state{}) -> {noreply, #state{}, timeout()}.
 handle_cast(Request, #state{name = Name} = State) ->
-    ?LOG_WARNING("Unexpected cast ~0P on ~0p", [Request, 30, Name], #{domain => [whatsapp, wa_raft]}),
+    ?RAFT_LOG_WARNING("Unexpected cast ~0P on ~0p", [Request, 30, Name]),
     {noreply, State, ?CONTINUE_TIMEOUT}.
 
 -spec handle_info(Info :: timeout, State :: #state{}) -> {noreply, #state{}, timeout()}.
@@ -212,7 +211,7 @@ handle_info(timeout, #state{name = Name} = State) ->
             {noreply, NewState, ?CONTINUE_TIMEOUT}
     end;
 handle_info(Info, #state{name = Name} = State) ->
-    ?LOG_WARNING("Unexpected info ~0P on ~0p", [Info, 30, Name], #{domain => [whatsapp, wa_raft]}),
+    ?RAFT_LOG_WARNING("Unexpected info ~0P on ~0p", [Info, 30, Name]),
     {noreply, State, ?CONTINUE_TIMEOUT}.
 
 -spec terminate(Reason :: term(), State :: #state{}) -> term().
@@ -237,8 +236,10 @@ send_logs(Peer, NextLogIndex, LeaderTerm, LeaderCommitIndex, Witness, #state{nam
                     try send_logs_impl(Peer, NextLogIndex, LeaderTerm, LeaderCommitIndex, Witness, State) catch
                         T:E:S ->
                             ?RAFT_COUNT('raft.catchup.error'),
-                            ?LOG_ERROR("Catchup[~p, term ~p] bulk logs transfer to ~0p failed with ~0p ~0p at ~p",
-                                [Name, LeaderTerm, Peer, T, E, S], #{domain => [whatsapp, wa_raft]})
+                            ?RAFT_LOG_ERROR(
+                                "Catchup[~p, term ~p] bulk logs transfer to ~0p failed with ~0p ~0p at ~p",
+                                [Name, LeaderTerm, Peer, T, E, S]
+                            )
                     after
                         counters:sub(persistent_term:get(?COUNTER_KEY), ?COUNTER_CONCURRENT_CATCHUP, 1)
                     end,
@@ -249,8 +250,10 @@ send_logs(Peer, NextLogIndex, LeaderTerm, LeaderCommitIndex, Witness, #state{nam
                     State
             end;
         false ->
-            ?LOG_NOTICE("Catchup[~p, term ~p] skipping bulk logs transfer to ~0p because follower is still under lockout.",
-                [Name, LeaderTerm, Peer], #{domain => [whatsapp, wa_raft]}),
+            ?RAFT_LOG_NOTICE(
+                "Catchup[~p, term ~p] skipping bulk logs transfer to ~0p because follower is still under lockout.",
+                [Name, LeaderTerm, Peer]
+            ),
             State
     end,
     ets:delete(Name, Peer),
@@ -276,8 +279,10 @@ send_logs_impl(#raft_identity{node = PeerNode} = Peer, NextLogIndex, LeaderTerm,
 
     case Entries of
         [] ->
-            ?LOG_NOTICE("Catchup[~0p, term ~p] finishes bulk logs transfer to follower ~0p at ~0p.",
-                [Name, LeaderTerm, Peer, NextLogIndex], #{domain => [whatsapp, wa_raft]});
+            ?RAFT_LOG_NOTICE(
+                "Catchup[~0p, term ~p] finishes bulk logs transfer to follower ~0p at ~0p.",
+                [Name, LeaderTerm, Peer, NextLogIndex]
+            );
         _ ->
             % Replicate the log entries to our peer.
             Dest = {Server, PeerNode},

@@ -7,8 +7,8 @@
 -compile(warn_missing_spec_all).
 -behaviour(gen_server).
 
--include_lib("kernel/include/logger.hrl").
 -include_lib("wa_raft/include/wa_raft.hrl").
+-include_lib("wa_raft/include/wa_raft_logger.hrl").
 
 %% Internal API
 -export([
@@ -86,8 +86,7 @@ init({Node, Number}) ->
 -spec handle_call(Request :: term(), From :: {Pid :: pid(), Tag :: term()}, State :: state()) ->
     {noreply, NewState :: state(), Timeout :: timeout()}.
 handle_call(Request, From, #state{number = Number} = State) ->
-    ?LOG_WARNING("[~p] received unrecognized call ~p from ~p",
-        [Number, Request, From], #{domain => [whatsapp, wa_raft]}),
+    ?RAFT_LOG_WARNING("[~p] received unrecognized call ~p from ~p", [Number, Request, From]),
     {noreply, State, ?CONTINUE_TIMEOUT}.
 
 -spec handle_cast(Request, State :: state()) -> {noreply, NewState :: state(), Timeout :: timeout()}
@@ -95,8 +94,7 @@ handle_call(Request, From, #state{number = Number} = State) ->
 handle_cast({notify, ID}, #state{jobs = Jobs} = State) ->
     {noreply, State#state{jobs = queue:in(#transport{id = ID}, Jobs)}, ?CONTINUE_TIMEOUT};
 handle_cast(Request, #state{number = Number} = State) ->
-    ?LOG_WARNING("[~p] received unrecognized cast ~p",
-        [Number, Request], #{domain => [whatsapp, wa_raft]}),
+    ?RAFT_LOG_WARNING("[~p] received unrecognized cast ~p", [Number, Request]),
     {noreply, State, ?CONTINUE_TIMEOUT}.
 
 -spec handle_info(Info :: term(), State :: state()) ->
@@ -131,21 +129,24 @@ handle_info(timeout, #state{number = Number, jobs = Jobs, states = States} = Sta
                                     {{stop, Reason}, State#state{states = States#{Module => ModuleState1}}}
                             catch
                                 T:E:S ->
-                                    ?LOG_WARNING("[~p] module ~p failed to send file ~p:~p due to ~p ~p: ~p",
-                                        [Number, Module, ID, FileID, T, E, S], #{domain => [whatsapp, wa_raft]}),
+                                    ?RAFT_LOG_WARNING(
+                                        "[~p] module ~p failed to send file ~p:~p due to ~p ~p: ~p",
+                                        [Number, Module, ID, FileID, T, E, S]
+                                    ),
                                     {{T, E}, State}
                             end;
                         Other ->
                             {Other, State}
                     catch
                         T:E:S ->
-                            ?LOG_WARNING("[~p] module ~p failed to get/init module state due to ~p ~p: ~p",
-                                [Number, Module, T, E, S], #{domain => [whatsapp, wa_raft]}),
+                            ?RAFT_LOG_WARNING(
+                                "[~p] module ~p failed to get/init module state due to ~p ~p: ~p",
+                                [Number, Module, T, E, S]
+                            ),
                             {{T, E}, State}
                     end;
                 _ ->
-                    ?LOG_WARNING("[~p] trying to send for unknown transfer ~p",
-                        [Number, ID], #{domain => [whatsapp, wa_raft]}),
+                    ?RAFT_LOG_WARNING("[~p] trying to send for unknown transfer ~p", [Number, ID]),
                     {{stop, invalid_transport}, State}
             end,
             case Result =:= continue of
@@ -157,8 +158,7 @@ handle_info(timeout, #state{number = Number, jobs = Jobs, states = States} = Sta
             end
     end;
 handle_info(Info, #state{number = Number} = State) ->
-    ?LOG_WARNING("[~p] received unrecognized info ~p",
-        [Number, Info], #{domain => [whatsapp, wa_raft]}),
+    ?RAFT_LOG_WARNING("[~p] received unrecognized info ~p", [Number, Info]),
     {noreply, State, ?CONTINUE_TIMEOUT}.
 
 -spec terminate(term(), state()) -> ok.

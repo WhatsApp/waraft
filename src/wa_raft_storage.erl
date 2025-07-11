@@ -59,14 +59,21 @@
     terminate/2
 ]).
 
+%% For tests
+-ifdef(TEST).
+-export([
+    list_snapshots/1
+]).
+-endif.
+
 -export_type([
     storage_handle/0,
     metadata/0,
     status/0
 ]).
 
--include_lib("kernel/include/logger.hrl").
 -include_lib("wa_raft/include/wa_raft.hrl").
+-include_lib("wa_raft/include/wa_raft_logger.hrl").
 
 %%-----------------------------------------------------------------------------
 %% RAFT Storage
@@ -484,14 +491,15 @@ init(#raft_options{application = Application, table = Table, partition = Partiti
     % and other memory-related issues.
     process_flag(message_queue_data, off_heap),
 
-    ?LOG_NOTICE("Storage[~0p] starting for partition ~0p/~0p at ~0p using ~0p",
-        [Name, Table, Partition, Path, Module], #{domain => [whatsapp, wa_raft]}),
+    ?RAFT_LOG_NOTICE(
+        "Storage[~0p] starting for partition ~0p/~0p at ~0p using ~0p",
+        [Name, Table, Partition, Path, Module]
+    ),
 
     Handle = Module:storage_open(Options, Path),
     Position = Module:storage_position(Handle),
 
-    ?LOG_NOTICE("Storage[~0p] opened at position ~0p.",
-        [Name, Position], #{domain => [whatsapp, wa_raft]}),
+    ?RAFT_LOG_NOTICE("Storage[~0p] opened at position ~0p.", [Name, Position]),
 
     State = #state{
         application = Application,
@@ -554,7 +562,7 @@ handle_call(?OPEN_REQUEST, _From, #state{position = Position} = State) ->
     {reply, {ok, Position}, State};
 
 handle_call(?OPEN_SNAPSHOT_REQUEST(SnapshotPath, SnapshotPosition), _From, #state{name = Name, module = Module, handle = Handle, position = Position} = State) ->
-    ?LOG_NOTICE("Storage[~0p] at ~0p is opening snapshot ~0p.", [Name, Position, SnapshotPosition], #{domain => [whatsapp, wa_raft]}),
+    ?RAFT_LOG_NOTICE("Storage[~0p] at ~0p is opening snapshot ~0p.", [Name, Position, SnapshotPosition]),
     case Module:storage_open_snapshot(SnapshotPath, SnapshotPosition, Handle) of
         {ok, NewHandle} ->
             {reply, ok, refresh_config(State#state{position = SnapshotPosition, handle = NewHandle})};
@@ -577,30 +585,31 @@ handle_call(?CREATE_WITNESS_SNAPSHOT_REQUEST(Name), _From, #state{} = State) ->
     {reply, handle_create_witness_snapshot(Name, State), State};
 
 handle_call(?MAKE_EMPTY_SNAPSHOT_REQUEST(SnapshotPath, SnapshotPosition, Config, Data), _From, #state{name = Name, options = Options, module = Module} = State) ->
-    ?LOG_NOTICE("Storage[~0p] making bootstrap snapshot ~0p at ~0p with config ~0p and data ~0P.",
-        [Name, SnapshotPath, SnapshotPosition, Config, Data, 30], #{domain => [whatsapp, wa_raft]}),
+    ?RAFT_LOG_NOTICE(
+        "Storage[~0p] making bootstrap snapshot ~0p at ~0p with config ~0p and data ~0P.",
+        [Name, SnapshotPath, SnapshotPosition, Config, Data, 30]
+    ),
     case erlang:function_exported(Module, storage_make_empty_snapshot, 5) of
         true -> {reply, Module:storage_make_empty_snapshot(Options, SnapshotPath, SnapshotPosition, Config, Data), State};
         false -> {reply, {error, not_supported}, State}
     end;
 
 handle_call(Request, From, #state{name = Name} = State) ->
-    ?LOG_WARNING("Storage[~0p] received unexpected call ~0P from ~0p.",
-        [Name, Request, 20, From], #{domain => [whatsapp, wa_raft]}),
+    ?RAFT_LOG_WARNING("Storage[~0p] received unexpected call ~0P from ~0p.", [Name, Request, 20, From]),
     {noreply, State}.
 
 -spec handle_cast(Request :: cast(), State :: #state{}) ->
     {noreply, NewState :: #state{}}.
 
 handle_cast(?CANCEL_REQUEST, #state{name = Name, queues = Queues} = State) ->
-    ?LOG_NOTICE("Storage[~0p] cancels all pending reads.", [Name], #{domain => [whatsapp, wa_raft]}),
+    ?RAFT_LOG_NOTICE("Storage[~0p] cancels all pending reads.", [Name]),
     wa_raft_queue:fulfill_all_reads(Queues, {error, not_leader}),
     {noreply, State};
 
 handle_cast(?APPLY_REQUEST(From, {LogIndex, {LogTerm, {_, Label, Command}}}, Size), #state{name = Name, queues = Queues} = State0) ->
     wa_raft_queue:fulfill_apply(Queues, Size),
     LogPosition = #raft_log_pos{index = LogIndex, term = LogTerm},
-    ?LOG_DEBUG("Storage[~0p] is starting to apply ~0p", [Name, LogPosition], #{domain => [whatsapp, wa_raft]}),
+    ?RAFT_LOG_DEBUG("Storage[~0p] is starting to apply ~0p", [Name, LogPosition]),
     {noreply, handle_apply(From, LogPosition, Label, Command, State0)};
 
 handle_cast(?APPLY_READ_REQUEST(From, Command), #state{module = Module, handle = Handle, position = Position} = State) ->
@@ -609,19 +618,16 @@ handle_cast(?APPLY_READ_REQUEST(From, Command), #state{module = Module, handle =
 
 handle_cast(?DELETE_SNAPSHOT_REQUEST(SnapshotName), #state{name = Name, path = Path} = State) ->
     Result = catch file:del_dir_r(filename:join(Path, SnapshotName)),
-    ?LOG_NOTICE("Storage[~0p] deletes snapshot ~0p: ~0P.",
-        [Name, SnapshotName, Result, 20], #{domain => [whatsapp, wa_raft]}),
+    ?RAFT_LOG_NOTICE("Storage[~0p] deletes snapshot ~0p: ~0P.", [Name, SnapshotName, Result, 20]),
     {noreply, State};
 
 handle_cast(Request, #state{name = Name} = State) ->
-    ?LOG_WARNING("Storage[~0p] received unexpected cast ~0P.",
-        [Name, Request, 20], #{domain => [whatsapp, wa_raft]}),
+    ?RAFT_LOG_WARNING("Storage[~0p] received unexpected cast ~0P.", [Name, Request, 20]),
     {noreply, State}.
 
 -spec terminate(Reason :: term(), State :: #state{}) -> term().
 terminate(Reason, #state{name = Name, module = Module, handle = Handle, position = Position}) ->
-    ?LOG_NOTICE("Storage[~0p] terminating at ~0p with reason ~0P.",
-        [Name, Position, Reason, 30], #{domain => [whatsapp, wa_raft]}),
+    ?RAFT_LOG_NOTICE("Storage[~0p] terminating at ~0p with reason ~0P.", [Name, Position, Reason, 30]),
     Module:storage_close(Handle).
 
 %%-------------------------------------------------------------------
@@ -667,14 +673,12 @@ handle_apply(
     handle_delayed_reads(NewState),
     wa_raft_queue:apply_queue_size(Queues) =:= 0 andalso ?RAFT_STORAGE_NOTIFY_COMPLETE(Application) andalso
         wa_raft_server:notify_complete(Server),
-    ?LOG_DEBUG("Storage[~0p] finishes applying ~0p.",
-        [Name, LogPosition], #{domain => [whatsapp, wa_raft]}),
+    ?RAFT_LOG_DEBUG("Storage[~0p] finishes applying ~0p.", [Name, LogPosition]),
     ?RAFT_GATHER('raft.storage.apply.func', timer:now_diff(os:timestamp(), StartT)),
     NewState;
 %% Otherwise, the apply is out of order.
 handle_apply(_From, LogPosition, _Label, _Command, #state{name = Name, position = Position}) ->
-    ?LOG_ERROR("Storage[~0p] at ~0p received an out-of-order operation at ~0p.",
-        [Name, Position, LogPosition], #{domain => [whatsapp, wa_raft]}),
+    ?RAFT_LOG_ERROR("Storage[~0p] at ~0p received an out-of-order operation at ~0p.", [Name, Position, LogPosition]),
     error(out_of_order_apply).
 
 -spec handle_command(
@@ -686,8 +690,7 @@ handle_apply(_From, LogPosition, _Label, _Command, #state{name = Name, position 
 handle_command(Label, noop = Command, Position, #state{} = State) ->
     handle_command_impl(Label, Command, Position, State);
 handle_command(_Label, {config, Config}, Position, #state{name = Name, module = Module, handle = Handle} = State) ->
-    ?LOG_INFO("Storage[~0p] is applying a new configuration ~0p at ~0p.",
-        [Name, Config, Position], #{domain => [whatsapp, wa_raft]}),
+    ?RAFT_LOG_INFO("Storage[~0p] is applying a new configuration ~0p at ~0p.", [Name, Config, Position]),
     {Reply, NewHandle} = Module:storage_apply_config(Config, Position, Handle),
     {Reply, refresh_config(State#state{handle = NewHandle, position = Position})};
 handle_command(Label, _Command, Position, #state{application = Application, witness = true, skipped = Skipped} = State) ->
@@ -729,13 +732,11 @@ handle_create_snapshot(SnapshotName, #state{name = Name, path = Path, module = M
     SnapshotPath = filename:join(Path, SnapshotName),
     case filelib:is_dir(SnapshotPath) of
         true ->
-            ?LOG_NOTICE("Storage[~0p] skips recreating existing snapshot ~0p.",
-                [Name, SnapshotName], #{domain => [whatsapp, wa_raft]}),
+            ?RAFT_LOG_NOTICE("Storage[~0p] skips recreating existing snapshot ~0p.", [Name, SnapshotName]),
             {ok, Position};
         false ->
             cleanup_snapshots(State),
-            ?LOG_NOTICE("Storage[~0p] is creating snapshot ~0p.",
-                [Name, SnapshotName], #{domain => [whatsapp, wa_raft]}),
+            ?RAFT_LOG_NOTICE("Storage[~0p] is creating snapshot ~0p.", [Name, SnapshotName]),
             case Module:storage_create_snapshot(SnapshotPath, Handle) of
                 ok -> {ok, Position};
                 Other -> Other
@@ -747,13 +748,11 @@ handle_create_witness_snapshot(SnapshotName, #state{name = Name, path = Path, mo
     SnapshotPath = filename:join(Path, SnapshotName),
     case filelib:is_dir(SnapshotPath) of
         true ->
-            ?LOG_NOTICE("Storage[~0p] skips recreating existing witness snapshot ~0p.",
-                [Name, SnapshotName], #{domain => [whatsapp, wa_raft]}),
+            ?RAFT_LOG_NOTICE("Storage[~0p] skips recreating existing witness snapshot ~0p.", [Name, SnapshotName]),
             {ok, Position};
         false ->
             cleanup_snapshots(State),
-            ?LOG_NOTICE("Storage[~0p] is creating witness snapshot ~0p.",
-                [Name, SnapshotName], #{domain => [whatsapp, wa_raft]}),
+            ?RAFT_LOG_NOTICE("Storage[~0p] is creating witness snapshot ~0p.", [Name, SnapshotName]),
             case erlang:function_exported(Module, storage_create_witness_snapshot, 2) of
                 true ->
                     case Module:storage_create_witness_snapshot(SnapshotPath, Handle) of
@@ -790,7 +789,7 @@ cleanup_snapshots(#state{path = Path}) ->
             lists:foreach(
                 fun ({_, SnapshotName}) ->
                     SnapshotPath = filename:join(Path, SnapshotName),
-                    ?LOG_NOTICE("Removing snapshot \"~s\".", [SnapshotPath], #{domain => [whatsapp, wa_raft]}),
+                    ?RAFT_LOG_NOTICE("Removing snapshot \"~s\".", [SnapshotPath]),
                     file:del_dir_r(SnapshotPath)
                 end, lists:sublist(Snapshots, length(Snapshots) - ?MAX_RETAINED_SNAPSHOT)),
             ok;
@@ -813,11 +812,13 @@ decode_snapshot_name(SnapshotName) ->
                 {Index, Term} when Index >= 0 andalso Term >= 0 ->
                     {true, {#raft_log_pos{index = Index, term = Term}, SnapshotName}};
                 _ ->
-                    ?LOG_WARNING("Invalid snapshot with invalid index (~p) and/or term (~p). (full name ~p)",
-                        [IndexStr, TermStr, SnapshotName], #{domain => [whatsapp, wa_raft]}),
+                    ?RAFT_LOG_WARNING(
+                        "Invalid snapshot with invalid index (~p) and/or term (~p). (full name ~p)",
+                        [IndexStr, TermStr, SnapshotName]
+                    ),
                     false
             end;
         _ ->
-            ?LOG_WARNING("Invalid snapshot dir name ~p", [SnapshotName], #{domain => [whatsapp, wa_raft]}),
+            ?RAFT_LOG_WARNING("Invalid snapshot dir name ~p", [SnapshotName]),
             false
     end.

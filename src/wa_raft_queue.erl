@@ -75,9 +75,9 @@
     queues/0
 ]).
 
--include_lib("kernel/include/logger.hrl").
 -include_lib("stdlib/include/ms_transform.hrl"). % used by ets:fun2ms
 -include_lib("wa_raft/include/wa_raft.hrl").
+-include_lib("wa_raft/include/wa_raft_logger.hrl").
 
 %%-------------------------------------------------------------------
 
@@ -369,8 +369,10 @@ init(
 ) ->
     process_flag(trap_exit, true),
 
-    ?LOG_NOTICE("Queue[~p] starting for partition ~0p/~0p with read queue ~0p",
-        [Name, Table, Partition, ReadsName], #{domain => [whatsapp, wa_raft]}),
+    ?RAFT_LOG_NOTICE(
+        "Queue[~p] starting for partition ~0p/~0p with read queue ~0p",
+        [Name, Table, Partition, ReadsName]
+    ),
 
     % The queue process is the first process in the supervision for a single
     % RAFT partition. The supervisor is configured to restart all processes if
@@ -385,17 +387,14 @@ init(
 
 -spec handle_call(Request :: term(), From :: gen_server:from(), State :: #state{}) -> {noreply, #state{}}.
 handle_call(Request, From, #state{name = Name} = State) ->
-    ?LOG_NOTICE("Queue[~p] got unexpected request ~0P from ~0p",
-        [Name, Request, 100, From], #{domain => [whatsapp, wa_raft]}),
+    ?RAFT_LOG_NOTICE("Queue[~p] got unexpected request ~0P from ~0p", [Name, Request, 100, From]),
     {noreply, State}.
 
 -spec handle_cast(Request :: term(), State :: #state{}) -> {noreply, #state{}}.
 handle_cast(Request, #state{name = Name} = State) ->
-    ?LOG_NOTICE("Queue[~p] got unexpected call ~0P",
-        [Name, Request, 100], #{domain => [whatsapp, wa_raft]}),
+    ?RAFT_LOG_NOTICE("Queue[~p] got unexpected call ~0P", [Name, Request, 100]),
     {noreply, State}.
 
 -spec terminate(Reason :: term(), State :: #state{}) -> term().
 terminate(Reason, #state{name = Name}) ->
-    ?LOG_NOTICE("Queue[~p] terminating due to ~0P",
-        [Name, Reason, 100], #{domain => [whatsapp, wa_raft]}).
+    ?RAFT_LOG_NOTICE("Queue[~p] terminating due to ~0P", [Name, Reason, 100]).

@@ -7,8 +7,8 @@
 -compile(warn_missing_spec_all).
 -behaviour(gen_server).
 
--include_lib("kernel/include/logger.hrl").
 -include_lib("wa_raft/include/wa_raft.hrl").
+-include_lib("wa_raft/include/wa_raft_logger.hrl").
 
 %% OTP supervision
 -export([
@@ -87,14 +87,12 @@ init(#raft_options{application = Application, transport_directory = Directory, t
 
 -spec handle_call(Request :: term(), From :: gen_server:from(), State :: #state{}) -> {noreply, NewState :: #state{}}.
 handle_call(Request, From, #state{name = Name} = State) ->
-    ?LOG_WARNING("~p received unrecognized call ~0P from ~0p",
-        [Name, Request, 25, From], #{domain => [whatsapp, wa_raft]}),
+    ?RAFT_LOG_WARNING("~p received unrecognized call ~0P from ~0p", [Name, Request, 25, From]),
     {noreply, State}.
 
 -spec handle_cast(Request :: term(), State :: #state{}) -> {noreply, NewState :: #state{}}.
 handle_cast(Request, #state{name = Name} = State) ->
-    ?LOG_NOTICE("~p got unrecognized cast ~0P",
-        [Name, Request, 25], #{domain => [whatsapp, wa_raft]}),
+    ?RAFT_LOG_NOTICE("~p got unrecognized cast ~0P", [Name, Request, 25]),
     {noreply, State}.
 
 -spec handle_info(Info :: term(), State :: #state{}) -> {noreply, NewState :: #state{}}.
@@ -103,8 +101,7 @@ handle_info(scan, #state{} = State) ->
     schedule_scan(),
     {noreply, State};
 handle_info(Info, #state{name = Name} = State) ->
-    ?LOG_NOTICE("~p got unrecognized info ~p",
-        [Name, Info], #{domain => [whatsapp, wa_raft]}),
+    ?RAFT_LOG_NOTICE("~p got unrecognized info ~p", [Name, Info]),
     {noreply, State}.
 
 -spec maybe_cleanup(State :: #state{}) -> ok | {error, term()}.
@@ -119,22 +116,28 @@ maybe_cleanup(#state{application = App, name = Name, directory = Directory} = St
                     ID = list_to_integer(Filename),
                     case wa_raft_transport:transport_info(ID) of
                         {ok, #{end_ts := EndTs}} when NowMillis - EndTs > RetainMillis ->
-                            ?LOG_NOTICE("~p deleting ~p due to expiring after transport ended",
-                                [Name, Filename], #{domain => [whatsapp, wa_raft]}),
+                            ?RAFT_LOG_NOTICE(
+                                "~p deleting ~p due to expiring after transport ended",
+                                [Name, Filename]
+                            ),
                             cleanup(ID, Path, State);
                         {ok, _Info} ->
                             ok;
                         not_found ->
-                            ?LOG_NOTICE("~p deleting ~p due to having no associated transport",
-                                [Name, Filename], #{domain => [whatsapp, wa_raft]}),
+                            ?RAFT_LOG_NOTICE(
+                                "~p deleting ~p due to having no associated transport",
+                                [Name, Filename]
+                            ),
                             cleanup(ID, Path, State)
                     end
                 end, Files);
         {error, enoent} ->
             ok;
         {error, Reason} ->
-            ?LOG_WARNING("~p failed to list transports for cleanup due to ~p",
-                [Name, Reason], #{domain => [whatsapp, wa_raft]}),
+            ?RAFT_LOG_WARNING(
+                "~p failed to list transports for cleanup due to ~p",
+                [Name, Reason]
+            ),
             {error, Reason}
     end.
 
@@ -144,8 +147,10 @@ cleanup(ID, Path, #state{name = Name}) ->
         ok ->
             ok;
         {error, Reason} ->
-            ?LOG_WARNING("~p failed to cleanup transport ~p due to ~p",
-                [Name, ID, Reason], #{domain => [whatsapp, wa_raft]}),
+            ?RAFT_LOG_WARNING(
+                "~p failed to cleanup transport ~p due to ~p",
+                [Name, ID, Reason]
+            ),
             {error, Reason}
     end.
 
