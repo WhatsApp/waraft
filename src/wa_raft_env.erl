@@ -32,7 +32,7 @@
 
 -spec database_path(Scope :: scope()) -> Root :: file:filename().
 database_path(Scope) ->
-    case get_env(Scope, {raft_database, db}) of
+    case get_env(Scope, ?RAFT_DATABASE) of
         {ok, Root} -> Root;
         undefined  -> error({no_configured_database_path, Scope})
     end.

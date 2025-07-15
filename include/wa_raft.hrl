@@ -11,6 +11,11 @@
 %% Registered information about applications and partitions
 %%-------------------------------------------------------------------
 
+%% Name of the application environment key that is expected to contain a path
+%% to the directory in which RAFT should place the partition paths for the
+%% RAFT partitions under a RAFT client application. This environment value uses
+%% the application search order to determine the value to use.
+-define(RAFT_DATABASE, raft_database).
 %% Default location containing databases for RAFT partitions part of a RAFT client application
 -define(RAFT_DATABASE_PATH(Application), (wa_raft_env:database_path(Application))).
 %% Registered database location for the specified RAFT partition
