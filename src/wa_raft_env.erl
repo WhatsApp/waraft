@@ -54,7 +54,7 @@ get_env(Scope, Key, Default) ->
 
 -spec get_env_impl(SearchApps :: [atom()], Key :: atom(), FallbackKey :: atom()) -> {ok, Value :: dynamic()} | undefined.
 get_env_impl([], _Key, FallbackKey) ->
-    application:get_env(?APP, FallbackKey);
+    ?RAFT_CONFIG(FallbackKey);
 get_env_impl([App | SearchApps], Key, FallbackKey) ->
     case application:get_env(App, Key) of
         {ok, Value} -> {ok, Value};

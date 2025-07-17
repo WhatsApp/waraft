@@ -149,7 +149,7 @@ default_name(Application) ->
 
 -spec default_config_apps(Application :: atom()) -> [atom()].
 default_config_apps(Application) ->
-    [Application, ?APP].
+    [Application, ?RAFT_APPLICATION].
 
 -spec registered_config_apps(Application :: atom()) -> [atom()].
 registered_config_apps(Application) ->

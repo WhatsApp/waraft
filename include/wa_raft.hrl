@@ -5,7 +5,8 @@
 %%%
 %%% This file defines general macros and data structures shared across modules.
 
--define(APP, wa_raft).
+%% The name of the RAFT application.
+-define(RAFT_APPLICATION, wa_raft).
 
 %%-------------------------------------------------------------------
 %% Registered information about applications and partitions
@@ -78,7 +79,7 @@
 %% Metrics
 %%-------------------------------------------------------------------
 
--define(RAFT_METRICS_MODULE_KEY, {?APP, raft_metrics_module}).
+-define(RAFT_METRICS_MODULE_KEY, {?RAFT_APPLICATION, raft_metrics_module}).
 -define(RAFT_METRICS_MODULE, (persistent_term:get(?RAFT_METRICS_MODULE_KEY, wa_raft_metrics))).
 -define(RAFT_COUNT(Metric), ?RAFT_METRICS_MODULE:count(Metric)).
 -define(RAFT_COUNTV(Metric, Value), ?RAFT_METRICS_MODULE:countv(Metric, Value)).
@@ -90,8 +91,8 @@
 %%-------------------------------------------------------------------
 
 %% Get global config
--define(RAFT_CONFIG(Name), (application:get_env(?APP, Name))).
--define(RAFT_CONFIG(Name, Default), (application:get_env(?APP, Name, Default))).
+-define(RAFT_CONFIG(Name), (application:get_env(?RAFT_APPLICATION, Name))).
+-define(RAFT_CONFIG(Name, Default), (application:get_env(?RAFT_APPLICATION, Name, Default))).
 
 %% Default metrics module
 -define(RAFT_METRICS_MODULE(), ?RAFT_CONFIG(raft_metrics_module)).
