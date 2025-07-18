@@ -131,7 +131,7 @@ init_tables() ->
 
 -spec handle_call(Request :: call(), From :: gen_server:from(), State :: #state{}) -> {noreply, #state{}} | {reply, term(), #state{}}.
 handle_call(?WHICH_TRANSPORTS, _From, #state{transports = Transports} = State) ->
-    {reply, [ID || #transport{id = ID} <- maps:values(Transports)], State};
+    {reply, [ID || _ := #transport{id = ID} <- Transports], State};
 handle_call(Request, From, #state{} = State) ->
     ?RAFT_LOG_NOTICE("received unrecognized call ~P from ~0p", [Request, 25, From]),
     {noreply, State}.
