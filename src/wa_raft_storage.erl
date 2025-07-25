@@ -730,7 +730,7 @@ handle_delayed_reads(#state{queues = Queues, module = Module, handle = Handle, p
 -spec handle_create_snapshot(SnapshotName :: string(), Storage :: #state{}) -> {ok, wa_raft_log:log_pos()} | {error, Reason :: term()}.
 handle_create_snapshot(SnapshotName, #state{name = Name, path = Path, module = Module, handle = Handle, position = Position} = State) ->
     SnapshotPath = filename:join(Path, SnapshotName),
-    case filelib:is_dir(SnapshotPath) of
+    case filelib:is_dir(SnapshotPath, prim_file) of
         true ->
             ?RAFT_LOG_NOTICE("Storage[~0p] skips recreating existing snapshot ~0p.", [Name, SnapshotName]),
             {ok, Position};
@@ -746,7 +746,7 @@ handle_create_snapshot(SnapshotName, #state{name = Name, path = Path, module = M
 -spec handle_create_witness_snapshot(SnapshotName :: string(), Storage :: #state{}) -> {ok, wa_raft_log:log_pos()} | {error, Reason :: term()}.
 handle_create_witness_snapshot(SnapshotName, #state{name = Name, path = Path, module = Module, handle = Handle, position = Position} = State) ->
     SnapshotPath = filename:join(Path, SnapshotName),
-    case filelib:is_dir(SnapshotPath) of
+    case filelib:is_dir(SnapshotPath, prim_file) of
         true ->
             ?RAFT_LOG_NOTICE("Storage[~0p] skips recreating existing witness snapshot ~0p.", [Name, SnapshotName]),
             {ok, Position};
@@ -800,7 +800,7 @@ cleanup_snapshots(#state{path = Path}) ->
 %% Private functions
 -spec list_snapshots(Path :: string()) -> [{wa_raft_log:log_pos(), file:filename()}].
 list_snapshots(Path) ->
-    SnapshotNames = filelib:wildcard(?SNAPSHOT_PREFIX ++ ".*", Path),
+    SnapshotNames = filelib:wildcard(?SNAPSHOT_PREFIX ++ ".*", Path, prim_file),
     Snapshots = lists:filtermap(fun decode_snapshot_name/1, SnapshotNames),
     lists:keysort(1, Snapshots).
 
