@@ -83,6 +83,7 @@
 -define(RESIGN_COMMAND,                                         ?RAFT_COMMAND(resign, undefined)).
 
 -define(ADJUST_MEMBERSHIP_COMMAND(Action, Peer, ConfigIndex),   ?RAFT_COMMAND(adjust_membership, {Action, Peer, ConfigIndex})).
+-define(REFRESH_CONFIG_COMMAND(),                               ?RAFT_COMMAND(refresh_config, undefined)).
 
 -define(SNAPSHOT_AVAILABLE_COMMAND(Root, Position),             ?RAFT_COMMAND(snapshot_available, {Root, Position})).
 
