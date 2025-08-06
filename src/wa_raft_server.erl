@@ -12,6 +12,7 @@
 -module(wa_raft_server).
 -compile(warn_missing_spec_all).
 -behaviour(gen_statem).
+-compile({inline, [require_valid_state/1]}).
 
 %%------------------------------------------------------------------------------
 %% RAFT Server - OTP Supervision
@@ -180,7 +181,7 @@
 -define(SERVER_LOG_PREFIX, "Server[~0p, term ~0p, ~0p] ").
 -define(SERVER_LOG_FORMAT(Format), ?SERVER_LOG_PREFIX Format).
 
--define(SERVER_LOG_ARGS(State, Data, Args), [(Data)#raft_state.name, (Data)#raft_state.current_term, State | Args]).
+-define(SERVER_LOG_ARGS(State, Data, Args), [(Data)#raft_state.name, (Data)#raft_state.current_term, require_valid_state(State) | Args]).
 
 -define(SERVER_LOG_ERROR(Data, Format, Args), ?SERVER_LOG_ERROR(?FUNCTION_NAME, Data, Format, Args)).
 -define(SERVER_LOG_ERROR(State, Data, Format, Args), ?RAFT_LOG_ERROR(?SERVER_LOG_FORMAT(Format), ?SERVER_LOG_ARGS(State, Data, Args))).
@@ -593,6 +594,14 @@ bootstrap(Server, Position, Config, Data) ->
 -spec notify_complete(Server :: gen_statem:server_ref()) -> ok.
 notify_complete(Server) ->
     gen_statem:cast(Server, ?NOTIFY_COMPLETE_COMMAND()).
+
+%%------------------------------------------------------------------------------
+%% RAFT Server - State Machine Implementation - Logging
+%%------------------------------------------------------------------------------
+
+-spec require_valid_state(state()) -> state().
+require_valid_state(State) ->
+    State.
 
 %%------------------------------------------------------------------------------
 %% RAFT Server - State Machine Implementation - General Callbacks
@@ -3036,8 +3045,9 @@ handle_heartbeat(
     EntryCount = length(Entries),
 
     ?RAFT_GATHER({raft, State, 'heartbeat.size'}, EntryCount),
-    ?SERVER_LOG_DEBUG(State, Data0, "considering appending ~0p log entries in range ~0p to ~0p to log ending at ~0p.",
-        [EntryCount, PrevLogIndex + 1, PrevLogIndex + EntryCount, wa_raft_log:last_index(View)]),
+    EntryCount =/= 0 andalso
+        ?SERVER_LOG_DEBUG(State, Data0, "considering appending ~0p log entries in range ~0p to ~0p to log ending at ~0p.",
+            [EntryCount, PrevLogIndex + 1, PrevLogIndex + EntryCount, wa_raft_log:last_index(View)]),
 
     case append_entries(State, PrevLogIndex, PrevLogTerm, Entries, EntryCount, Data0) of
         {ok, Accepted, NewMatchIndex, Data1} ->
