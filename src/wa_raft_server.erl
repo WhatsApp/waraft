@@ -1539,7 +1539,9 @@ follower(
                     ?RAFT_COUNT('raft.follower.handover.fatal'),
                     ?SERVER_LOG_WARNING(State0, "failing handover request because append was fatal due to ~0P.", [Reason, 30]),
                     send_rpc(Sender, ?HANDOVER_FAILED(Ref), State0),
-                    {next_state, disabled, State0#raft_state{disable_reason = Reason}}
+                    State1 = State0#raft_state{disable_reason = Reason},
+                    wa_raft_durable_state:store(State1),
+                    {next_state, disabled, State1}
             end;
         false ->
             ?SERVER_LOG_NOTICE(State0, "not considering handover RPC due to being inelgibile for leadership.", []),
@@ -3075,7 +3077,9 @@ handle_heartbeat(
                     {next_state, NewState, Data3, ?ELECTION_TIMEOUT(Data3)}
             end;
         {fatal, Reason} ->
-            {next_state, disabled, Data0#raft_state{disable_reason = Reason}}
+            Data1 = Data0#raft_state{disable_reason = Reason},
+            wa_raft_durable_state:store(Data1),
+            {next_state, disabled, Data1}
     end.
 
 %% Append the provided range of the log entries to the local log only if the
