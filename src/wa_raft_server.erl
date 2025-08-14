@@ -689,6 +689,7 @@ terminate(Reason, State, #raft_state{table = Table, partition = Partition} = Dat
     ?SERVER_LOG_NOTICE(State, Data, "terminating due to ~0P", [Reason, 20]),
     wa_raft_durable_state:sync(Data),
     wa_raft_info:delete_state(Table, Partition),
+    wa_raft_info:set_live(Table, Partition, false),
     wa_raft_info:set_stale(Table, Partition, true),
     ok.
 
@@ -934,7 +935,7 @@ stalled(
                 catch file:del_dir_r(Path)
             end;
         false ->
-            ?SERVER_LOG_NOTICE(State0, "at ~0p rejecting request to bootstrap with data.", [LastApplied, Index, Term]),
+            ?SERVER_LOG_NOTICE(State0, "at ~0p rejecting request to bootstrap with data.", [LastApplied]),
             {keep_state_and_data, {reply, From, {error, rejected}}}
     end;
 
@@ -1177,6 +1178,7 @@ leader(state_timeout = Type, Event, #raft_state{handover = {Peer, _, Timeout}} =
             ?SERVER_LOG_NOTICE(State, "handover to ~0p times out.", [Peer]),
             {keep_state, State#raft_state{handover = undefined}, {next_event, Type, Event}};
         false ->
+            check_leader_liveness(State),
             {keep_state_and_data, ?HEARTBEAT_TIMEOUT(State)}
     end;
 
@@ -1186,7 +1188,7 @@ leader(state_timeout, _, #raft_state{application = App} = State0) ->
         true ->
             State1 = append_entries_to_followers(State0),
             State2 = apply_single_node_cluster(State1),
-            check_leader_lagging(State2),
+            check_leader_liveness(State2),
             {keep_state, State1, ?HEARTBEAT_TIMEOUT(State2)};
         false ->
             ?SERVER_LOG_NOTICE(State0, "resigns from leadership because this node is ineligible.", []),
@@ -1679,7 +1681,7 @@ candidate(Type, Event, #raft_state{} = State) when is_tuple(Event), element(1, E
 
 %% [AppendEntries RPC] Switch to follower because current term now has a leader (5.2, 5.3)
 candidate(Type, ?REMOTE(Sender, ?APPEND_ENTRIES(_, _, _, _, _)) = Event, #raft_state{} = State) ->
-    ?SERVER_LOG_NOTICE(State, "switching to follower after receiving heartbeat from ~0P.", [Sender]),
+    ?SERVER_LOG_NOTICE(State, "switching to follower after receiving heartbeat from ~0p.", [Sender]),
     {next_state, follower_or_witness_state(State), State, {next_event, Type, Event}};
 
 %% [RequestVote RPC] Candidates should ignore incoming vote requests as they always vote for themselves (5.2)
@@ -1850,7 +1852,7 @@ disabled(Type, Event, #raft_state{} = State) ->
 witness(enter, PreviousStateName, #raft_state{} = State) ->
     ?RAFT_COUNT('raft.witness.enter'),
     ?SERVER_LOG_NOTICE(State, "becomes witness from state ~0p.", [PreviousStateName]),
-    {keep_state, enter_state(?FUNCTION_NAME, State)};
+    {keep_state, enter_state(?FUNCTION_NAME, State), ?ELECTION_TIMEOUT(State)};
 
 %% [Internal] Advance to newer term when requested
 witness(
@@ -1902,6 +1904,11 @@ witness(_, ?REMOTE(Candidate, ?REQUEST_VOTE(_, CandidateIndex, CandidateTerm)), 
 %% [Vote RPC] Witnesses should not act upon any incoming votes as they cannot become leader
 witness(_, ?REMOTE(_, ?VOTE(_)), #raft_state{}) ->
     keep_state_and_data;
+
+%% [State Timeout] Check liveness, but do not restart state.
+witness(state_timeout, _, #raft_state{} = State) ->
+    check_follower_liveness(?FUNCTION_NAME, State),
+    {keep_state_and_data, ?ELECTION_TIMEOUT(State)};
 
 %% [Command] Defer to common handling for generic RAFT server commands
 witness(Type, ?RAFT_COMMAND(_, _) = Event, #raft_state{} = State) ->
@@ -2620,44 +2627,28 @@ enter_state(State, #raft_state{table = Table, partition = Partition} = Data0) ->
     Now = erlang:monotonic_time(millisecond),
     Data1 = Data0#raft_state{state_start_ts = Now},
     true = wa_raft_info:set_state(Table, Partition, State),
-    ok = check_stale_upon_entry(State, Now, Data1),
+    ok = check_stale_upon_entry(State, Data1),
     Data1.
 
--spec check_stale_upon_entry(State :: state(), Now :: integer(), Data :: #raft_state{}) -> ok.
-%% Followers and candidates may be stale upon entry due to not receiving a timely heartbeat from an active leader.
-check_stale_upon_entry(
-    State,
-    Now,
-    #raft_state{
-        application = Application,
-        table = Table,
-        partition = Partition,
-        leader_heartbeat_ts = LeaderHeartbeatTs
-    } = Data
-) when State =:= follower; State =:= candidate ->
-    Stale = case LeaderHeartbeatTs of
-        undefined ->
-            ?SERVER_LOG_NOTICE(State, Data, "is stale upon entry due to having no prior leader heartbeat.", []),
-            true;
-        _ ->
-            Delay = Now - LeaderHeartbeatTs,
-            case Delay > ?RAFT_FOLLOWER_STALE_INTERVAL(Application) of
-                true ->
-                    ?SERVER_LOG_NOTICE(State, Data, "is stale upon entry because the last leader heartbeat was received ~0p ms ago.", [Delay]),
-                    true;
-                false ->
-                    false
-            end
-    end,
-    true = wa_raft_info:set_stale(Table, Partition, Stale),
+-spec check_stale_upon_entry(State :: state(), Data :: #raft_state{}) -> ok.
+%% Followers and candidates are live upon entry if they've received a timely heartbeat
+%% and inherit their staleness from the previous state.
+check_stale_upon_entry(State, Data) when State =:= follower; State =:= candidate ->
+    check_follower_liveness(State, Data);
+%% Witnesses are live upon entry if they've received a timely heartbeat but are always stale.
+check_stale_upon_entry(witness, #raft_state{table = Table, partition = Partition} = Data) ->
+    check_follower_liveness(witness, Data),
+    wa_raft_info:set_stale(Table, Partition, true),
     ok;
-%% Leaders are never stale upon entry.
-check_stale_upon_entry(leader, _, #raft_state{table = Table, partition = Partition}) ->
-    true = wa_raft_info:set_stale(Table, Partition, false),
+%% Leaders are always live and never stale upon entry.
+check_stale_upon_entry(leader, #raft_state{table = Table, partition = Partition}) ->
+    wa_raft_info:set_live(Table, Partition, true),
+    wa_raft_info:set_stale(Table, Partition, false),
     ok;
-%% Witness, stalled and disabled servers are always stale.
-check_stale_upon_entry(_, _, #raft_state{table = Table, partition = Partition}) ->
-    true = wa_raft_info:set_stale(Table, Partition, true),
+%% Stalled and disabled servers are never live and always stale.
+check_stale_upon_entry(_, #raft_state{table = Table, partition = Partition}) ->
+    wa_raft_info:set_live(Table, Partition, false),
+    wa_raft_info:set_stale(Table, Partition, true),
     ok.
 
 %% Set a new current term and voted-for peer and clear any state that is associated with the previous term.
@@ -3069,7 +3060,8 @@ handle_heartbeat(
                 _ ->
                     Data2
             end,
-            check_follower_lagging(CommitIndex, Data3),
+            refresh_follower_liveness(State, Data3),
+            check_follower_lagging(State, CommitIndex, Data3),
             case follower_or_witness_state(Data3) of
                 State ->
                     {keep_state, Data3, ?ELECTION_TIMEOUT(Data3)};
@@ -3345,9 +3337,55 @@ should_heartbeat(#raft_state{application = App, last_heartbeat_ts = LastHeartbea
     Current = erlang:monotonic_time(millisecond),
     Current - Latest > ?RAFT_HEARTBEAT_INTERVAL(App).
 
-%% Check follower/witness state due to log entry lag and change stale flag if needed
--spec check_follower_lagging(LeaderCommit :: pos_integer(), State :: #raft_state{}) -> ok.
+-spec refresh_follower_liveness(State :: state(), Data :: #raft_state{}) -> ok.
+refresh_follower_liveness(State, #raft_state{table = Table, partition = Partition} = Data) ->
+    case wa_raft_info:get_live(Table, Partition) of
+        true ->
+            ok;
+        false ->
+            ?SERVER_LOG_NOTICE(State, Data, "is live", []),
+            wa_raft_info:set_live(Table, Partition, true)
+    end,
+    ok.
+
+%% Check the timestamp of a follower or witness's last received heartbeat to determine if
+%% the replica is live.
+-spec check_follower_liveness(State :: state(), Data :: #raft_state{}) -> ok.
+check_follower_liveness(
+    State,
+    #raft_state{
+        application = App,
+        table = Table,
+        partition = Partition,
+        leader_heartbeat_ts = LeaderHeartbeatTs
+    } = Data
+) ->
+    NowTs = erlang:monotonic_time(millisecond),
+    GracePeriod = ?RAFT_LIVENESS_GRACE_PERIOD_MS(App),
+    Liveness = wa_raft_info:get_live(Table, Partition),
+    Live = LeaderHeartbeatTs =/= undefined andalso LeaderHeartbeatTs + GracePeriod >= NowTs,
+    case Live of
+        Liveness ->
+            ok;
+        true ->
+            ?SERVER_LOG_NOTICE(State, Data, "is live", []),
+            wa_raft_info:set_live(Table, Partition, true);
+        false ->
+            ?SERVER_LOG_NOTICE(State, Data, "is no longer live after last leader heartbeat at ~0p", [LeaderHeartbeatTs]),
+            wa_raft_info:set_live(Table, Partition, false),
+            wa_raft_info:get_stale(Table, Partition) =:= true andalso begin
+                ?SERVER_LOG_NOTICE(State, Data, "is now stale due to liveness", []),
+                wa_raft_info:set_stale(Table, Partition, false)
+            end
+    end,
+    ok.
+
+%% Check the state of a follower or witness's last applied log entry versus the leader's
+%% commit index to determine if the replica is lagging behind and adjust the partition's
+%% staleness if needed.
+-spec check_follower_lagging(State :: state(), LeaderCommit :: pos_integer(), State :: #raft_state{}) -> ok.
 check_follower_lagging(
+    State,
     LeaderCommit,
     #raft_state{
         application = App,
@@ -3358,24 +3396,30 @@ check_follower_lagging(
 ) ->
     Lagging = LeaderCommit - LastApplied,
     ?RAFT_GATHER('raft.follower.lagging', Lagging),
-    case Lagging < ?RAFT_FOLLOWER_STALE_ENTRIES(App) of
-        true ->
-            wa_raft_info:get_stale(Table, Partition) =/= false andalso begin
-                ?SERVER_LOG_NOTICE(follower, Data, "catches up.", []),
+
+    % Witnesses are always considered stale and so do not re-check their staleness.
+    State =/= witness andalso begin
+        Stale = wa_raft_info:get_stale(Table, Partition),
+        case Lagging >= ?RAFT_STALE_GRACE_PERIOD_ENTRIES(App) of
+            Stale ->
+                ok;
+            true ->
+                ?SERVER_LOG_NOTICE(State, Data, "last applied at ~0p is ~0p behind leader's commit at ~0p.",
+                    [LastApplied, Lagging, LeaderCommit]),
+                wa_raft_info:set_stale(Table, Partition, true);
+            false ->
+                ?SERVER_LOG_NOTICE(State, Data, "catches up.", []),
                 wa_raft_info:set_stale(Table, Partition, false)
-            end;
-        false ->
-            wa_raft_info:get_stale(Table, Partition) =/= true andalso begin
-                ?SERVER_LOG_NOTICE(follower, Data, "is far behind ~p (leader ~p, follower ~p)",
-                    [Lagging, LeaderCommit, LastApplied]),
-                wa_raft_info:set_stale(Table, Partition, true)
-            end
+        end
     end,
+
     ok.
 
-%% Check leader state and set stale if needed
--spec check_leader_lagging(#raft_state{}) -> term().
-check_leader_lagging(
+%% As leader, compute the quorum of the most recent timestamps of follower's
+%% acknowledgement of heartbeats and update the partition's staleness and
+%% liveness when necessary.
+-spec check_leader_liveness(#raft_state{}) -> term().
+check_leader_liveness(
     #raft_state{
         application = App,
         table = Table,
@@ -3395,9 +3439,11 @@ check_leader_lagging(
             ok;
         true ->
             ?SERVER_LOG_NOTICE(leader, State, "is now stale due to last heartbeat quorum age being ~0p ms >= ~0p ms max", [QuorumAge, MaxAge]),
+            wa_raft_info:set_live(Table, Partition, true),
             wa_raft_info:set_stale(Table, Partition, true);
         false ->
             ?SERVER_LOG_NOTICE(leader, State, "is no longer stale after heartbeat quorum age drops to ~0p ms < ~0p ms max", [QuorumAge, MaxAge]),
+            wa_raft_info:set_live(Table, Partition, false),
             wa_raft_info:set_stale(Table, Partition, false)
     end.
 

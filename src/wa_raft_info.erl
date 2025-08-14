@@ -16,6 +16,7 @@
     get_leader/2,
     get_current_term_and_leader/2,
     get_membership/2,
+    get_live/2,
     get_stale/2,
     get_state/2,
     get_message_queue_length/1
@@ -27,6 +28,7 @@
     delete_state/2,
     set_current_term_and_leader/4,
     set_membership/3,
+    set_live/3,
     set_stale/3,
     set_state/3
 ]).
@@ -35,6 +37,8 @@
 -define(RAFT_SERVER_STATE_KEY(Table, Partition), {state, Table, Partition}).
 %% Local RAFT server's most recently known term and leader
 -define(RAFT_CURRENT_TERM_AND_LEADER_KEY(Table, Partition), {term, Table, Partition}).
+%% Local RAFT server's current live flag - indicates if the server thinks it is part of a live cluster
+-define(RAFT_LIVE_KEY(Table, Partition), {live, Table, Partition}).
 %% Local RAFT server's current stale flag - indicates if the server thinks its data is stale
 -define(RAFT_STALE_KEY(Table, Partition), {stale, Table, Partition}).
 %% Local RAFT server's message queue length
@@ -77,6 +81,10 @@ get_current_term_and_leader(Table, Partition) ->
 get_state(Table, Partition) ->
     get(?RAFT_SERVER_STATE_KEY(Table, Partition), undefined).
 
+-spec get_live(wa_raft:table(), wa_raft:partition()) -> boolean().
+get_live(Table, Partition) ->
+    get(?RAFT_LIVE_KEY(Table, Partition), false).
+
 -spec get_stale(wa_raft:table(), wa_raft:partition()) -> boolean().
 get_stale(Table, Partition) ->
     get(?RAFT_STALE_KEY(Table, Partition), true).
@@ -117,6 +125,10 @@ set_state(Table, Partition, State) ->
 -spec delete_state(wa_raft:table(), wa_raft:partition()) -> true.
 delete_state(Table, Partition) ->
     delete(?RAFT_SERVER_STATE_KEY(Table, Partition)).
+
+-spec set_live(wa_raft:table(), wa_raft:partition(), boolean()) -> true.
+set_live(Table, Partition, Live) ->
+    set(?RAFT_LIVE_KEY(Table, Partition), Live).
 
 -spec set_stale(wa_raft:table(), wa_raft:partition(), boolean()) -> true.
 set_stale(Table, Partition, Stale) ->

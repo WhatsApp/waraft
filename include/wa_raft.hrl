@@ -202,14 +202,15 @@
 -define(RAFT_ELECTION_TIMEOUT_MAX, raft_election_timeout_ms_max).
 -define(RAFT_ELECTION_TIMEOUT_MAX(App), ?RAFT_APP_CONFIG(App, ?RAFT_ELECTION_TIMEOUT_MAX, 7500)).
 
-%% Maximum time in milliseconds for which no valid heartbeat was received from a leader
-%% before considering a follower stale
--define(RAFT_FOLLOWER_STALE_INTERVAL, raft_follower_heartbeat_stale_ms).
--define(RAFT_FOLLOWER_STALE_INTERVAL(App), ?RAFT_APP_CONFIG(App, ?RAFT_FOLLOWER_STALE_INTERVAL, 5000)).
-%% Maximum number of unapplied log entries compared to the commited log entry before
-%% considering a follower stale
--define(RAFT_FOLLOWER_STALE_ENTRIES, raft_follower_max_lagging).
--define(RAFT_FOLLOWER_STALE_ENTRIES(App), ?RAFT_APP_CONFIG(App, ?RAFT_FOLLOWER_STALE_ENTRIES, 5000)).
+%% The maximum time in milliseconds during which a leader can continue to be considered live without
+%% receiving an updated heartbeat response quorum from replicas or during which a follower or witness
+%% can be considered live without receiving a heartbeat from a valid leader of the current term.
+-define(RAFT_LIVENESS_GRACE_PERIOD_MS, raft_liveness_grace_period_ms).
+-define(RAFT_LIVENESS_GRACE_PERIOD_MS(App), ?RAFT_APP_CONFIG(App, ?RAFT_LIVENESS_GRACE_PERIOD_MS, 30_000)).
+%% The maximum number of log entries that can be not yet applied to a follower or witnesse's log
+%% compared to the leader's commit index before the replica is considered stale.
+-define(RAFT_STALE_GRACE_PERIOD_ENTRIES, raft_stale_grace_period_entries).
+-define(RAFT_STALE_GRACE_PERIOD_ENTRIES(App), ?RAFT_APP_CONFIG(App, ?RAFT_STALE_GRACE_PERIOD_ENTRIES, 5_000)).
 
 %% Minium amount of time in seconds since the last successfully received
 %% heartbeat from a leader of a term for non-forced promotion to be allowed.
