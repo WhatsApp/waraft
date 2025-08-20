@@ -1526,7 +1526,7 @@ follower(
 ) ->
     ?RAFT_COUNT('wa_raft.follower.handover'),
     ?SERVER_LOG_NOTICE(State0, "evaluating handover RPC from ~0p.", [Sender]),
-    case ?RAFT_LEADER_ELIGIBLE(App) of
+    case ?RAFT_LEADER_ELIGIBLE(App) andalso ?RAFT_ELECTION_WEIGHT(App) =/= 0 of
         true ->
             case append_entries(?FUNCTION_NAME, PrevLogIndex, PrevLogTerm, LogEntries, length(LogEntries), State0) of
                 {ok, true, _, State1} ->
@@ -2875,11 +2875,13 @@ is_eligible_for_handover(
         last_applied_indices = LastAppliedIndices
     }
 ) ->
-    % A peer whose matching index is unknown should not be eligible for handovers.
-    MatchIndex = maps:get(CandidateId, MatchIndices, 0),
-    % A peer whose last applied index is unknown should not be eligible for handovers.
-    LastAppliedIndex = maps:get(CandidateId, LastAppliedIndices, 0),
-    MatchIndex >= MatchCutoffIndex andalso LastAppliedIndex >= ApplyCutoffIndex.
+    % A peer whose matching index or last applied index is unknown should not be eligible for handovers.
+    case {maps:find(CandidateId, MatchIndices), maps:find(CandidateId, LastAppliedIndices)} of
+        {{ok, MatchIndex}, {ok, LastAppliedIndex}} ->
+            MatchIndex >= MatchCutoffIndex andalso LastAppliedIndex >= ApplyCutoffIndex;
+        _ ->
+            false
+    end.
 
 %%------------------------------------------------------------------------------
 %% RAFT Server - State Machine Implementation - Configuration Changes
