@@ -3373,9 +3373,9 @@ check_follower_liveness(
         false ->
             ?SERVER_LOG_NOTICE(State, Data, "is no longer live after last leader heartbeat at ~0p", [LeaderHeartbeatTs]),
             wa_raft_info:set_live(Table, Partition, false),
-            wa_raft_info:get_stale(Table, Partition) =:= true andalso begin
+            wa_raft_info:get_stale(Table, Partition) =:= false andalso begin
                 ?SERVER_LOG_NOTICE(State, Data, "is now stale due to liveness", []),
-                wa_raft_info:set_stale(Table, Partition, false)
+                wa_raft_info:set_stale(Table, Partition, true)
             end
     end,
     ok.
@@ -3430,20 +3430,17 @@ check_leader_liveness(
     NowTs = erlang:monotonic_time(millisecond),
     QuorumTs = compute_quorum(HeartbeatResponse#{node() => NowTs}, 0, config(State)),
 
-    Stale = wa_raft_info:get_stale(Table, Partition),
     QuorumAge = NowTs - QuorumTs,
     MaxAge = ?RAFT_LEADER_STALE_INTERVAL(App),
 
     case QuorumAge >= MaxAge of
-        Stale ->
-            ok;
         true ->
             ?SERVER_LOG_NOTICE(leader, State, "is now stale due to last heartbeat quorum age being ~0p ms >= ~0p ms max", [QuorumAge, MaxAge]),
-            wa_raft_info:set_live(Table, Partition, true),
+            wa_raft_info:set_live(Table, Partition, false),
             wa_raft_info:set_stale(Table, Partition, true);
         false ->
             ?SERVER_LOG_NOTICE(leader, State, "is no longer stale after heartbeat quorum age drops to ~0p ms < ~0p ms max", [QuorumAge, MaxAge]),
-            wa_raft_info:set_live(Table, Partition, false),
+            wa_raft_info:set_live(Table, Partition, true),
             wa_raft_info:set_stale(Table, Partition, false)
     end.
 
