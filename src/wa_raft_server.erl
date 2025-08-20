@@ -3432,18 +3432,28 @@ check_leader_liveness(
     NowTs = erlang:monotonic_time(millisecond),
     QuorumTs = compute_quorum(HeartbeatResponse#{node() => NowTs}, 0, config(State)),
 
+    % If the quorum of the most recent timestamps of follower's acknowledgement
+    % of heartbeats is too old, then the leader is considered stale.
     QuorumAge = NowTs - QuorumTs,
     MaxAge = ?RAFT_LEADER_STALE_INTERVAL(App),
+    ShouldBeStale = QuorumAge >= MaxAge,
+    ShouldBeLive = not ShouldBeStale,
 
-    case QuorumAge >= MaxAge of
+    % Update liveness if necessary
+    wa_raft_info:get_live(Table, Partition) =/= ShouldBeLive andalso
+        wa_raft_info:set_live(Table, Partition, ShouldBeLive),
+
+    % Update staleness if necessary
+    Stale = wa_raft_info:get_stale(Table, Partition),
+    case ShouldBeStale of
+        Stale ->
+            ok;
         true ->
             ?SERVER_LOG_NOTICE(leader, State, "is now stale due to last heartbeat quorum age being ~0p ms >= ~0p ms max", [QuorumAge, MaxAge]),
-            wa_raft_info:set_live(Table, Partition, false),
-            wa_raft_info:set_stale(Table, Partition, true);
+            wa_raft_info:set_stale(Table, Partition, ShouldBeStale);
         false ->
             ?SERVER_LOG_NOTICE(leader, State, "is no longer stale after heartbeat quorum age drops to ~0p ms < ~0p ms max", [QuorumAge, MaxAge]),
-            wa_raft_info:set_live(Table, Partition, true),
-            wa_raft_info:set_stale(Table, Partition, false)
+            wa_raft_info:set_stale(Table, Partition, ShouldBeStale)
     end.
 
 %% Based on information that the leader has available as a result of heartbeat replies, attempt
