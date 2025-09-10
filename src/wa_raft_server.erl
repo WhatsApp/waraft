@@ -2788,6 +2788,7 @@ heartbeat(
     case PrevLogTermRes =:= not_found orelse IsCatchingUp of %% catching up, or prep
         true ->
             {ok, LastTerm} = wa_raft_log:term(View, LastIndex),
+            ?RAFT_COUNT('raft.leader.heartbeat.not_ready'),
             ?SERVER_LOG_DEBUG(leader, State1, "sends empty heartbeat to follower ~p (local ~p, prev ~p, catching-up ~p)",
                 [FollowerId, LastIndex, PrevLogIndex, IsCatchingUp]),
             % Send append entries request.
@@ -2808,6 +2809,8 @@ heartbeat(
                     RawEntries
             end,
             {ok, PrevLogTerm} = PrevLogTermRes,
+            % track when we send out a heartbeat that is empty but also not at the end of the log
+            Entries =:= [] andalso PrevLogIndex =/= LastIndex andalso ?RAFT_COUNT('raft.leader.heartbeat.empty'),
             ?RAFT_GATHER('raft.leader.heartbeat.size', length(Entries)),
             ?SERVER_LOG_DEBUG(leader, State1, "heartbeat to follower ~p from ~p(~p entries). Commit index ~p",
                 [FollowerId, FollowerNextIndex, length(Entries), CommitIndex]),
