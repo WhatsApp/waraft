@@ -257,9 +257,6 @@
     (?RAFT_APP_CONFIG(App, ?RAFT_LOG_HEARTBEAT_BINARY_ENTRIES, false) =:= true)
 ).
 
-%% Whether or not the RAFT server should use any special catchup strategy to bring peers back in sync.
--define(RAFT_CATCHUP_ENABLED, raft_catchup_enabled).
--define(RAFT_CATCHUP_ENABLED(App), (?RAFT_APP_CONFIG(App, {?RAFT_CATCHUP_ENABLED, catchup_enabled}, true) =/= false)).
 %% Minimum number of log entries after which RAFT servers should use bulk logs catchup to bring peers
 %% back into sync if enabled.
 -define(RAFT_CATCHUP_THRESHOLD, raft_catchup_threshold).

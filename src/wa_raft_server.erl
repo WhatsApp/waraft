@@ -3473,12 +3473,9 @@ select_follower_replication_mode(
         last_applied = LastAppliedIndex
     }
 ) ->
-    CatchupEnabled = ?RAFT_CATCHUP_ENABLED(App),
     BulkLogThreshold = ?RAFT_CATCHUP_THRESHOLD(App),
     LeaderFirstIndex = wa_raft_log:first_index(View),
     if
-        % If catchup modes are not enabled, then always replicate using logs.
-        not CatchupEnabled                                      -> logs;
         % Snapshot is required if the follower is stalled or we are missing
         % the logs required for incremental replication.
         FollowerLastIndex =:= 0                                 -> snapshot;
