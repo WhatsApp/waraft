@@ -1081,7 +1081,7 @@ leader(
     HeartbeatResponse1 = HeartbeatResponse0#{FollowerId => erlang:monotonic_time(millisecond)},
     State1 = State0#raft_state{heartbeat_response_ts = HeartbeatResponse1},
 
-    case select_follower_replication_mode(FollowerMatchIndex, State1) of
+    case select_follower_replication_mode(FollowerMatchIndex, FollowerLastAppliedIndex, State1) of
         bulk_logs -> request_bulk_logs_for_follower(Sender, FollowerMatchIndex, State1);
         _         -> cancel_bulk_logs_for_follower(Sender, State1)
     end,
@@ -1121,7 +1121,7 @@ leader(
     ?SERVER_LOG_DEBUG(State0, "at commit index ~0p failed append to ~0p whose log now ends at ~0p.",
         [CommitIndex, Sender, FollowerEndIndex]),
 
-    select_follower_replication_mode(FollowerEndIndex, State0) =:= snapshot andalso
+    select_follower_replication_mode(FollowerEndIndex, FollowerLastAppliedIndex, State0) =:= snapshot andalso
         request_snapshot_for_follower(FollowerId, State0),
     cancel_bulk_logs_for_follower(Sender, State0),
 
@@ -3463,28 +3463,34 @@ check_leader_liveness(
 %% to discern what the best subsequent replication mode would be for this follower.
 -spec select_follower_replication_mode(
     FollowerLastIndex :: wa_raft_log:log_index(),
+    FollowerLastAppliedIndex :: wa_raft_log:log_index() | undefined,
     State :: #raft_state{}
 ) -> snapshot | bulk_logs | logs.
 select_follower_replication_mode(
     FollowerLastIndex,
+    FollowerLastAppliedIndex,
     #raft_state{
         application = App,
         log_view = View,
         last_applied = LastAppliedIndex
     }
 ) ->
-    BulkLogThreshold = ?RAFT_CATCHUP_THRESHOLD(App),
+    BulkLogThreshold = ?RAFT_CATCHUP_BULK_LOG_THRESHOLD(App),
+    ApplyBacklogThreshold = ?RAFT_CATCHUP_APPLY_BACKLOG_THRESHOLD(App),
     LeaderFirstIndex = wa_raft_log:first_index(View),
     if
         % Snapshot is required if the follower is stalled or we are missing
         % the logs required for incremental replication.
-        FollowerLastIndex =:= 0                                 -> snapshot;
-        LeaderFirstIndex > FollowerLastIndex                    -> snapshot;
+        FollowerLastIndex =:= 0                                                   -> snapshot;
+        LeaderFirstIndex > FollowerLastIndex                                      -> snapshot;
+        % If follower apply backlog is really large send a snapshot.
+        FollowerLastAppliedIndex =/= undefined andalso
+            FollowerLastIndex - FollowerLastAppliedIndex > ApplyBacklogThreshold  -> snapshot;
         % Past a certain threshold, we should try to use bulk log catchup
         % to quickly bring the follower back up to date.
-        LastAppliedIndex - FollowerLastIndex > BulkLogThreshold -> bulk_logs;
+        LastAppliedIndex - FollowerLastIndex > BulkLogThreshold                   -> bulk_logs;
         % Otherwise, replicate normally.
-        true                                                    -> logs
+        true                                                                      -> logs
     end.
 
 %% Try to start a snapshot transport to a follower if the snapshot transport

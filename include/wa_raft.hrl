@@ -259,8 +259,12 @@
 
 %% Minimum number of log entries after which RAFT servers should use bulk logs catchup to bring peers
 %% back into sync if enabled.
--define(RAFT_CATCHUP_THRESHOLD, raft_catchup_threshold).
--define(RAFT_CATCHUP_THRESHOLD(App), ?RAFT_APP_CONFIG(App, {?RAFT_CATCHUP_THRESHOLD, catchup_max_follower_lag}, 50000)).
+-define(RAFT_CATCHUP_BULK_LOG_THRESHOLD, raft_catchup_threshold).
+-define(RAFT_CATCHUP_BULK_LOG_THRESHOLD(App), ?RAFT_APP_CONFIG(App, {?RAFT_CATCHUP_BULK_LOG_THRESHOLD, catchup_max_follower_lag}, 50000)).
+%% Minimum number of unapplied log entries after which RAFT servers should use snapshot catchup to bring peers
+%% back into sync if enabled.
+-define(RAFT_CATCHUP_APPLY_BACKLOG_THRESHOLD, raft_catchup_apply_backlog_threshold).
+-define(RAFT_CATCHUP_APPLY_BACKLOG_THRESHOLD(App), ?RAFT_APP_CONFIG(App, {?RAFT_CATCHUP_APPLY_BACKLOG_THRESHOLD, catchup_max_follower_apply_backlog}, 20000)).
 %% Maximum log entries per heartbeat for catchup by bulk log transfer
 -define(RAFT_CATCHUP_MAX_ENTRIES_PER_BATCH, raft_catchup_log_batch_entries).
 -define(RAFT_CATCHUP_MAX_ENTRIES_PER_BATCH(App), ?RAFT_APP_CONFIG(App, ?RAFT_CATCHUP_MAX_ENTRIES_PER_BATCH, 800)).
