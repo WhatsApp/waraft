@@ -251,11 +251,11 @@ terminate(Reason, #state{name = Name}) ->
 
 %% Enqueue a commit.
 -spec commit_impl(From :: gen_server:from(), Request :: op(), Priority :: priority(), State :: #state{}) -> continue | commit_error().
-commit_impl(From, {Key, _} = Op, _Priority, #state{name = Name, server = Server, queues = Queues}) ->
+commit_impl(From, {Key, _} = Op, Priority, #state{name = Name, server = Server, queues = Queues}) ->
     StartT = os:timestamp(),
     try
         ?RAFT_LOG_DEBUG("Acceptor[~0p] starts to handle commit of ~0P from ~0p.", [Name, Op, 30, From]),
-        case wa_raft_queue:commit_started(Queues) of
+        case wa_raft_queue:commit_started(Queues, Priority) of
             commit_queue_full ->
                 ?RAFT_LOG_WARNING(
                     "Acceptor[~0p] is rejecting commit request from ~0p because the commit queue is full.",

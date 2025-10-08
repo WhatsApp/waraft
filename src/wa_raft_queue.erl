@@ -13,10 +13,10 @@
 -export([
     queues/1,
     queues/2,
-    commit_queue_size/1,
     commit_queue_size/2,
-    commit_queue_full/1,
+    commit_queue_size/3,
     commit_queue_full/2,
+    commit_queue_full/3,
     apply_queue_size/1,
     apply_queue_size/2,
     apply_queue_byte_size/1,
@@ -35,7 +35,7 @@
 
 %% PENDING COMMIT QUEUE API
 -export([
-    commit_started/1,
+    commit_started/2,
     commit_cancelled/3,
     commit_completed/3
 ]).
@@ -85,15 +85,17 @@
 -define(RAFT_QUEUE_TABLE_OPTIONS, [named_table, public, {read_concurrency, true}, {write_concurrency, true}]).
 
 %% Total number of counters for RAFT partition specfic counters
--define(RAFT_NUMBER_OF_QUEUE_SIZE_COUNTERS, 4).
+-define(RAFT_NUMBER_OF_QUEUE_SIZE_COUNTERS, 5).
 %% Index into counter reference for counter tracking apply queue size
 -define(RAFT_APPLY_QUEUE_SIZE_COUNTER, 1).
 %% Index into counter reference for counter tracking apply total byte size
 -define(RAFT_APPLY_QUEUE_BYTE_SIZE_COUNTER, 2).
-%% Index into counter reference for counter tracking commit queue size
--define(RAFT_COMMIT_QUEUE_SIZE_COUNTER, 3).
+%% Index into counter reference for counter tracking high priority commit queue size
+-define(RAFT_HIGH_PRIORITY_COMMIT_QUEUE_SIZE_COUNTER, 3).
+%% Index into counter reference for counter tracking low priority commit queue size
+-define(RAFT_LOW_PRIORITY_COMMIT_QUEUE_SIZE_COUNTER, 4).
 %% Index into counter reference for counter tracking read queue size
--define(RAFT_READ_QUEUE_SIZE_COUNTER, 4).
+-define(RAFT_READ_QUEUE_SIZE_COUNTER, 5).
 
 %%-------------------------------------------------------------------
 %% INTERNAL TYPES
@@ -129,33 +131,37 @@ queues(Table, Partition) ->
         Options -> queues(Options)
     end.
 
--spec commit_queue_size(Queues :: queues()) -> non_neg_integer().
-commit_queue_size(#queues{counters = Counters}) ->
-    atomics:get(Counters, ?RAFT_COMMIT_QUEUE_SIZE_COUNTER).
+-spec commit_queue_size(Queues :: queues(), Priority :: wa_raft_acceptor:priority()) -> non_neg_integer().
+commit_queue_size(#queues{counters = Counters}, high) ->
+    atomics:get(Counters, ?RAFT_HIGH_PRIORITY_COMMIT_QUEUE_SIZE_COUNTER);
+commit_queue_size(#queues{counters = Counters}, low) ->
+    atomics:get(Counters, ?RAFT_LOW_PRIORITY_COMMIT_QUEUE_SIZE_COUNTER).
 
--spec commit_queue_size(wa_raft:table(), wa_raft:partition()) -> non_neg_integer().
-commit_queue_size(Table, Partition) ->
+-spec commit_queue_size(Table :: wa_raft:table(), Partition :: wa_raft:partition(), Priority :: wa_raft_acceptor:priority()) -> non_neg_integer().
+commit_queue_size(Table, Partition, Priority) ->
     case queues(Table, Partition) of
         undefined -> 0;
-        Queue     -> commit_queue_size(Queue)
+        Queue     -> commit_queue_size(Queue, Priority)
     end.
 
--spec commit_queue_full(Queues :: queues()) -> boolean().
-commit_queue_full(#queues{application = App, counters = Counters}) ->
-    atomics:get(Counters, ?RAFT_COMMIT_QUEUE_SIZE_COUNTER) >= ?RAFT_MAX_PENDING_COMMITS(App).
+-spec commit_queue_full(Queues :: queues(), Priority :: wa_raft_acceptor:priority()) -> boolean().
+commit_queue_full(#queues{application = App, counters = Counters}, high) ->
+    atomics:get(Counters, ?RAFT_HIGH_PRIORITY_COMMIT_QUEUE_SIZE_COUNTER) >= ?RAFT_MAX_PENDING_HIGH_PRIORITY_COMMITS(App);
+commit_queue_full(#queues{application = App, counters = Counters}, low) ->
+    atomics:get(Counters, ?RAFT_LOW_PRIORITY_COMMIT_QUEUE_SIZE_COUNTER) >= ?RAFT_MAX_PENDING_LOW_PRIORITY_COMMITS(App).
 
--spec commit_queue_full(wa_raft:table(), wa_raft:partition()) -> boolean().
-commit_queue_full(Table, Partition) ->
+-spec commit_queue_full(Table :: wa_raft:table(), Partition :: wa_raft:partition(), Priority :: wa_raft_acceptor:priority()) -> boolean().
+commit_queue_full(Table, Partition, Priority) ->
     case queues(Table, Partition) of
         undefined -> false;
-        Queues    -> commit_queue_full(Queues)
+        Queues    -> commit_queue_full(Queues, Priority)
     end.
 
 -spec apply_queue_size(Queues :: queues()) -> non_neg_integer().
 apply_queue_size(#queues{counters = Counters}) ->
     atomics:get(Counters, ?RAFT_APPLY_QUEUE_SIZE_COUNTER).
 
--spec apply_queue_size(wa_raft:table(), wa_raft:partition()) -> non_neg_integer().
+-spec apply_queue_size(Table :: wa_raft:table(), Partition :: wa_raft:partition()) -> non_neg_integer().
 apply_queue_size(Table, Partition) ->
     case queues(Table, Partition) of
         undefined -> 0;
@@ -219,9 +225,9 @@ registered_name(Table, Partition) ->
 %% PENDING COMMIT QUEUE API
 %%-------------------------------------------------------------------
 
--spec commit_started(Queues :: queues()) -> ok | apply_queue_full | commit_queue_full.
-commit_started(#queues{counters = Counters} = Queues) ->
-    case commit_queue_full(Queues) of
+-spec commit_started(Queues :: queues(), Priority :: wa_raft_acceptor:priority()) -> ok | apply_queue_full | commit_queue_full.
+commit_started(#queues{counters = Counters} = Queues, Priority) ->
+    case commit_queue_full(Queues, Priority) of
         true ->
             commit_queue_full;
         false ->
@@ -229,7 +235,7 @@ commit_started(#queues{counters = Counters} = Queues) ->
                 true ->
                     apply_queue_full;
                 false ->
-                    PendingCommits = atomics:add_get(Counters, ?RAFT_COMMIT_QUEUE_SIZE_COUNTER, 1),
+                    PendingCommits = atomics:add_get(Counters, ?RAFT_HIGH_PRIORITY_COMMIT_QUEUE_SIZE_COUNTER, 1),
                     ?RAFT_GATHER('raft.acceptor.commit.request.pending', PendingCommits),
                     ok
             end
@@ -238,13 +244,13 @@ commit_started(#queues{counters = Counters} = Queues) ->
 
 -spec commit_cancelled(Queues :: queues(), From :: gen_server:from(), Reason :: wa_raft_acceptor:commit_error() | undefined) -> ok.
 commit_cancelled(#queues{counters = Counters}, From, Reason) ->
-    atomics:sub(Counters, ?RAFT_COMMIT_QUEUE_SIZE_COUNTER, 1),
+    atomics:sub(Counters, ?RAFT_HIGH_PRIORITY_COMMIT_QUEUE_SIZE_COUNTER, 1),
     Reason =/= undefined andalso gen_server:reply(From, Reason),
     ok.
 
 -spec commit_completed(Queues :: queues(), From :: gen_server:from(), Reply :: term()) -> ok.
 commit_completed(#queues{counters = Counters}, From, Reply) ->
-    atomics:sub(Counters, ?RAFT_COMMIT_QUEUE_SIZE_COUNTER, 1),
+    atomics:sub(Counters, ?RAFT_HIGH_PRIORITY_COMMIT_QUEUE_SIZE_COUNTER, 1),
     gen_server:reply(From, Reply),
     ok.
 

@@ -142,9 +142,12 @@
 %% Maximum bytes of pending applies for any single RAFT partition
 -define(RAFT_MAX_PENDING_APPLY_BYTES, raft_max_pending_apply_bytes).
 -define(RAFT_MAX_PENDING_APPLY_BYTES(App), ?RAFT_APP_CONFIG(App, ?RAFT_MAX_PENDING_APPLY_BYTES, 32_000_000)).
-%% Maximum number of pending commits for any single RAFT partition
--define(RAFT_MAX_PENDING_COMMITS, raft_max_pending_commits).
--define(RAFT_MAX_PENDING_COMMITS(App), ?RAFT_APP_CONFIG(App, ?RAFT_MAX_PENDING_COMMITS, 1500)).
+%% Maximum number of pending high priority commits for any single RAFT partition
+-define(RAFT_MAX_PENDING_HIGH_PRIORITY_COMMITS, raft_max_pending_high_priority_commits).
+-define(RAFT_MAX_PENDING_HIGH_PRIORITY_COMMITS(App), ?RAFT_APP_CONFIG(App, ?RAFT_MAX_PENDING_HIGH_PRIORITY_COMMITS, 1500)).
+%% Maximum number of pending low priority commits for any single RAFT partition
+-define(RAFT_MAX_PENDING_LOW_PRIORITY_COMMITS, raft_max_pending_low_priority_commits).
+-define(RAFT_MAX_PENDING_LOW_PRIORITY_COMMITS(App), ?RAFT_APP_CONFIG(App, ?RAFT_MAX_PENDING_LOW_PRIORITY_COMMITS, 150)).
 %% Maximum number of pending reads for any single RAFT partition
 -define(RAFT_MAX_PENDING_READS, raft_max_pending_reads).
 -define(RAFT_MAX_PENDING_READS(App), ?RAFT_APP_CONFIG(App, ?RAFT_MAX_PENDING_READS, 5000)).
