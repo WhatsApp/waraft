@@ -19,7 +19,9 @@
 -export([
     commit/2,
     commit/3,
+    commit/4,
     commit_async/3,
+    commit_async/4,
     read/2,
     read/3
 ]).
@@ -42,7 +44,8 @@
     command/0,
     key/0,
     op/0,
-    read_op/0
+    read_op/0,
+    priority/0
 ]).
 
 -export_type([
@@ -68,6 +71,7 @@
 -type key() :: term().
 -type op() :: {Key :: key(), Command :: command()}.
 -type read_op() :: {From :: gen_server:from(), Command :: command()}.
+-type priority() :: high | low.
 
 -type call_error_type() :: timeout | unreachable | {call_error, Reason :: term()}.
 -type call_error() :: {error, call_error_type()}.
@@ -78,8 +82,8 @@
 -type read_error() :: {error, read_error_type()}.
 -type read_result() :: Result :: dynamic() | Error :: read_error() | call_error().
 
--type commit_request() :: {commit, Op :: op()}.
--type commit_async_request() :: {commit, From :: gen_server:from(), Op :: op()}.
+-type commit_request() :: {commit, Op :: op()} | {commit, Op :: op(), Priority :: priority()}.
+-type commit_async_request() :: {commit, From :: gen_server:from(), Op :: op()} | {commit, From :: gen_server:from(), Op :: op(), Priority :: priority()}.
 -type commit_error_type() ::
     not_leader |
     {commit_queue_full, Key :: key()} |
@@ -139,9 +143,17 @@ commit(ServerRef, Op) ->
 commit(ServerRef, Op, Timeout) ->
     call(ServerRef, {commit, Op}, Timeout).
 
+-spec commit(ServerRef :: gen_server:server_ref(), Op :: op(), Timeout :: timeout(), Priority :: priority()) -> commit_result().
+commit(ServerRef, Op, Timeout, Priority) ->
+    call(ServerRef, {commit, Op, Priority}, Timeout).
+
 -spec commit_async(ServerRef :: gen_server:server_ref(), From :: {pid(), term()}, Op :: op()) -> ok.
 commit_async(ServerRef, From, Op) ->
     gen_server:cast(ServerRef, {commit, From, Op}).
+
+-spec commit_async(ServerRef :: gen_server:server_ref(), From :: {pid(), term()}, Op :: op(), Priority :: priority()) -> ok.
+commit_async(ServerRef, From, Op, Priority) ->
+    gen_server:cast(ServerRef, {commit, From, Op, Priority}).
 
 % Strong-read
 -spec read(ServerRef :: gen_server:server_ref(), Command :: command()) -> read_result().
@@ -207,7 +219,9 @@ handle_call({read, Command}, From, State) ->
         {error, _} = Error -> {reply, Error, State}
     end;
 handle_call({commit, Op}, From, State) ->
-    case commit_impl(From, Op, State) of
+    ?MODULE:handle_call({commit, Op, high}, From, State);
+handle_call({commit, Op, Priority}, From, State) ->
+    case commit_impl(From, Op, Priority, State) of
         continue           -> {noreply, State};
         {error, _} = Error -> {reply, Error, State}
     end;
@@ -217,7 +231,9 @@ handle_call(Request, From, #state{name = Name} = State) ->
 
 -spec handle_cast(commit_async_request(), #state{}) -> {noreply, #state{}}.
 handle_cast({commit, From, Op}, State) ->
-    Result = commit_impl(From, Op, State),
+    ?MODULE:handle_cast({commit, From, Op, high}, State);
+handle_cast({commit, From, Op, Priority}, State) ->
+    Result = commit_impl(From, Op, Priority, State),
     Result =/= continue andalso gen_server:reply(From, Result),
     {noreply, State};
 handle_cast(Request, #state{name = Name} = State) ->
@@ -234,8 +250,8 @@ terminate(Reason, #state{name = Name}) ->
 %%-------------------------------------------------------------------
 
 %% Enqueue a commit.
--spec commit_impl(From :: gen_server:from(), Request :: op(), State :: #state{}) -> continue | commit_error().
-commit_impl(From, {Key, _} = Op, #state{name = Name, server = Server, queues = Queues}) ->
+-spec commit_impl(From :: gen_server:from(), Request :: op(), Priority :: priority(), State :: #state{}) -> continue | commit_error().
+commit_impl(From, {Key, _} = Op, _Priority, #state{name = Name, server = Server, queues = Queues}) ->
     StartT = os:timestamp(),
     try
         ?RAFT_LOG_DEBUG("Acceptor[~0p] starts to handle commit of ~0P from ~0p.", [Name, Op, 30, From]),
