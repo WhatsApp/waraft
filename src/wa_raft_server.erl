@@ -235,6 +235,7 @@
     | {last_applied, wa_raft_log:log_index()}
     | {leader_id, node()}
     | {pending_high, non_neg_integer()}
+    | {pending_low, non_neg_integer()}
     | {pending_read, boolean()}
     | {queued, non_neg_integer()}
     | {next_indices, #{node() => wa_raft_log:log_index()}}
@@ -1207,21 +1208,27 @@ leader(cast, ?LEGACY_COMMIT_COMMAND(From, Op), State) ->
     ?MODULE:leader(cast, ?COMMIT_COMMAND(From, Op, high), State);
 leader(
     cast,
-    ?COMMIT_COMMAND(From, Op, _Priority),
+    ?COMMIT_COMMAND(From, Op, Priority),
     #raft_state{
         application = App,
         pending_high = PendingHigh,
+        pending_low = PendingLow,
         handover = Handover
     } = State0
 ) ->
     % No size limit is imposed here as the pending queue cannot grow larger
     % than the limit on the number of pending commits.
     ?RAFT_COUNT('raft.commit'),
-    State1 = State0#raft_state{pending_high = [{From, Op} | PendingHigh]},
+    State1 = case Priority of
+        high ->
+            State0#raft_state{pending_high = [{From, Op} | PendingHigh]};
+        low ->
+            State0#raft_state{pending_low = [{From, Op} | PendingLow]}
+    end,
     case Handover of
         undefined ->
             State2 = apply_single_node_cluster(State1),
-            PendingCount = length(State2#raft_state.pending_high),
+            PendingCount = length(State2#raft_state.pending_high) + length(State2#raft_state.pending_low),
             case ?RAFT_COMMIT_BATCH_INTERVAL(App) > 0 andalso PendingCount =< ?RAFT_COMMIT_BATCH_MAX_ENTRIES(App) of
                 true ->
                     ?RAFT_COUNT('raft.commit.batch.delay'),
@@ -1247,13 +1254,14 @@ leader(
         commit_index = CommitIndex,
         last_applied = LastApplied,
         pending_high = PendingHigh,
+        pending_low = PendingLow,
         first_current_term_log_index = FirstLogIndex
     } = State0
 ) ->
     ReadIndex = max(CommitIndex, FirstLogIndex),
     case is_single_member(Self, config(State0)) of
         % If we are a single node cluster and we are fully-applied, then immediately dispatch.
-        true when PendingHigh =:= [], ReadIndex =< LastApplied ->
+        true when PendingHigh =:= [], PendingLow =:= [], ReadIndex =< LastApplied ->
             wa_raft_storage:apply_read(Storage, From, Command),
             {keep_state, State0};
         _ ->
@@ -2003,6 +2011,7 @@ command(State, {call, From}, ?STATUS_COMMAND, #raft_state{} = Data) ->
         {last_applied, Data#raft_state.last_applied},
         {leader_id, Data#raft_state.leader_id},
         {pending_high, length(Data#raft_state.pending_high)},
+        {pending_low, length(Data#raft_state.pending_low)},
         {pending_read, Data#raft_state.pending_read},
         {queued, maps:size(Data#raft_state.queued)},
         {next_indices, Data#raft_state.next_indices},
@@ -2698,9 +2707,9 @@ append_entries_to_followers(Data0) ->
     Data2.
 
 -spec commit_pending(Data :: #raft_state{}) -> #raft_state{}.
-commit_pending(#raft_state{pending_high = [], pending_read = false} = Data) ->
+commit_pending(#raft_state{pending_high = [], pending_low = [], pending_read = false} = Data) ->
     Data;
-commit_pending(#raft_state{log_view = View, pending_high = PendingHigh, queued = Queued} = Data) ->
+commit_pending(#raft_state{log_view = View, pending_high = PendingHigh, pending_low = [], queued = Queued} = Data) ->
     {Entries, NewLabel} = collect_pending(Data),
     case wa_raft_log:try_append(View, Entries) of
         {ok, NewView} ->
@@ -2709,7 +2718,7 @@ commit_pending(#raft_state{log_view = View, pending_high = PendingHigh, queued =
             Last = wa_raft_log:last_index(NewView),
             {_, NewQueued} =
                 lists:foldl(
-                    fun ({From, _}, {Index, AccQueued}) ->
+                    fun ({From, _Op}, {Index, AccQueued}) ->
                         {Index - 1, AccQueued#{Index => From}}
                     end,
                     {Last, Queued},
@@ -2735,17 +2744,17 @@ commit_pending(#raft_state{log_view = View, pending_high = PendingHigh, queued =
     end.
 
 -spec collect_pending(Data :: #raft_state{}) -> {[wa_raft_log:log_entry()], wa_raft_label:label() | undefined}.
-collect_pending(#raft_state{pending_high = [], pending_read = true} = Data) ->
+collect_pending(#raft_state{pending_high = [], pending_low = [], pending_read = true} = Data) ->
     % If the pending queue is empty, then we have at least one pending
     % read but no commits to go along with it.
     {ReadEntry, NewLabel} = make_log_entry_impl({?READ_OP, noop}, Data),
     {[ReadEntry], NewLabel};
-collect_pending(#raft_state{last_label = LastLabel, pending_high = PendingHigh} = Data) ->
+collect_pending(#raft_state{last_label = LastLabel, pending_high = PendingHigh, pending_low = []} = Data) ->
     % Otherwise, the pending queue is kept in reverse order so fold
     % from the right to ensure that the log entries are labeled
     % in the correct order.
     {Entries, NewLabel} = lists:foldr(
-        fun ({_, Op}, {AccEntries, AccLabel}) ->
+        fun ({_From, Op}, {AccEntries, AccLabel}) ->
             {Entry, NewAccLabel} = make_log_entry_impl(Op, AccLabel, Data),
             {[Entry | AccEntries], NewAccLabel}
         end,
@@ -2755,12 +2764,13 @@ collect_pending(#raft_state{last_label = LastLabel, pending_high = PendingHigh} 
     {lists:reverse(Entries), NewLabel}.
 
 -spec cancel_pending(Reason :: wa_raft_acceptor:commit_error(), Data :: #raft_state{}) -> #raft_state{}.
-cancel_pending(_, #raft_state{pending_high = []} = Data) ->
+cancel_pending(_, #raft_state{pending_high = [], pending_low = []} = Data) ->
     Data;
-cancel_pending(Reason, #raft_state{queues = Queues, pending_high = PendingHigh} = Data) ->
+cancel_pending(Reason, #raft_state{queues = Queues, pending_high = PendingHigh, pending_low = PendingLow} = Data) ->
     % Pending commits are kept in reverse order.
-    [wa_raft_queue:commit_cancelled(Queues, From, Reason) || {From, _} <- lists:reverse(PendingHigh)],
-    Data#raft_state{pending_high = []}.
+    [wa_raft_queue:commit_cancelled(Queues, From, Reason) || {From, _Op} <- lists:reverse(PendingHigh)],
+    [wa_raft_queue:commit_cancelled(Queues, From, Reason) || {From, _Op} <- lists:reverse(PendingLow)],
+    Data#raft_state{pending_high = [], pending_low = []}.
 
 -spec heartbeat(Peer :: #raft_identity{}, State :: #raft_state{}) -> #raft_state{}.
 heartbeat(Self, #raft_state{self = Self} = Data) ->
