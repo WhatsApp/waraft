@@ -26,7 +26,7 @@
 
 %% RAFT log provider interface for writing new log data
 -export([
-    append/3
+    append/4
 ]).
 
 %% RAFT log provider interface for managing underlying RAFT log
@@ -141,8 +141,8 @@ config(#raft_log{name = Name}) ->
 %% RAFT log provider interface for writing new log data
 %%-------------------------------------------------------------------
 
--spec append(View :: wa_raft_log:view(), Entries :: [wa_raft_log:log_entry() | binary()], Mode :: strict | relaxed) -> ok.
-append(View, Entries, _Mode) ->
+-spec append(View :: wa_raft_log:view(), Entries :: [wa_raft_log:log_entry() | binary()], Mode :: strict | relaxed, Priority :: wa_raft_acceptor:priority()) -> ok.
+append(View, Entries, _Mode, _Priority) ->
     Name = wa_raft_log:log_name(View),
     Last = wa_raft_log:last_index(View),
     true = ets:insert(Name, append_decode(Last + 1, Entries)),

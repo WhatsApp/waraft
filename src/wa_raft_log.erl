@@ -20,6 +20,7 @@
 -export([
     append/2,
     try_append/2,
+    try_append/3,
     check_heartbeat/3
 ]).
 
@@ -241,7 +242,7 @@
 %%    make it difficult to append to the log without blocking, then
 %%    the append should be skipped and 'skipped' returned. Otherwise,
 %%    the same conditions as the 'strict' mode apply.
--callback append(View :: view(), Entries :: [log_entry() | binary()], Mode :: strict | relaxed) ->
+-callback append(View :: view(), Entries :: [log_entry() | binary()], Mode :: strict | relaxed, Priority :: wa_raft_acceptor:priority()) ->
     ok | skipped | {error, Reason :: term()}.
 
 %%-------------------------------------------------------------------
@@ -326,22 +327,27 @@ start_link(#raft_options{log_name = Name} = Options) ->
     {ok, NewView :: view()} | {error, Reason :: term()}.
 append(View, Entries) ->
     % eqwalizer:ignore - strict append cannot return skipped
-    append(View, Entries, strict).
+    append(View, Entries, strict, high).
 
 %% Attempt to append new log entries to the end of the log if an append can be
 %% serviced immediately.
 -spec try_append(View :: view(), Entries :: [log_entry() | binary()]) ->
     {ok, NewView :: view()} | skipped | {error, Reason :: term()}.
 try_append(View, Entries) ->
-    append(View, Entries, relaxed).
+    try_append(View, Entries, high).
+
+-spec try_append(View :: view(), Entries :: [log_entry() | binary()], Priority :: wa_raft_acceptor:priority()) ->
+    {ok, NewView :: view()} | skipped | {error, Reason :: term()}.
+try_append(View, Entries, Priority) ->
+    append(View, Entries, relaxed, Priority).
 
 %% Append new log entries to the end of the log.
--spec append(View :: view(), Entries :: [log_entry() | binary()], Mode :: strict | relaxed) ->
+-spec append(View :: view(), Entries :: [log_entry() | binary()], Mode :: strict | relaxed, Priority :: wa_raft_acceptor:priority()) ->
     {ok, NewView :: view()} | skipped | {error, Reason :: term()}.
-append(#log_view{last = Last} = View, Entries, Mode) ->
+append(#log_view{last = Last} = View, Entries, Mode, Priority) ->
     ?RAFT_COUNT('raft.log.append'),
     Provider = provider(View),
-    case Provider:append(View, Entries, Mode) of
+    case Provider:append(View, Entries, Mode, Priority) of
         ok ->
             ?RAFT_COUNT('raft.log.append.ok'),
             {ok, refresh_config(View#log_view{last = Last + length(Entries)})};

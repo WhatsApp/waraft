@@ -2724,7 +2724,7 @@ commit_pending(#raft_state{log_view = View, pending_high = PendingHigh, pending_
         [_ | _] ->
             % If we have processed at least one new log entry
             % with the given priority, we try to append to the log.
-            case wa_raft_log:try_append(View, Entries) of
+            case wa_raft_log:try_append(View, Entries, Priority) of
                 {ok, NewView} ->
                     % Add the newly appended log entries to the pending queue (which
                     % is kept in reverse order).
