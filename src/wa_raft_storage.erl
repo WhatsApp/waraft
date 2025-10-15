@@ -30,7 +30,7 @@
 -export([
     open/1,
     cancel/1,
-    apply/4,
+    apply/5,
     apply_read/3
 ]).
 
@@ -319,7 +319,7 @@
 -define(OPEN_REQUEST, open).
 -define(CANCEL_REQUEST, cancel).
 -define(FULFILL_REQUEST(Key, Result), {fulfill, Key, Result}).
--define(APPLY_REQUEST(From, Record, Size), {apply, From, Record, Size}).
+-define(APPLY_REQUEST(From, Record, Size, Priority), {apply, From, Record, Size, Priority}).
 -define(APPLY_READ_REQUEST(From, Command), {apply_read, From, Command}).
 
 -define(CREATE_SNAPSHOT_REQUEST(), create_snapshot).
@@ -346,7 +346,7 @@
 -type open_request() :: ?OPEN_REQUEST.
 -type cancel_request() :: ?CANCEL_REQUEST.
 -type fulfill_request() :: ?FULFILL_REQUEST(Key :: wa_raft_acceptor:key(), Result :: wa_raft_acceptor:commit_result()).
--type apply_request() :: ?APPLY_REQUEST(From :: gen_server:from() | undefined, Record :: wa_raft_log:log_record(), Size :: non_neg_integer()).
+-type apply_request() :: ?APPLY_REQUEST(From :: gen_server:from() | undefined, Record :: wa_raft_log:log_record(), Size :: non_neg_integer(), Priority :: wa_raft_acceptor:priority()).
 -type apply_read_request() :: ?APPLY_READ_REQUEST(From :: gen_server:from(), Comman :: wa_raft_acceptor:command()).
 
 -type create_snapshot_request() :: ?CREATE_SNAPSHOT_REQUEST() | ?CREATE_SNAPSHOT_REQUEST(Name :: string()).
@@ -414,10 +414,11 @@ cancel(Storage) ->
     Storage :: gen_server:server_ref(),
     From :: gen_server:from() | undefined,
     Record :: wa_raft_log:log_record(),
-    Size :: non_neg_integer()
+    Size :: non_neg_integer(),
+    Priority :: wa_raft_acceptor:priority()
 ) -> ok.
-apply(Storage, From, Record, Size) ->
-    gen_server:cast(Storage, ?APPLY_REQUEST(From, Record, Size)).
+apply(Storage, From, Record, Size, Priority) ->
+    gen_server:cast(Storage, ?APPLY_REQUEST(From, Record, Size, Priority)).
 
 -spec apply_read(Storage :: gen_server:server_ref(), From :: gen_server:from(), Command :: wa_raft_acceptor:command()) -> ok.
 apply_read(Storage, From, Command) ->
@@ -606,7 +607,7 @@ handle_cast(?CANCEL_REQUEST, #state{name = Name, queues = Queues} = State) ->
     wa_raft_queue:fulfill_all_reads(Queues, {error, not_leader}),
     {noreply, State};
 
-handle_cast(?APPLY_REQUEST(From, {LogIndex, {LogTerm, {_, Label, Command}}}, Size), #state{name = Name, queues = Queues} = State0) ->
+handle_cast(?APPLY_REQUEST(From, {LogIndex, {LogTerm, {_, Label, Command}}}, Size, _Priority), #state{name = Name, queues = Queues} = State0) ->
     wa_raft_queue:fulfill_apply(Queues, Size),
     LogPosition = #raft_log_pos{index = LogIndex, term = LogTerm},
     ?RAFT_LOG_DEBUG("Storage[~0p] is starting to apply ~0p", [Name, LogPosition]),

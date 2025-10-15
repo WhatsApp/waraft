@@ -2597,12 +2597,12 @@ apply_op(State, LogIndex, _, Entry, #raft_state{} = Data) ->
     Data :: #raft_state{}
 ) -> #raft_state{}.
 send_op_to_storage(Index, Record, Size, #raft_state{storage = Storage, queued = Queued} = Data) ->
-    {{From, _Priority}, NewQueued} =
+    {{From, Priority}, NewQueued} =
         case maps:take(Index, Queued) of
             error -> {{undefined, high}, Queued};
             Value -> Value
         end,
-    wa_raft_storage:apply(Storage, From, Record, Size),
+    wa_raft_storage:apply(Storage, From, Record, Size, Priority),
     Data#raft_state{last_applied = Index, queued = NewQueued}.
 
 %%------------------------------------------------------------------------------
