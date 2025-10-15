@@ -2425,9 +2425,10 @@ requires_new_label(_) -> true.
 apply_single_node_cluster(#raft_state{self = Self} = Data0) ->
     case is_single_member(Self, config(Data0)) of
         true ->
-            Data1 = commit_pending(Data0),
-            Data2 = maybe_advance(Data1),
-            apply_log_leader(Data2);
+            Data1 = commit_pending(Data0, high),
+            Data2 = commit_pending(Data1, low),
+            Data3 = maybe_advance(Data2),
+            apply_log_leader(Data3);
         false ->
             Data0
     end.
@@ -2702,64 +2703,92 @@ advance_term(
 
 -spec append_entries_to_followers(Data :: #raft_state{}) -> #raft_state{}.
 append_entries_to_followers(Data0) ->
-    Data1 = commit_pending(Data0),
-    Data2 = lists:foldl(fun heartbeat/2, Data1, config_identities(config(Data1))),
-    Data2.
+    Data1 = commit_pending(Data0, high),
+    Data2 = commit_pending(Data1, low),
+    Data3 = lists:foldl(fun heartbeat/2, Data2, config_identities(config(Data2))),
+    Data3.
 
--spec commit_pending(Data :: #raft_state{}) -> #raft_state{}.
-commit_pending(#raft_state{pending_high = [], pending_low = [], pending_read = false} = Data) ->
+-spec commit_pending(Data :: #raft_state{}, Priority :: wa_raft_acceptor:priority()) -> #raft_state{}.
+commit_pending(#raft_state{pending_high = [], pending_low = [], pending_read = false} = Data, _Priority) ->
     Data;
-commit_pending(#raft_state{log_view = View, pending_high = PendingHigh, pending_low = [], queued = Queued} = Data) ->
-    {Entries, NewLabel} = collect_pending(Data),
-    case wa_raft_log:try_append(View, Entries) of
-        {ok, NewView} ->
-            % Add the newly appended log entries to the pending queue (which
-            % is kept in reverse order).
-            Last = wa_raft_log:last_index(NewView),
-            {_, NewQueued} =
-                lists:foldl(
-                    fun ({From, _Op}, {Index, AccQueued}) ->
-                        {Index - 1, AccQueued#{Index => {From, high}}}
-                    end,
-                    {Last, Queued},
-                    PendingHigh
-                ),
-            % We can clear pending read flag as we've successfully added at
-            % least one new log entry so the leader will proceed to replicate
-            % and establish a new quorum is it is still up to date.
-            Data#raft_state{
-                log_view = NewView,
-                last_label = NewLabel,
-                pending_high = [],
-                pending_read = false,
-                queued = NewQueued
-            };
-        skipped ->
-            % Since the append failed, we do not advance to the new label.
-            ?SERVER_LOG_WARNING(leader, Data, "skipped pre-heartbeat sync for ~0p log entr(ies).", [length(Entries)]),
-            cancel_pending({error, commit_stalled}, Data);
-        {error, Error} ->
-            ?SERVER_LOG_ERROR(leader, Data, "sync failed due to ~0P.", [Error, 20]),
-            error(Error)
+commit_pending(#raft_state{log_view = View, pending_high = PendingHigh, pending_low = PendingLow, queued = Queued} = Data, Priority) ->
+    Pending =
+        case Priority of
+            high ->
+                PendingHigh;
+            low ->
+                PendingLow
+        end,
+    {Entries, NewLabel} = collect_pending(Data, Priority),
+    case Entries of
+        [_ | _] ->
+            % If we have processed at least one new log entry
+            % with the given priority, we try to append to the log.
+            case wa_raft_log:try_append(View, Entries) of
+                {ok, NewView} ->
+                    % Add the newly appended log entries to the pending queue (which
+                    % is kept in reverse order).
+                    Last = wa_raft_log:last_index(NewView),
+                    {_, NewQueued} =
+                        lists:foldl(
+                            fun ({From, _Op}, {Index, AccQueued}) ->
+                                {Index - 1, AccQueued#{Index => {From, Priority}}}
+                            end,
+                            {Last, Queued},
+                            Pending
+                        ),
+                    % We can clear pending read flag as we've successfully added at
+                    % least one new log entry so the leader will proceed to replicate
+                    % and establish a new quorum is it is still up to date.
+                    Data1 = Data#raft_state{
+                        log_view = NewView,
+                        last_label = NewLabel,
+                        pending_read = false,
+                        queued = NewQueued
+                    },
+                    case Priority of
+                        high ->
+                            Data1#raft_state{pending_high = []};
+                        low ->
+                            Data1#raft_state{pending_low = []}
+                    end;
+                skipped ->
+                    % Since the append failed, we do not advance to the new label.
+                    % We cancel all pending commits that are less than or equal to the current priority.
+                    ?SERVER_LOG_WARNING(leader, Data, "skipped pre-heartbeat sync for ~0p log entr(ies).", [length(Entries)]),
+                    cancel_pending({error, commit_stalled}, Data);
+                {error, Error} ->
+                    ?SERVER_LOG_ERROR(leader, Data, "sync failed due to ~0P.", [Error, 20]),
+                    error(Error)
+            end;
+        _ ->
+            Data
     end.
 
--spec collect_pending(Data :: #raft_state{}) -> {[wa_raft_log:log_entry()], wa_raft_label:label() | undefined}.
-collect_pending(#raft_state{pending_high = [], pending_low = [], pending_read = true} = Data) ->
-    % If the pending queue is empty, then we have at least one pending
+-spec collect_pending(Data :: #raft_state{}, Priority :: wa_raft_acceptor:priority()) -> {[wa_raft_log:log_entry()], wa_raft_label:label() | undefined}.
+collect_pending(#raft_state{pending_high = [], pending_low = [], pending_read = true} = Data, _Priority) ->
+    % If the pending queues are empty, then we have at least one pending
     % read but no commits to go along with it.
     {ReadEntry, NewLabel} = make_log_entry_impl({?READ_OP, noop}, Data),
     {[ReadEntry], NewLabel};
-collect_pending(#raft_state{last_label = LastLabel, pending_high = PendingHigh, pending_low = []} = Data) ->
-    % Otherwise, the pending queue is kept in reverse order so fold
+collect_pending(#raft_state{last_label = LastLabel, pending_high = PendingHigh, pending_low = PendingLow} = Data, Priority) ->
+    % Otherwise, the pending queues are kept in reverse order so fold
     % from the right to ensure that the log entries are labeled
     % in the correct order.
+    Pending =
+        case Priority of
+            high ->
+                PendingHigh;
+            low ->
+                PendingLow
+        end,
     {Entries, NewLabel} = lists:foldr(
-        fun ({_From, Op}, {AccEntries, AccLabel}) ->
+        fun ({_, Op}, {AccEntries, AccLabel}) ->
             {Entry, NewAccLabel} = make_log_entry_impl(Op, AccLabel, Data),
             {[Entry | AccEntries], NewAccLabel}
         end,
         {[], LastLabel},
-        PendingHigh
+        Pending
     ),
     {lists:reverse(Entries), NewLabel}.
 
