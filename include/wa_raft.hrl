@@ -482,7 +482,7 @@
     pending_read = false :: boolean(),
     %% [Leader] The queue of accepted commit requests that are waiting to be
     %%          committed and applied for response to the client.
-    queued = #{} :: #{wa_raft_log:log_index() => gen_server:from()},
+    queued = #{} :: #{wa_raft_log:log_index() => {gen_server:from(), wa_raft_acceptor:priority()}},
     %% [Leader] The index of the next log entry to send in the next heartbeat
     %%          to each peer
     next_indices = #{} :: #{node() => wa_raft_log:log_index()},

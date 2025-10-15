@@ -2597,9 +2597,9 @@ apply_op(State, LogIndex, _, Entry, #raft_state{} = Data) ->
     Data :: #raft_state{}
 ) -> #raft_state{}.
 send_op_to_storage(Index, Record, Size, #raft_state{storage = Storage, queued = Queued} = Data) ->
-    {From, NewQueued} =
+    {{From, _Priority}, NewQueued} =
         case maps:take(Index, Queued) of
-            error -> {undefined, Queued};
+            error -> {{undefined, high}, Queued};
             Value -> Value
         end,
     wa_raft_storage:apply(Storage, From, Record, Size),
@@ -2719,7 +2719,7 @@ commit_pending(#raft_state{log_view = View, pending_high = PendingHigh, pending_
             {_, NewQueued} =
                 lists:foldl(
                     fun ({From, _Op}, {Index, AccQueued}) ->
-                        {Index - 1, AccQueued#{Index => From}}
+                        {Index - 1, AccQueued#{Index => {From, high}}}
                     end,
                     {Last, Queued},
                     PendingHigh
@@ -3001,7 +3001,7 @@ adjust_config_membership(Action, {Name, Node}, Config, #raft_state{self = Self})
 -spec reset_log(Position :: wa_raft_log:log_pos(), Data :: #raft_state{}) -> #raft_state{}.
 reset_log(#raft_log_pos{index = Index} = Position, #raft_state{queues = Queues, log_view = View, queued = Queued} = Data) ->
     {ok, NewView} = wa_raft_log:reset(View, Position),
-    [wa_raft_queue:commit_cancelled(Queues, From, {error, cancelled}) || _ := From <- maps:iterator(Queued, ordered)],
+    [wa_raft_queue:commit_cancelled(Queues, From, {error, cancelled}) || _ := {From, _Priority} <- maps:iterator(Queued, ordered)],
     NewData = Data#raft_state{
         log_view = NewView,
         last_applied = Index,
@@ -3218,13 +3218,13 @@ append_entries(
     Start :: wa_raft_log:log_index(),
     End :: wa_raft_log:log_index(),
     Reason :: wa_raft_acceptor:commit_error() | undefined,
-    Queued :: #{wa_raft_log:log_index() => gen_server:from()}
-) -> #{wa_raft_log:log_index() => gen_server:from()}.
+    Queued :: #{wa_raft_log:log_index() => {gen_server:from(), wa_raft_acceptor:priority()}}
+) -> #{wa_raft_log:log_index() => {gen_server:from(), wa_raft_acceptor:priority()}}.
 cancel_queued(_, Start, End, _, Queued) when Start > End; Queued =:= #{} ->
     Queued;
 cancel_queued(Queues, Start, End, Reason, Queued) ->
     case maps:take(Start, Queued) of
-        {From, NewQueued} ->
+        {{From, _Priority}, NewQueued} ->
             wa_raft_queue:commit_cancelled(Queues, From, Reason),
             cancel_queued(Queues, Start + 1, End, Reason, NewQueued);
         error ->
