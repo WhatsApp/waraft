@@ -94,7 +94,7 @@
 %%------------------------------------------------------------------------------
 
 -export([
-    commit/3,
+    commit/4,
     read/2,
     snapshot_available/3,
     adjust_membership/3,
@@ -259,12 +259,13 @@
 -type legacy_rpc() :: ?LEGACY_RAFT_RPC(atom(), wa_raft_log:log_term(), node(), undefined | tuple()).
 -type rpc_named() :: ?RAFT_NAMED_RPC(atom(), wa_raft_log:log_term(), atom(), node(), undefined | tuple()).
 
--type command() :: commit_command() | read_command() | status_command() | trigger_election_command() |
+-type command() :: legacy_commit_command() | commit_command() | read_command() | status_command() | trigger_election_command() |
                    promote_command() | resign_command() | adjust_membership_command() | refresh_config_command() |
                    snapshot_available_command() | handover_candidates_command() | handover_command() |
                    enable_command() | disable_command() | bootstrap_command() | notify_complete_command().
 
--type commit_command()              :: ?COMMIT_COMMAND(gen_server:from(), wa_raft_acceptor:op()).
+-type legacy_commit_command()       :: ?LEGACY_COMMIT_COMMAND(gen_server:from(), wa_raft_acceptor:op()).
+-type commit_command()              :: ?COMMIT_COMMAND(gen_server:from(), wa_raft_acceptor:op(), wa_raft_acceptor:priority()).
 -type read_command()                :: ?READ_COMMAND(wa_raft_acceptor:read_op()).
 -type status_command()              :: ?STATUS_COMMAND.
 -type trigger_election_command()    :: ?TRIGGER_ELECTION_COMMAND(term_or_offset()).
@@ -490,10 +491,11 @@ parse_rpc(#raft_identity{name = Name} = Self, ?LEGACY_RAFT_RPC(Procedure, Term, 
 -spec commit(
     Server :: gen_statem:server_ref(),
     From :: gen_server:from(),
-    Op :: wa_raft_acceptor:op()
+    Op :: wa_raft_acceptor:op(),
+    Priority :: wa_raft_acceptor:priority()
 ) -> ok.
-commit(Server, From, Op) ->
-    gen_statem:cast(Server, ?COMMIT_COMMAND(From, Op)).
+commit(Server, From, Op, Priority) ->
+    gen_statem:cast(Server, ?COMMIT_COMMAND(From, Op, Priority)).
 
 -spec read(
     Server :: gen_statem:server_ref(),
@@ -1201,9 +1203,11 @@ leader(state_timeout, _, #raft_state{application = App} = State0) ->
 %%   of the local node, then immediately apply the commit. Otherwise, if a
 %%   handover is not in progress, then immediately append the pending list if
 %%   enough pending commit requests have accumulated.
+leader(cast, ?LEGACY_COMMIT_COMMAND(From, Op), State) ->
+    ?MODULE:leader(cast, ?COMMIT_COMMAND(From, Op, high), State);
 leader(
     cast,
-    ?COMMIT_COMMAND(From, Op),
+    ?COMMIT_COMMAND(From, Op, _Priority),
     #raft_state{
         application = App,
         pending = Pending,
@@ -1934,10 +1938,12 @@ witness(Type, Event, #raft_state{} = State) ->
 ) -> gen_statem:event_handler_result(state(), #raft_state{}).
 
 %% [Commit] Non-leader nodes should fail commits with {error, not_leader}.
+command(State, cast, ?LEGACY_COMMIT_COMMAND(From, Op), Data) ->
+    command(State, cast, ?COMMIT_COMMAND(From, Op, high), Data);
 command(
     State,
     cast,
-    ?COMMIT_COMMAND(From, _),
+    ?COMMIT_COMMAND(From, _Op, _Priority),
     #raft_state{
         queues = Queues,
         leader_id = LeaderId

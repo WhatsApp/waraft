@@ -271,7 +271,7 @@ commit_impl(From, {Key, _} = Op, Priority, #state{name = Name, server = Server, 
                 ?RAFT_COUNT('raft.acceptor.error.apply_queue_full'),
                 {error, {apply_queue_full, Key}};
             ok ->
-                wa_raft_server:commit(Server, From, Op),
+                wa_raft_server:commit(Server, From, Op, Priority),
                 continue
         end
     after
