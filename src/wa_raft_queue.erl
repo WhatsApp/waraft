@@ -37,7 +37,7 @@
 -export([
     commit_started/2,
     commit_cancelled/4,
-    commit_completed/3
+    commit_completed/4
 ]).
 
 %% PENDING READ API
@@ -253,9 +253,14 @@ commit_cancelled(#queues{counters = Counters}, From, Reason, Priority) ->
     Reason =/= undefined andalso gen_server:reply(From, Reason),
     ok.
 
--spec commit_completed(Queues :: queues(), From :: gen_server:from(), Reply :: term()) -> ok.
-commit_completed(#queues{counters = Counters}, From, Reply) ->
-    atomics:sub(Counters, ?RAFT_HIGH_PRIORITY_COMMIT_QUEUE_SIZE_COUNTER, 1),
+-spec commit_completed(Queues :: queues(), From :: gen_server:from(), Reply :: term(), Priority :: wa_raft_acceptor:priority()) -> ok.
+commit_completed(#queues{counters = Counters}, From, Reply, Priority) ->
+    case Priority of
+        high ->
+            atomics:sub(Counters, ?RAFT_HIGH_PRIORITY_COMMIT_QUEUE_SIZE_COUNTER, 1);
+        low ->
+            atomics:sub(Counters, ?RAFT_LOW_PRIORITY_COMMIT_QUEUE_SIZE_COUNTER, 1)
+    end,
     gen_server:reply(From, Reply),
     ok.
 

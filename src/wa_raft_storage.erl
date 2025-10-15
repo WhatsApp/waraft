@@ -607,11 +607,11 @@ handle_cast(?CANCEL_REQUEST, #state{name = Name, queues = Queues} = State) ->
     wa_raft_queue:fulfill_all_reads(Queues, {error, not_leader}),
     {noreply, State};
 
-handle_cast(?APPLY_REQUEST(From, {LogIndex, {LogTerm, {_, Label, Command}}}, Size, _Priority), #state{name = Name, queues = Queues} = State0) ->
+handle_cast(?APPLY_REQUEST(From, {LogIndex, {LogTerm, {_, Label, Command}}}, Size, Priority), #state{name = Name, queues = Queues} = State0) ->
     wa_raft_queue:fulfill_apply(Queues, Size),
     LogPosition = #raft_log_pos{index = LogIndex, term = LogTerm},
     ?RAFT_LOG_DEBUG("Storage[~0p] is starting to apply ~0p", [Name, LogPosition]),
-    {noreply, handle_apply(From, LogPosition, Label, Command, State0)};
+    {noreply, handle_apply(From, LogPosition, Label, Command, Priority, State0)};
 
 handle_cast(?APPLY_READ_REQUEST(From, Command), #state{module = Module, handle = Handle, position = Position} = State) ->
     gen_server:reply(From, Module:storage_read(Command, Position, Handle)),
@@ -640,6 +640,7 @@ terminate(Reason, #state{name = Name, module = Module, handle = Handle, position
     LogPosition :: wa_raft_log:log_pos(),
     Label :: wa_raft_label:label(),
     Command :: wa_raft_acceptor:command(),
+    Priority :: wa_raft_acceptor:priority(),
     State :: #state{}
 ) -> NewState :: #state{}.
 %% In the case that a log entry is reapplied, fulfill any new pending reads at that index.
@@ -648,6 +649,7 @@ handle_apply(
     #raft_log_pos{index = LogIndex},
     _Label,
     _Command,
+    _Priority,
     #state{position = #raft_log_pos{index = Index}} = State
 ) when LogIndex =:= Index ->
     handle_delayed_reads(State),
@@ -659,6 +661,7 @@ handle_apply(
     #raft_log_pos{index = LogIndex} = LogPosition,
     Label,
     Command,
+    Priority,
     #state{
         application = Application,
         name = Name,
@@ -670,7 +673,7 @@ handle_apply(
     ?RAFT_COUNT('raft.storage.apply'),
     StartT = os:timestamp(),
     {Reply, NewState} = handle_command(Label, Command, LogPosition, State),
-    From =/= undefined andalso wa_raft_queue:commit_completed(Queues, From, Reply),
+    From =/= undefined andalso wa_raft_queue:commit_completed(Queues, From, Reply, Priority),
     handle_delayed_reads(NewState),
     wa_raft_queue:apply_queue_size(Queues) =:= 0 andalso ?RAFT_STORAGE_NOTIFY_COMPLETE(Application) andalso
         wa_raft_server:notify_complete(Server),
@@ -678,7 +681,7 @@ handle_apply(
     ?RAFT_GATHER('raft.storage.apply.func', timer:now_diff(os:timestamp(), StartT)),
     NewState;
 %% Otherwise, the apply is out of order.
-handle_apply(_From, LogPosition, _Label, _Command, #state{name = Name, position = Position}) ->
+handle_apply(_From, LogPosition, _Label, _Command, _Priority, #state{name = Name, position = Position}) ->
     ?RAFT_LOG_ERROR("Storage[~0p] at ~0p received an out-of-order operation at ~0p.", [Name, Position, LogPosition]),
     error(out_of_order_apply).
 
