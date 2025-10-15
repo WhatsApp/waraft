@@ -473,7 +473,7 @@
     %%          that are in queue to be appended and replicated after a short
     %%          wait to see if multiple commits can be handled at once to
     %%          reduce overhead
-    pending = [] :: [{gen_server:from(), wa_raft_acceptor:op()}],
+    pending_high = [] :: [{gen_server:from(), wa_raft_acceptor:op()}],
     %% [Leader] Whether or not a read has been accepted and is waiting for the
     %%          leader to establish a new quorum to be handled.
     pending_read = false :: boolean(),

@@ -234,7 +234,7 @@
     | {commit_index, wa_raft_log:log_index()}
     | {last_applied, wa_raft_log:log_index()}
     | {leader_id, node()}
-    | {pending, non_neg_integer()}
+    | {pending_high, non_neg_integer()}
     | {pending_read, boolean()}
     | {queued, non_neg_integer()}
     | {next_indices, #{node() => wa_raft_log:log_index()}}
@@ -1210,18 +1210,18 @@ leader(
     ?COMMIT_COMMAND(From, Op, _Priority),
     #raft_state{
         application = App,
-        pending = Pending,
+        pending_high = PendingHigh,
         handover = Handover
     } = State0
 ) ->
     % No size limit is imposed here as the pending queue cannot grow larger
     % than the limit on the number of pending commits.
     ?RAFT_COUNT('raft.commit'),
-    State1 = State0#raft_state{pending = [{From, Op} | Pending]},
+    State1 = State0#raft_state{pending_high = [{From, Op} | PendingHigh]},
     case Handover of
         undefined ->
             State2 = apply_single_node_cluster(State1),
-            PendingCount = length(State2#raft_state.pending),
+            PendingCount = length(State2#raft_state.pending_high),
             case ?RAFT_COMMIT_BATCH_INTERVAL(App) > 0 andalso PendingCount =< ?RAFT_COMMIT_BATCH_MAX_ENTRIES(App) of
                 true ->
                     ?RAFT_COUNT('raft.commit.batch.delay'),
@@ -1246,14 +1246,14 @@ leader(
         storage = Storage,
         commit_index = CommitIndex,
         last_applied = LastApplied,
-        pending = Pending,
+        pending_high = PendingHigh,
         first_current_term_log_index = FirstLogIndex
     } = State0
 ) ->
     ReadIndex = max(CommitIndex, FirstLogIndex),
     case is_single_member(Self, config(State0)) of
         % If we are a single node cluster and we are fully-applied, then immediately dispatch.
-        true when Pending =:= [], ReadIndex =< LastApplied ->
+        true when PendingHigh =:= [], ReadIndex =< LastApplied ->
             wa_raft_storage:apply_read(Storage, From, Command),
             {keep_state, State0};
         _ ->
@@ -2002,7 +2002,7 @@ command(State, {call, From}, ?STATUS_COMMAND, #raft_state{} = Data) ->
         {commit_index, Data#raft_state.commit_index},
         {last_applied, Data#raft_state.last_applied},
         {leader_id, Data#raft_state.leader_id},
-        {pending, length(Data#raft_state.pending)},
+        {pending_high, length(Data#raft_state.pending_high)},
         {pending_read, Data#raft_state.pending_read},
         {queued, maps:size(Data#raft_state.queued)},
         {next_indices, Data#raft_state.next_indices},
@@ -2698,9 +2698,9 @@ append_entries_to_followers(Data0) ->
     Data2.
 
 -spec commit_pending(Data :: #raft_state{}) -> #raft_state{}.
-commit_pending(#raft_state{pending = [], pending_read = false} = Data) ->
+commit_pending(#raft_state{pending_high = [], pending_read = false} = Data) ->
     Data;
-commit_pending(#raft_state{log_view = View, pending = Pending, queued = Queued} = Data) ->
+commit_pending(#raft_state{log_view = View, pending_high = PendingHigh, queued = Queued} = Data) ->
     {Entries, NewLabel} = collect_pending(Data),
     case wa_raft_log:try_append(View, Entries) of
         {ok, NewView} ->
@@ -2713,7 +2713,7 @@ commit_pending(#raft_state{log_view = View, pending = Pending, queued = Queued} 
                         {Index - 1, AccQueued#{Index => From}}
                     end,
                     {Last, Queued},
-                    Pending
+                    PendingHigh
                 ),
             % We can clear pending read flag as we've successfully added at
             % least one new log entry so the leader will proceed to replicate
@@ -2721,7 +2721,7 @@ commit_pending(#raft_state{log_view = View, pending = Pending, queued = Queued} 
             Data#raft_state{
                 log_view = NewView,
                 last_label = NewLabel,
-                pending = [],
+                pending_high = [],
                 pending_read = false,
                 queued = NewQueued
             };
@@ -2735,12 +2735,12 @@ commit_pending(#raft_state{log_view = View, pending = Pending, queued = Queued} 
     end.
 
 -spec collect_pending(Data :: #raft_state{}) -> {[wa_raft_log:log_entry()], wa_raft_label:label() | undefined}.
-collect_pending(#raft_state{pending = [], pending_read = true} = Data) ->
+collect_pending(#raft_state{pending_high = [], pending_read = true} = Data) ->
     % If the pending queue is empty, then we have at least one pending
     % read but no commits to go along with it.
     {ReadEntry, NewLabel} = make_log_entry_impl({?READ_OP, noop}, Data),
     {[ReadEntry], NewLabel};
-collect_pending(#raft_state{last_label = LastLabel, pending = Pending} = Data) ->
+collect_pending(#raft_state{last_label = LastLabel, pending_high = PendingHigh} = Data) ->
     % Otherwise, the pending queue is kept in reverse order so fold
     % from the right to ensure that the log entries are labeled
     % in the correct order.
@@ -2750,17 +2750,17 @@ collect_pending(#raft_state{last_label = LastLabel, pending = Pending} = Data) -
             {[Entry | AccEntries], NewAccLabel}
         end,
         {[], LastLabel},
-        Pending
+        PendingHigh
     ),
     {lists:reverse(Entries), NewLabel}.
 
 -spec cancel_pending(Reason :: wa_raft_acceptor:commit_error(), Data :: #raft_state{}) -> #raft_state{}.
-cancel_pending(_, #raft_state{pending = []} = Data) ->
+cancel_pending(_, #raft_state{pending_high = []} = Data) ->
     Data;
-cancel_pending(Reason, #raft_state{queues = Queues, pending = Pending} = Data) ->
+cancel_pending(Reason, #raft_state{queues = Queues, pending_high = PendingHigh} = Data) ->
     % Pending commits are kept in reverse order.
-    [wa_raft_queue:commit_cancelled(Queues, From, Reason) || {From, _} <- lists:reverse(Pending)],
-    Data#raft_state{pending = []}.
+    [wa_raft_queue:commit_cancelled(Queues, From, Reason) || {From, _} <- lists:reverse(PendingHigh)],
+    Data#raft_state{pending_high = []}.
 
 -spec heartbeat(Peer :: #raft_identity{}, State :: #raft_state{}) -> #raft_state{}.
 heartbeat(Self, #raft_state{self = Self} = Data) ->
