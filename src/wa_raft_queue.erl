@@ -36,7 +36,7 @@
 %% PENDING COMMIT QUEUE API
 -export([
     commit_started/2,
-    commit_cancelled/3,
+    commit_cancelled/4,
     commit_completed/3
 ]).
 
@@ -242,9 +242,14 @@ commit_started(#queues{counters = Counters} = Queues, Priority) ->
     end.
 
 
--spec commit_cancelled(Queues :: queues(), From :: gen_server:from(), Reason :: wa_raft_acceptor:commit_error() | undefined) -> ok.
-commit_cancelled(#queues{counters = Counters}, From, Reason) ->
-    atomics:sub(Counters, ?RAFT_HIGH_PRIORITY_COMMIT_QUEUE_SIZE_COUNTER, 1),
+-spec commit_cancelled(Queues :: queues(), From :: gen_server:from(), Reason :: wa_raft_acceptor:commit_error() | undefined, Priority :: wa_raft_acceptor:priority()) -> ok.
+commit_cancelled(#queues{counters = Counters}, From, Reason, Priority) ->
+    case Priority of
+        high ->
+            atomics:sub(Counters, ?RAFT_HIGH_PRIORITY_COMMIT_QUEUE_SIZE_COUNTER, 1);
+        low ->
+            atomics:sub(Counters, ?RAFT_LOW_PRIORITY_COMMIT_QUEUE_SIZE_COUNTER, 1)
+    end,
     Reason =/= undefined andalso gen_server:reply(From, Reason),
     ok.
 

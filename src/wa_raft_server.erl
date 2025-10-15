@@ -1951,14 +1951,14 @@ command(State, cast, ?LEGACY_COMMIT_COMMAND(From, Op), Data) ->
 command(
     State,
     cast,
-    ?COMMIT_COMMAND(From, _Op, _Priority),
+    ?COMMIT_COMMAND(From, _Op, Priority),
     #raft_state{
         queues = Queues,
         leader_id = LeaderId
     } = Data
 ) when State =/= leader ->
     ?SERVER_LOG_WARNING(State, Data, "commit fails as leader is currently ~0p.", [LeaderId]),
-    wa_raft_queue:commit_cancelled(Queues, From, {error, not_leader}),
+    wa_raft_queue:commit_cancelled(Queues, From, {error, not_leader}, Priority),
     keep_state_and_data;
 
 %% [Strong Read] Non-leader nodes are not eligible for strong reads.
@@ -2768,8 +2768,8 @@ cancel_pending(_, #raft_state{pending_high = [], pending_low = []} = Data) ->
     Data;
 cancel_pending(Reason, #raft_state{queues = Queues, pending_high = PendingHigh, pending_low = PendingLow} = Data) ->
     % Pending commits are kept in reverse order.
-    [wa_raft_queue:commit_cancelled(Queues, From, Reason) || {From, _Op} <- lists:reverse(PendingHigh)],
-    [wa_raft_queue:commit_cancelled(Queues, From, Reason) || {From, _Op} <- lists:reverse(PendingLow)],
+    [wa_raft_queue:commit_cancelled(Queues, From, Reason, high) || {From, _Op} <- lists:reverse(PendingHigh)],
+    [wa_raft_queue:commit_cancelled(Queues, From, Reason, low) || {From, _Op} <- lists:reverse(PendingLow)],
     Data#raft_state{pending_high = [], pending_low = []}.
 
 -spec heartbeat(Peer :: #raft_identity{}, State :: #raft_state{}) -> #raft_state{}.
@@ -3001,7 +3001,7 @@ adjust_config_membership(Action, {Name, Node}, Config, #raft_state{self = Self})
 -spec reset_log(Position :: wa_raft_log:log_pos(), Data :: #raft_state{}) -> #raft_state{}.
 reset_log(#raft_log_pos{index = Index} = Position, #raft_state{queues = Queues, log_view = View, queued = Queued} = Data) ->
     {ok, NewView} = wa_raft_log:reset(View, Position),
-    [wa_raft_queue:commit_cancelled(Queues, From, {error, cancelled}) || _ := {From, _Priority} <- maps:iterator(Queued, ordered)],
+    [wa_raft_queue:commit_cancelled(Queues, From, {error, cancelled}, Priority) || _ := {From, Priority} <- maps:iterator(Queued, ordered)],
     NewData = Data#raft_state{
         log_view = NewView,
         last_applied = Index,
@@ -3224,8 +3224,8 @@ cancel_queued(_, Start, End, _, Queued) when Start > End; Queued =:= #{} ->
     Queued;
 cancel_queued(Queues, Start, End, Reason, Queued) ->
     case maps:take(Start, Queued) of
-        {{From, _Priority}, NewQueued} ->
-            wa_raft_queue:commit_cancelled(Queues, From, Reason),
+        {{From, Priority}, NewQueued} ->
+            wa_raft_queue:commit_cancelled(Queues, From, Reason, Priority),
             cancel_queued(Queues, Start + 1, End, Reason, NewQueued);
         error ->
             cancel_queued(Queues, Start + 1, End, Reason, Queued)
