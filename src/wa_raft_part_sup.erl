@@ -85,13 +85,13 @@ start_link(Application, Spec) ->
     %% The RAFT options for a table are not expected to change during the
     %% runtime of the RAFT application and so repeated updates should not
     %% result in any GC load. Warn if this is case.
-    PrevOptions = persistent_term:get(?OPTIONS_KEY(Table, Partition), Options),
+    PrevOptions = wa_pt:get(?OPTIONS_KEY(Table, Partition), Options),
     PrevOptions =/= Options andalso
         ?RAFT_LOG_WARNING(
             ?MODULE_STRING " storing changed options for RAFT partitition ~0p/~0p",
             [Table, Partition]
         ),
-    ok = persistent_term:put(?OPTIONS_KEY(Table, Partition), Options),
+    ok = wa_pt:put(?OPTIONS_KEY(Table, Partition), Options),
 
     supervisor:start_link({local, Name}, ?MODULE, Options).
 
@@ -131,7 +131,7 @@ registered_partition_path(Table, Partition) ->
 
 -spec options(Table :: wa_raft:table(), Partition :: wa_raft:partition()) -> #raft_options{} | undefined.
 options(Table, Partition) ->
-    persistent_term:get(?OPTIONS_KEY(Table, Partition), undefined).
+    wa_pt:get(?OPTIONS_KEY(Table, Partition), undefined).
 
 -spec normalize_spec(Application :: atom(), Spec :: wa_raft:args()) -> #raft_options{}.
 normalize_spec(Application, #{table := Table, partition := Partition} = Spec) ->
@@ -174,7 +174,7 @@ normalize_spec(Application, #{table := Table, partition := Partition} = Spec) ->
 -spec prepare_spec(Application :: atom(), Spec :: wa_raft:args()) -> #raft_options{}.
 prepare_spec(Application, Spec) ->
     Options = #raft_options{table = Table, partition = Partition} = normalize_spec(Application, Spec),
-    ok = persistent_term:put(?OPTIONS_KEY(Table, Partition), Options),
+    ok = wa_pt:put(?OPTIONS_KEY(Table, Partition), Options),
     Options.
 
 %%-------------------------------------------------------------------

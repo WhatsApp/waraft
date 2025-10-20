@@ -94,7 +94,7 @@ child_spec(Application, RaftArgs, Options) ->
 
 -spec start_link(Application :: atom(), Specs :: [wa_raft:args()], Options :: options()) -> supervisor:startlink_ret().
 start_link(Application, RaftArgs, Options) ->
-    ok = persistent_term:put(?OPTIONS_KEY(Application), normalize_spec(Application, Options)),
+    ok = wa_pt:put(?OPTIONS_KEY(Application), normalize_spec(Application, Options)),
     case supervisor:start_link({local, default_name(Application)}, ?MODULE, Application) of
         {ok, Pid} = Result ->
             [
@@ -160,7 +160,7 @@ registered_config_apps(Application) ->
 
 -spec options(Application :: atom()) -> #raft_application{} | undefined.
 options(Application) ->
-    persistent_term:get(?OPTIONS_KEY(Application), undefined).
+    wa_pt:get(?OPTIONS_KEY(Application), undefined).
 
 -spec normalize_spec(Application :: atom(), Options :: options()) -> #raft_application{}.
 normalize_spec(Application, Options) ->
@@ -180,7 +180,7 @@ prepare_application(Application) ->
 -spec prepare_application(Application :: atom(), Options :: options()) -> ok.
 prepare_application(Application, Options) ->
     RaftApplication = normalize_spec(Application, Options),
-    ok = persistent_term:put(?OPTIONS_KEY(Application), RaftApplication).
+    ok = wa_pt:put(?OPTIONS_KEY(Application), RaftApplication).
 
 %%-------------------------------------------------------------------
 %% Supervisor callbacks
