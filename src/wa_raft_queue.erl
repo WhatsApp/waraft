@@ -229,6 +229,7 @@ registered_name(Table, Partition) ->
 commit_started(#queues{counters = Counters} = Queues, Priority) ->
     case commit_queue_full(Queues, Priority) of
         true ->
+            ?RAFT_COUNT({'raft.acceptor.commit.queue.full', Priority}),
             commit_queue_full;
         false ->
             case apply_queue_full(Queues) of

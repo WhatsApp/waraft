@@ -1218,7 +1218,7 @@ leader(
 ) ->
     % No size limit is imposed here as the pending queue cannot grow larger
     % than the limit on the number of pending commits.
-    ?RAFT_COUNT('raft.commit'),
+    ?RAFT_COUNT({'raft.commit', Priority}),
     State1 = case Priority of
         high ->
             State0#raft_state{pending_high = [{From, Op} | PendingHigh]};
