@@ -58,7 +58,7 @@
 %% RAFT metrics with the provided module.
 -spec install(Module :: module()) -> ok.
 install(Module) ->
-    wa_pt:put(?RAFT_METRICS_MODULE_KEY, Module).
+    persistent_term:put(?RAFT_METRICS_MODULE_KEY, Module).
 
 %%-------------------------------------------------------------------
 %% Default Implementation

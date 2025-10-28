@@ -97,7 +97,7 @@
 
 -spec init_tables() -> term().
 init_tables() ->
-    wa_pt:put(?COUNTER_KEY, counters:new(?COUNTER_COUNT, [atomics])),
+    persistent_term:put(?COUNTER_KEY, counters:new(?COUNTER_COUNT, [atomics])),
     ?MODULE = ets:new(?MODULE, [set, public, named_table, {read_concurrency, true}]).
 
 -spec child_spec(Options :: #raft_options{}) -> supervisor:child_spec().
@@ -228,7 +228,7 @@ send_logs(Peer, NextLogIndex, LeaderTerm, LeaderCommitIndex, Witness, #state{nam
     LockoutMillis = maps:get(Peer, Lockouts, 0),
     NewState = case LockoutMillis =< StartMillis of
         true ->
-            Counters = wa_pt:get(?COUNTER_KEY),
+            Counters = persistent_term:get(?COUNTER_KEY),
             case counters:get(Counters, ?COUNTER_CONCURRENT_CATCHUP) < ?RAFT_MAX_CONCURRENT_LOG_CATCHUP() of
                 true ->
                     counters:add(Counters, ?COUNTER_CONCURRENT_CATCHUP, 1),
@@ -241,7 +241,7 @@ send_logs(Peer, NextLogIndex, LeaderTerm, LeaderCommitIndex, Witness, #state{nam
                                 [Name, LeaderTerm, Peer, T, E, S]
                             )
                     after
-                        counters:sub(wa_pt:get(?COUNTER_KEY), ?COUNTER_CONCURRENT_CATCHUP, 1)
+                        counters:sub(persistent_term:get(?COUNTER_KEY), ?COUNTER_CONCURRENT_CATCHUP, 1)
                     end,
                     EndMillis = erlang:system_time(millisecond),
                     ?RAFT_GATHER('raft.leader.catchup.duration', (EndMillis - StartMillis) * 1000),
