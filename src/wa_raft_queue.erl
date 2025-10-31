@@ -236,8 +236,14 @@ commit_started(#queues{counters = Counters} = Queues, Priority) ->
                 true ->
                     apply_queue_full;
                 false ->
-                    PendingCommits = atomics:add_get(Counters, ?RAFT_HIGH_PRIORITY_COMMIT_QUEUE_SIZE_COUNTER, 1),
-                    ?RAFT_GATHER('raft.acceptor.commit.request.pending', PendingCommits),
+                    PendingCommits =
+                        case Priority of
+                            high ->
+                                atomics:add_get(Counters, ?RAFT_HIGH_PRIORITY_COMMIT_QUEUE_SIZE_COUNTER, 1);
+                            low ->
+                                atomics:add_get(Counters, ?RAFT_LOW_PRIORITY_COMMIT_QUEUE_SIZE_COUNTER, 1)
+                        end,
+                    ?RAFT_GATHER({'raft.acceptor.commit.request.pending', Priority}, PendingCommits),
                     ok
             end
     end.
