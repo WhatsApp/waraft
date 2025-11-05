@@ -30,7 +30,9 @@
     set_membership/3,
     set_live/3,
     set_stale/3,
-    set_state/3
+    set_state/3,
+    set_message_queue_length/1,
+    set_message_queue_length/2
 ]).
 
 %% Local RAFT server's current FSM state
@@ -132,10 +134,17 @@ set_live(Table, Partition, Live) ->
 
 -spec set_stale(wa_raft:table(), wa_raft:partition(), boolean()) -> true.
 set_stale(Table, Partition, Stale) ->
-    set(?RAFT_STALE_KEY(Table, Partition), Stale),
-    {message_queue_len, MsgQLen} = process_info(self(), message_queue_len),
-    set(?RAFT_MSG_QUEUE_LENGTH_KEY(wa_raft_server:default_name(Table, Partition)), MsgQLen).
+    set(?RAFT_STALE_KEY(Table, Partition), Stale).
 
 -spec set_membership(wa_raft:table(), wa_raft:partition(), wa_raft_server:membership()) -> true.
 set_membership(Table, Partition, Membership) ->
     set(?RAFT_MEMBERSHIP_KEY(Table, Partition), Membership).
+
+-spec set_message_queue_length(Name :: atom()) -> true.
+set_message_queue_length(Name) ->
+    {message_queue_len, Length} = process_info(self(), message_queue_len),
+    set_message_queue_length(Name, Length).
+
+-spec set_message_queue_length(Name :: atom(), Length :: non_neg_integer()) -> true.
+set_message_queue_length(Name, Length) ->
+    set(?RAFT_MSG_QUEUE_LENGTH_KEY(Name), Length).

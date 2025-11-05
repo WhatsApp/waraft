@@ -688,12 +688,13 @@ callback_mode() ->
     [state_functions, state_enter].
 
 -spec terminate(Reason :: term(), State :: state(), Data :: #raft_state{}) -> ok.
-terminate(Reason, State, #raft_state{table = Table, partition = Partition} = Data) ->
+terminate(Reason, State, #raft_state{name = Name, table = Table, partition = Partition} = Data) ->
     ?SERVER_LOG_NOTICE(State, Data, "terminating due to ~0P", [Reason, 20]),
     wa_raft_durable_state:sync(Data),
     wa_raft_info:delete_state(Table, Partition),
     wa_raft_info:set_live(Table, Partition, false),
     wa_raft_info:set_stale(Table, Partition, true),
+    wa_raft_info:set_message_queue_length(Name, 0),
     ok.
 
 %%------------------------------------------------------------------------------
@@ -2657,14 +2658,16 @@ check_stale_upon_entry(witness, #raft_state{table = Table, partition = Partition
     wa_raft_info:set_stale(Table, Partition, true),
     ok;
 %% Leaders are always live and never stale upon entry.
-check_stale_upon_entry(leader, #raft_state{table = Table, partition = Partition}) ->
+check_stale_upon_entry(leader, #raft_state{name = Name, table = Table, partition = Partition}) ->
     wa_raft_info:set_live(Table, Partition, true),
     wa_raft_info:set_stale(Table, Partition, false),
+    wa_raft_info:set_message_queue_length(Name),
     ok;
 %% Stalled and disabled servers are never live and always stale.
-check_stale_upon_entry(_, #raft_state{table = Table, partition = Partition}) ->
+check_stale_upon_entry(_, #raft_state{name = Name, table = Table, partition = Partition}) ->
     wa_raft_info:set_live(Table, Partition, false),
     wa_raft_info:set_stale(Table, Partition, true),
+    wa_raft_info:set_message_queue_length(Name),
     ok.
 
 %% Set a new current term and voted-for peer and clear any state that is associated with the previous term.
@@ -3405,6 +3408,7 @@ check_follower_liveness(
     State,
     #raft_state{
         application = App,
+        name = Name,
         table = Table,
         partition = Partition,
         leader_heartbeat_ts = LeaderHeartbeatTs
@@ -3428,6 +3432,7 @@ check_follower_liveness(
                 wa_raft_info:set_stale(Table, Partition, true)
             end
     end,
+    wa_raft_info:set_message_queue_length(Name),
     ok.
 
 %% Check the state of a follower or witness's last applied log entry versus the leader's
@@ -3439,6 +3444,7 @@ check_follower_lagging(
     LeaderCommit,
     #raft_state{
         application = App,
+        name = Name,
         table = Table,
         partition = Partition,
         last_applied = LastApplied
@@ -3462,6 +3468,7 @@ check_follower_lagging(
                 wa_raft_info:set_stale(Table, Partition, false)
         end
     end,
+    wa_raft_info:set_message_queue_length(Name),
 
     ok.
 
@@ -3472,6 +3479,7 @@ check_follower_lagging(
 check_leader_liveness(
     #raft_state{
         application = App,
+        name = Name,
         table = Table,
         partition = Partition,
         heartbeat_response_ts = HeartbeatResponse
@@ -3502,7 +3510,10 @@ check_leader_liveness(
         false ->
             ?SERVER_LOG_NOTICE(leader, State, "is no longer stale after heartbeat quorum age drops to ~0p ms < ~0p ms max", [QuorumAge, MaxAge]),
             wa_raft_info:set_stale(Table, Partition, ShouldBeStale)
-    end.
+    end,
+
+    % Update message queue length
+    wa_raft_info:set_message_queue_length(Name).
 
 %% Based on information that the leader has available as a result of heartbeat replies, attempt
 %% to discern what the best subsequent replication mode would be for this follower.
