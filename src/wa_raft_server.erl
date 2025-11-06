@@ -2758,9 +2758,11 @@ commit_pending(#raft_state{log_view = View, pending_high = PendingHigh, pending_
                 skipped ->
                     % Since the append failed, we do not advance to the new label.
                     % We cancel all pending commits that are less than or equal to the current priority.
+                    ?RAFT_COUNTV({'raft.commit.skipped', Priority}, length(Entries)),
                     ?SERVER_LOG_WARNING(leader, Data, "skipped pre-heartbeat sync for ~0p log entr(ies).", [length(Entries)]),
                     cancel_pending({error, commit_stalled}, Data);
                 {error, Error} ->
+                    ?RAFT_COUNTV({'raft.commit.error', Priority}, length(Entries)),
                     ?SERVER_LOG_ERROR(leader, Data, "sync failed due to ~0P.", [Error, 20]),
                     error(Error)
             end;
