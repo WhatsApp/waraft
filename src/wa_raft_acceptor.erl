@@ -261,7 +261,7 @@ commit_impl(From, {Key, _} = Op, Priority, #state{name = Name, server = Server, 
                     "Acceptor[~0p] is rejecting commit request from ~0p because the commit queue is full.",
                     [Name, From]
                 ),
-                ?RAFT_COUNT('raft.acceptor.error.commit_queue_full'),
+                ?RAFT_COUNT({'raft.acceptor.error.commit_queue_full', Priority}),
                 {error, {commit_queue_full, Key}};
             apply_queue_full ->
                 ?RAFT_LOG_WARNING(
