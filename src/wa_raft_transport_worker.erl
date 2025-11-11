@@ -10,11 +10,6 @@
 -include_lib("wa_raft/include/wa_raft.hrl").
 -include_lib("wa_raft/include/wa_raft_logger.hrl").
 
-%% Internal API
--export([
-    name/2
-]).
-
 %% OTP supervision
 -export([
     child_spec/2,
@@ -48,14 +43,6 @@
     file :: wa_raft_transport:file_id()
 }).
 -type job() :: #transport{} | #file{}.
-
-%%% ------------------------------------------------------------------------
-%%%  Internal API
-%%%
-
--spec name(Node :: node(), Number :: non_neg_integer()) -> atom().
-name(Node, Number) ->
-    list_to_atom(lists:concat([?MODULE, "_", Node, "_", integer_to_list(Number)])).
 
 %%% ------------------------------------------------------------------------
 %%%  OTP supervision callbacks
