@@ -74,7 +74,6 @@
 
 -define(RAFT_COMMAND(Type, Payload), {command, Type, Payload}).
 
--define(LEGACY_COMMIT_COMMAND(From, Op),                        ?RAFT_COMMAND(commit, {From, Op})).
 -define(COMMIT_COMMAND(From, Op, Priority),                     ?RAFT_COMMAND(commit, {From, Op, Priority})).
 -define(READ_COMMAND(Op),                                       ?RAFT_COMMAND(read, Op)).
 

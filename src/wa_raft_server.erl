@@ -260,12 +260,11 @@
 -type legacy_rpc() :: ?LEGACY_RAFT_RPC(atom(), wa_raft_log:log_term(), node(), undefined | tuple()).
 -type rpc_named() :: ?RAFT_NAMED_RPC(atom(), wa_raft_log:log_term(), atom(), node(), undefined | tuple()).
 
--type command() :: legacy_commit_command() | commit_command() | read_command() | status_command() | trigger_election_command() |
+-type command() :: commit_command() | read_command() | status_command() | trigger_election_command() |
                    promote_command() | resign_command() | adjust_membership_command() | refresh_config_command() |
                    snapshot_available_command() | handover_candidates_command() | handover_command() |
                    enable_command() | disable_command() | bootstrap_command() | notify_complete_command().
 
--type legacy_commit_command()       :: ?LEGACY_COMMIT_COMMAND(gen_server:from(), wa_raft_acceptor:op()).
 -type commit_command()              :: ?COMMIT_COMMAND(gen_server:from(), wa_raft_acceptor:op(), wa_raft_acceptor:priority()).
 -type read_command()                :: ?READ_COMMAND(wa_raft_acceptor:read_op()).
 -type status_command()              :: ?STATUS_COMMAND.
@@ -1205,8 +1204,6 @@ leader(state_timeout, _, #raft_state{application = App} = State0) ->
 %%   of the local node, then immediately apply the commit. Otherwise, if a
 %%   handover is not in progress, then immediately append the pending list if
 %%   enough pending commit requests have accumulated.
-leader(cast, ?LEGACY_COMMIT_COMMAND(From, Op), State) ->
-    ?MODULE:leader(cast, ?COMMIT_COMMAND(From, Op, high), State);
 leader(
     cast,
     ?COMMIT_COMMAND(From, Op, Priority),
@@ -1947,8 +1944,6 @@ witness(Type, Event, #raft_state{} = State) ->
 ) -> gen_statem:event_handler_result(state(), #raft_state{}).
 
 %% [Commit] Non-leader nodes should fail commits with {error, not_leader}.
-command(State, cast, ?LEGACY_COMMIT_COMMAND(From, Op), Data) ->
-    command(State, cast, ?COMMIT_COMMAND(From, Op, high), Data);
 command(
     State,
     cast,
