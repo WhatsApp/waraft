@@ -301,9 +301,9 @@
 -type refresh_action() :: refresh.
 -type membership_action() ::
     %% Add a new peer to the cluster as a voting member or promote an existing
-    %% non-voting participiant to a voting member.
+    %% non-voting participant to a voting member.
     {add, Peer :: peer()} |
-    %% Add a new peer or existing non-voting witness participiant to the
+    %% Add a new peer or existing non-voting witness participant to the
     %% cluster as a voting witness member.
     {add_witness, Peer :: peer()} |
     %% Add a new peer to the cluster as a non-voting participant.
@@ -318,7 +318,7 @@
     %% voting witness member to a non-voting witness participant.
     {remove_membership, Peer :: peer()} |
     %% Demote an existing voting member or non-voting participant to a voting
-    %% witness member or non-voting witness participiant.
+    %% witness member or non-voting witness participant.
     {demote_to_witness, Peer :: peer()}.
 
 -type config_action() :: refresh_action() | membership_action().
@@ -2268,7 +2268,7 @@ is_single_member(#raft_identity{name = Name, node = Node}, Config) ->
 is_single_member(Peer, #{membership := Membership, witness := Witnesses}) ->
     Membership =:= [Peer] andalso not lists:member(Peer, Witnesses).
 
-%% Get the non-empty participiants list from the provided config. Falls back to the
+%% Get the non-empty participants list from the provided config. Falls back to the
 %% membership list if the participants list is missing or empty. Raises an error if
 %% both the participants and membership lists are missing or empty.
 -spec config_participants(Config :: config()) -> Participants :: membership().
