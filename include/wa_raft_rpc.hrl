@@ -74,25 +74,25 @@
 
 -define(RAFT_COMMAND(Type, Payload), {command, Type, Payload}).
 
--define(COMMIT_COMMAND(From, Op, Priority),                     ?RAFT_COMMAND(commit, {From, Op, Priority})).
--define(READ_COMMAND(Op),                                       ?RAFT_COMMAND(read, Op)).
+-define(COMMIT_COMMAND(From, Op, Priority),         ?RAFT_COMMAND(commit, {From, Op, Priority})).
+-define(READ_COMMAND(Op),                           ?RAFT_COMMAND(read, Op)).
 
--define(STATUS_COMMAND,                                         ?RAFT_COMMAND(status, undefined)).
--define(TRIGGER_ELECTION_COMMAND(TermOrOffset),                 ?RAFT_COMMAND(trigger_election, {TermOrOffset})).
--define(PROMOTE_COMMAND(TermOrOffset, Force),                   ?RAFT_COMMAND(promote, {TermOrOffset, Force})).
--define(RESIGN_COMMAND,                                         ?RAFT_COMMAND(resign, undefined)).
+-define(STATUS_COMMAND,                             ?RAFT_COMMAND(status, undefined)).
+-define(TRIGGER_ELECTION_COMMAND(TermOrOffset),     ?RAFT_COMMAND(trigger_election, {TermOrOffset})).
+-define(PROMOTE_COMMAND(TermOrOffset, Force),       ?RAFT_COMMAND(promote, {TermOrOffset, Force})).
+-define(RESIGN_COMMAND,                             ?RAFT_COMMAND(resign, undefined)).
 
--define(ADJUST_MEMBERSHIP_COMMAND(Action, Peer, ConfigIndex),   ?RAFT_COMMAND(adjust_membership, {Action, Peer, ConfigIndex})).
--define(REFRESH_CONFIG_COMMAND(),                               ?RAFT_COMMAND(refresh_config, undefined)).
+-define(ADJUST_CONFIG_COMMAND(Action, Index),       ?RAFT_COMMAND(adjust_config, {Action, Index})).
+-define(REFRESH_CONFIG_COMMAND(),                   ?RAFT_COMMAND(refresh_config, undefined)).
 
--define(SNAPSHOT_AVAILABLE_COMMAND(Root, Position),             ?RAFT_COMMAND(snapshot_available, {Root, Position})).
+-define(SNAPSHOT_AVAILABLE_COMMAND(Root, Position), ?RAFT_COMMAND(snapshot_available, {Root, Position})).
 
--define(HANDOVER_CANDIDATES_COMMAND,                            ?RAFT_COMMAND(handover_candidates, undefined)).
--define(HANDOVER_COMMAND(Peer),                                 ?RAFT_COMMAND(handover, Peer)).
+-define(HANDOVER_CANDIDATES_COMMAND,                ?RAFT_COMMAND(handover_candidates, undefined)).
+-define(HANDOVER_COMMAND(Peer),                     ?RAFT_COMMAND(handover, Peer)).
 
--define(ENABLE_COMMAND,                                         ?RAFT_COMMAND(enable, undefined)).
--define(DISABLE_COMMAND(Reason),                                ?RAFT_COMMAND(disable, Reason)).
+-define(ENABLE_COMMAND,                             ?RAFT_COMMAND(enable, undefined)).
+-define(DISABLE_COMMAND(Reason),                    ?RAFT_COMMAND(disable, Reason)).
 
--define(BOOTSTRAP_COMMAND(Position, Config, Data),              ?RAFT_COMMAND(bootstrap, {Position, Config, Data})).
+-define(BOOTSTRAP_COMMAND(Position, Config, Data),  ?RAFT_COMMAND(bootstrap, {Position, Config, Data})).
 
--define(NOTIFY_COMPLETE_COMMAND(),                              ?RAFT_COMMAND(notify_complete, undefined)).
+-define(NOTIFY_COMPLETE_COMMAND(),                  ?RAFT_COMMAND(notify_complete, undefined)).

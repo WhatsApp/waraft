@@ -34,6 +34,7 @@
 %% Inspection of cluster configuration
 -export([
     get_config_version/1,
+    get_config_participants/1,
     get_config_members/1,
     get_config_full_members/1,
     get_config_witness_members/1,
@@ -47,6 +48,7 @@
     make_config/0,
     make_config/1,
     make_config/2,
+    make_config/3,
     normalize_config/1
 ]).
 
@@ -58,7 +60,8 @@
 %% Modification of cluster configuration
 -export([
     set_config_members/2,
-    set_config_members/3
+    set_config_members/3,
+    set_config_members/4
 ]).
 
 %%------------------------------------------------------------------------------
@@ -97,6 +100,8 @@
     commit/4,
     read/2,
     snapshot_available/3,
+    adjust_config/2,
+    adjust_config/3,
     adjust_membership/3,
     adjust_membership/4,
     refresh_config/1,
@@ -144,7 +149,7 @@
     compute_quorum/3,
     config/1,
     max_index_to_apply/3,
-    adjust_config_membership/4
+    leader_adjust_config/2
 ]).
 -endif.
 
@@ -212,12 +217,19 @@
 -type peer() :: {Name :: atom(), Node :: node()}.
 -type membership() :: [peer()].
 
--opaque config() :: config_v1().
--opaque config_all() :: config_v1().
-
--type config_v1() ::
+-opaque config() ::
     #{
         version := 1,
+        participants := membership(),
+        membership := membership(),
+        witness := membership()
+    }.
+-opaque config_all() :: config_v1_all().
+
+-type config_v1_all() ::
+    #{
+        version := 1,
+        participants => membership(),
         membership => membership(),
         witness => membership()
     }.
@@ -261,7 +273,7 @@
 -type rpc_named() :: ?RAFT_NAMED_RPC(atom(), wa_raft_log:log_term(), atom(), node(), undefined | tuple()).
 
 -type command() :: commit_command() | read_command() | status_command() | trigger_election_command() |
-                   promote_command() | resign_command() | adjust_membership_command() | refresh_config_command() |
+                   promote_command() | resign_command() | adjust_config_command() |
                    snapshot_available_command() | handover_candidates_command() | handover_command() |
                    enable_command() | disable_command() | bootstrap_command() | notify_complete_command().
 
@@ -271,8 +283,7 @@
 -type trigger_election_command()    :: ?TRIGGER_ELECTION_COMMAND(term_or_offset()).
 -type promote_command()             :: ?PROMOTE_COMMAND(term_or_offset(), boolean()).
 -type resign_command()              :: ?RESIGN_COMMAND.
--type adjust_membership_command()   :: ?ADJUST_MEMBERSHIP_COMMAND(membership_action(), peer(), wa_raft_log:log_index() | undefined).
--type refresh_config_command()      :: ?REFRESH_CONFIG_COMMAND().
+-type adjust_config_command()       :: ?ADJUST_CONFIG_COMMAND(config_action(), wa_raft_log:log_index() | undefined).
 -type snapshot_available_command()  :: ?SNAPSHOT_AVAILABLE_COMMAND(string(), wa_raft_log:log_pos()).
 -type handover_candidates_command() :: ?HANDOVER_CANDIDATES_COMMAND.
 -type handover_command()            :: ?HANDOVER_COMMAND(node()).
@@ -287,7 +298,30 @@
 
 -type timeout_type() :: election | heartbeat.
 
--type membership_action() :: add | add_witness | remove | remove_witness.
+-type refresh_action() :: refresh.
+-type membership_action() ::
+    %% Add a new peer to the cluster as a voting member or promote an existing
+    %% non-voting participiant to a voting member.
+    {add, Peer :: peer()} |
+    %% Add a new peer or existing non-voting witness participiant to the
+    %% cluster as a voting witness member.
+    {add_witness, Peer :: peer()} |
+    %% Add a new peer to the cluster as a non-voting participant.
+    {add_participant, Peer :: peer()} |
+    %% Remove a voting member's membership and participation or a non-voting
+    %% participant's participation from the cluster.
+    {remove, Peer :: peer()} |
+    %% Remove a voting witness member's membership and participation from the
+    %% cluster.
+    {remove_witness, Peer :: peer()} |
+    %% Demote an existing voting member to a non-voting participant or a
+    %% voting witness member to a non-voting witness participant.
+    {remove_membership, Peer :: peer()} |
+    %% Demote an existing voting member or non-voting participant to a voting
+    %% witness member or non-voting witness participiant.
+    {demote_to_witness, Peer :: peer()}.
+
+-type config_action() :: refresh_action() | membership_action().
 
 %%------------------------------------------------------------------------------
 %% RAFT Server - OTP Supervision
@@ -322,6 +356,12 @@ latest_config_version() ->
 -spec get_config_version(Config :: config() | config_all()) -> pos_integer().
 get_config_version(#{version := Version}) ->
     Version.
+
+-spec get_config_participants(Config :: config() | config_all()) -> [#raft_identity{}].
+get_config_participants(#{version := 1, participants := Participants}) ->
+    [#raft_identity{name = Name, node = Node} || {Name, Node} <- Participants];
+get_config_participants(Config) ->
+    get_config_members(Config).
 
 -spec get_config_members(Config :: config() | config_all()) -> [#raft_identity{}].
 get_config_members(#{version := 1, membership := Members}) ->
@@ -369,6 +409,7 @@ is_witness(_, _) ->
 make_config() ->
     #{
         version => 1,
+        participants => [],
         membership => [],
         witness => []
     }.
@@ -383,27 +424,51 @@ make_config(Members) ->
 make_config(Members, Witnesses) ->
     set_config_members(Members, Witnesses, make_config()).
 
+%% Create a new cluster configuration with the provided participants, members, and witnesses.
+%% Any members that are not in the participants list will be included.
+-spec make_config(Participants :: [#raft_identity{}], Members :: [#raft_identity{}], Witnesses :: [#raft_identity{}]) -> config().
+make_config(Participants, Members, Witnesses) ->
+    set_config_members(Participants, Members, Witnesses, make_config()).
+
 %% Replace the set of members in the provided cluster configuration.
+%% After replacement, the set of participants will be equal to the provided list of members.
+%% After replacement, no witnesses will be set.
 %% Will upgrade the cluster configuration to the latest version.
 -spec set_config_members(Members :: [#raft_identity{}], ConfigAll :: config() | config_all()) -> config().
 set_config_members(Members, ConfigAll) ->
-    Config = normalize_config(ConfigAll),
-    Config#{membership => lists:sort([{Name, Node} || #raft_identity{name = Name, node = Node} <- Members])}.
+    set_config_members(Members, [], ConfigAll).
 
-%% Replace the set of members and witnesses in the provided cluster configuration.
+%% Replace the set of participants, members and witnesses in the provided cluster configuration.
+%% After replacement, the set of participants will be equal to the provided list of members.
 %% Will upgrade the cluster configuration to the latest version.
 -spec set_config_members(Members :: [#raft_identity{}], Witnesses :: [#raft_identity{}], ConfigAll :: config() | config_all()) -> config().
 set_config_members(Members, Witnesses, ConfigAll) ->
-    Config = set_config_members(Members, ConfigAll),
-    Config#{witness => lists:sort([{Name, Node} || #raft_identity{name = Name, node = Node} <- Witnesses])}.
+    set_config_members(Members, Members, Witnesses, ConfigAll).
+
+%% Replace the set of participants, members, and witnesses in the provided cluster configuration.
+%% After replacement, the set of participants will include at least all members.
+%% Will upgrade the cluster configuration to the latest version.
+-spec set_config_members(Participants :: [#raft_identity{}], Members :: [#raft_identity{}], Witnesses :: [#raft_identity{}], ConfigAll :: config() | config_all()) -> config().
+set_config_members(Participants, Members, Witnesses, ConfigAll) ->
+    ParticipantPeers = lists:usort([{Name, Node} || #raft_identity{name = Name, node = Node} <- Participants]),
+    MemberPeers = lists:usort([{Name, Node} || #raft_identity{name = Name, node = Node} <- Members]),
+    WitnessPeers = lists:usort([{Name, Node} || #raft_identity{name = Name, node = Node} <- Witnesses]),
+    Config = normalize_config(ConfigAll),
+    Config#{
+        participants => lists:umerge(ParticipantPeers, MemberPeers),
+        membership => MemberPeers,
+        witness => WitnessPeers
+    }.
 
 %% Attempt to upgrade any configuration from an older configuration version to the
 %% latest configuration version if possible.
 -spec normalize_config(ConfigAll :: config() | config_all()) -> Config :: config().
 normalize_config(#{version := 1} = Config) ->
-    % Fill in any missing fields.
-    Config#{
-        membership => maps:get(membership, Config, []),
+    Membership = maps:get(membership, Config, []),
+    #{
+        version => 1,
+        participants => maps:get(participants, Config, Membership),
+        membership => Membership,
         witness => maps:get(witness, Config, [])
     };
 normalize_config(#{version := Version}) ->
@@ -515,27 +580,40 @@ snapshot_available(Server, Root, Position) ->
     % server to complete.
     gen_statem:call(Server, ?SNAPSHOT_AVAILABLE_COMMAND(Root, Position), ?RAFT_STORAGE_CALL_TIMEOUT()).
 
--spec adjust_membership(
+-spec adjust_config(Server :: gen_statem:server_ref(), Action :: config_action()) ->
+    {ok, Position :: wa_raft_log:log_pos()} | {error, Reason :: term()}.
+adjust_config(Server, Action) ->
+    adjust_config(Server, Action, undefined).
+
+-spec adjust_config(
     Server :: gen_statem:server_ref(),
-    Action :: add | remove | add_witness | remove_witness,
-    Peer :: peer()
+    Action :: config_action(),
+    Index :: wa_raft_log:log_index() | undefined
 ) -> {ok, Position :: wa_raft_log:log_pos()} | {error, Reason :: term()}.
-adjust_membership(Server, Action, Peer) ->
-    adjust_membership(Server, Action, Peer, undefined).
+adjust_config(Server, Action, Index) ->
+    gen_statem:call(Server, ?ADJUST_CONFIG_COMMAND(Action, Index), ?RAFT_RPC_CALL_TIMEOUT()).
 
 -spec adjust_membership(
     Server :: gen_statem:server_ref(),
-    Action :: membership_action(),
+    Action :: add | add_witness | remove | remove_witness,
+    Peer :: peer()
+) -> {ok, Position :: wa_raft_log:log_pos()} | {error, Reason :: term()}.
+adjust_membership(Server, Action, Peer) ->
+    adjust_config(Server, {Action, Peer}).
+
+-spec adjust_membership(
+    Server :: gen_statem:server_ref(),
+    Action :: add | add_witness | remove | remove_witness,
     Peer :: peer(),
     ConfigIndex :: wa_raft_log:log_index() | undefined
 ) -> {ok, Position :: wa_raft_log:log_pos()} | {error, Reason :: term()}.
 adjust_membership(Server, Action, Peer, ConfigIndex) ->
-    gen_statem:call(Server, ?ADJUST_MEMBERSHIP_COMMAND(Action, Peer, ConfigIndex), ?RAFT_RPC_CALL_TIMEOUT()).
+    adjust_config(Server, {Action, Peer}, ConfigIndex).
 
 -spec refresh_config(Server :: gen_statem:server_ref()) ->
     {ok, Position :: wa_raft_log:log_pos()} | {error, Reason :: term()}.
 refresh_config(Server) ->
-    gen_statem:call(Server, ?REFRESH_CONFIG_COMMAND(), ?RAFT_RPC_CALL_TIMEOUT()).
+    adjust_config(Server, refresh).
 
 %% Request the specified RAFT server to start an election in the next term.
 -spec trigger_election(Server :: gen_statem:server_ref()) -> ok | {error, Reason :: term()}.
@@ -1186,8 +1264,8 @@ leader(state_timeout = Type, Event, #raft_state{handover = {Peer, _, Timeout}} =
     end;
 
 %% [Timeout] Periodic heartbeat to followers
-leader(state_timeout, _, #raft_state{application = App} = State0) ->
-    case ?RAFT_LEADER_ELIGIBLE(App) of
+leader(state_timeout, _, State0) ->
+    case leader_eligible(State0) of
         true ->
             State1 = append_entries_to_followers(State0),
             State2 = apply_single_node_cluster(State1),
@@ -1277,101 +1355,47 @@ leader({call, From}, ?RESIGN_COMMAND, #raft_state{} = State0) ->
     {next_state, follower_or_witness_state(State1), State1, {reply, From, ok}};
 
 %% [Adjust Membership] Leader attempts to commit a single-node membership change.
-leader(
-    Type,
-    ?ADJUST_MEMBERSHIP_COMMAND(Action, Peer, ExpectedConfigIndex),
-    #raft_state{cached_config = {CachedConfigIndex, Config}} = State0
-) ->
-    case config_change_allowed(State0) of
+leader(Type, ?ADJUST_CONFIG_COMMAND(Action, Index), State0) ->
+    case leader_config_change_allowed(Index, State0) of
         true ->
-            % At this point, we know that the cached config is the effective
-            % config as no uncommited config is allowed.
-            case ExpectedConfigIndex =/= undefined andalso ExpectedConfigIndex =/= CachedConfigIndex of
-                true ->
-                    ?SERVER_LOG_NOTICE(
-                        State0,
-                        "refuses a membership change request because the request expects that the effective configuration is at ~0p when it is actually at ~0p",
-                        [ExpectedConfigIndex, CachedConfigIndex]
-                    ),
-                    reply(Type, {error, rejected}),
-                    {keep_state, State0};
-                false ->
-                    case adjust_config_membership(Action, Peer, Config, State0) of
-                        {ok, NewConfig} ->
-                            % With all checks completed, we can now attempt to append the new
-                            % configuration to the log. If successful, a round of heartbeats is
-                            % immediately started to replicate the change as soon as possible.
-                            case change_config(NewConfig, State0) of
-                                {ok, #raft_log_pos{index = NewConfigIndex} = NewConfigPosition, State1} ->
-                                    ?SERVER_LOG_NOTICE(
-                                        State1,
-                                        "has appended a new configuration change from ~0p to ~0p at log index ~0p.",
-                                        [Config, NewConfig, NewConfigIndex]
-                                    ),
-                                    State2 = apply_single_node_cluster(State1),
-                                    State3 = append_entries_to_followers(State2),
-                                    reply(Type, {ok, NewConfigPosition}),
-                                    {keep_state, State3, ?HEARTBEAT_TIMEOUT(State3)};
-                                {error, Reason} ->
-                                    ?SERVER_LOG_NOTICE(
-                                        State0,
-                                        "failed to append a new configuration due to ~0P.",
-                                        [Reason, 20]
-                                    ),
-                                    reply(Type, {error, Reason}),
-                                    {keep_state, State0}
-                            end;
+            case leader_adjust_config(Action, State0) of
+                {ok, NewConfig} ->
+                    % With all checks completed, we can now attempt to append the new
+                    % configuration to the log. If successful, a round of heartbeats is
+                    % immediately started to replicate the change as soon as possible.
+                    case leader_change_config(NewConfig, State0) of
+                        {ok, #raft_log_pos{index = NewConfigIndex} = NewConfigPosition, State1} ->
+                            ?SERVER_LOG_NOTICE(
+                                State1,
+                                "is attempting to change configuration from ~0p to ~0p at ~0p.",
+                                [config(State0), NewConfig, NewConfigIndex]
+                            ),
+                            State2 = apply_single_node_cluster(State1),
+                            State3 = append_entries_to_followers(State2),
+                            reply(Type, {ok, NewConfigPosition}),
+                            {keep_state, State3, ?HEARTBEAT_TIMEOUT(State3)};
                         {error, Reason} ->
                             ?SERVER_LOG_NOTICE(
                                 State0,
-                                "cannot ~0p peer ~0p against configuration ~0p due to ~0P.",
-                                [Action, Peer, Config, Reason, 20]
+                                "failed to append a new configuration due to ~0P.",
+                                [Reason, 20]
                             ),
                             reply(Type, {error, Reason}),
-                            {keep_state, State0}
-                    end
-            end;
-        false ->
-            reply(Type, {error, rejected}),
-            {keep_state, State0}
-    end;
-
-%% [Refresh Config] Leader attempts to refresh the current config in-place.
-leader(
-    Type,
-    ?REFRESH_CONFIG_COMMAND(),
-    #raft_state{cached_config = {_, Config}} = State0
-) ->
-    case config_change_allowed(State0) of
-        true ->
-            % With all checks completed, we can now attempt to append the new
-            % configuration to the log. If successful, a round of heartbeats is
-            % immediately started to replicate the change as soon as possible.
-            case change_config(Config, State0) of
-                {ok, #raft_log_pos{index = NewConfigIndex} = NewConfigPosition, State1} ->
-                    ?SERVER_LOG_NOTICE(
-                        State1,
-                        "has refreshed the current configuration ~0p at log index ~0p.",
-                        [Config, NewConfigIndex]
-                    ),
-                    State2 = apply_single_node_cluster(State1),
-                    State3 = append_entries_to_followers(State2),
-                    reply(Type, {ok, NewConfigPosition}),
-                    {keep_state, State3, ?HEARTBEAT_TIMEOUT(State3)};
+                            keep_state_and_data
+                    end;
                 {error, Reason} ->
                     ?SERVER_LOG_NOTICE(
                         State0,
-                        "failed to append a new configuration due to ~0P.",
-                        [Reason, 20]
+                        "failed to adjust configuration ~0p with action ~0p due to ~0P.",
+                        [config(State0), Action, Reason, 20]
                     ),
                     reply(Type, {error, Reason}),
-                    {keep_state, State0}
+                    keep_state_and_data
             end;
         false ->
             reply(Type, {error, rejected}),
-            {keep_state, State0}
+            keep_state_and_data
     end;
-
 
 %% [Handover Candidates] Return list of handover candidates (peers that are not lagging too much)
 leader({call, From}, ?HANDOVER_CANDIDATES_COMMAND, #raft_state{} = State) ->
@@ -1408,7 +1432,7 @@ leader(
     } = State0
 ) ->
     % TODO(hsun324): For the time being, assume that all members of the cluster use the same server name.
-    case member({Name, Peer}, config(State0)) of
+    case is_member({Name, Peer}, config(State0)) of
         false ->
             ?SERVER_LOG_WARNING(State0, "dropping handover to unknown peer ~0p.", [Peer]),
             reply(Type, {error, invalid_peer}),
@@ -1567,11 +1591,7 @@ follower(_, ?REMOTE(_, ?HANDOVER_FAILED(_)), #raft_state{}) ->
 
 %% [Follower] handle timeout
 %% follower doesn't receive any heartbeat. starting a new election
-follower(
-    state_timeout,
-    _,
-    #raft_state{
-        application = App,
+follower(state_timeout, _, #raft_state{
         leader_id = LeaderId,
         log_view = View,
         leader_heartbeat_ts = HeartbeatTs
@@ -1582,7 +1602,7 @@ follower(
         _         -> erlang:monotonic_time(millisecond) - HeartbeatTs
     end,
     ?RAFT_COUNT('raft.follower.timeout'),
-    case ?RAFT_LEADER_ELIGIBLE(App) andalso ?RAFT_ELECTION_WEIGHT(App) =/= 0 of
+    case candidate_eligible(State) of
         true ->
             ?SERVER_LOG_NOTICE(State, "times out and starts election at ~0p after waiting for leader ~0p for ~0p ms.",
                 [wa_raft_log:last_index(View), WaitingMs, LeaderId]),
@@ -1651,7 +1671,7 @@ candidate(
 
     % Broadcast vote requests and also send a vote-for-self.
     % (Candidates always implicitly vote for themselves.)
-    broadcast_rpc(?REQUEST_VOTE(normal, LastLogIndex, LastLogTerm), State2),
+    send_rpc_to_all_members(?REQUEST_VOTE(normal, LastLogIndex, LastLogTerm), State2),
     send_rpc(Self, ?VOTE(true), State2),
 
     {keep_state, State2, ?ELECTION_TIMEOUT(State2)};
@@ -1682,7 +1702,7 @@ candidate(
     % No changes to the log are expected during an election so we can just reload these values from the log view.
     LastLogIndex = wa_raft_log:last_index(View),
     {ok, LastLogTerm} = wa_raft_log:term(View, LastLogIndex),
-    broadcast_rpc(?REQUEST_VOTE(force, LastLogIndex, LastLogTerm), State),
+    send_rpc_to_all_members(?REQUEST_VOTE(force, LastLogIndex, LastLogTerm), State),
     keep_state_and_data;
 
 %% [Protocol] Parse any RPCs in network formats
@@ -1740,10 +1760,14 @@ candidate(_, ?REMOTE(_, ?HANDOVER_FAILED(_)), #raft_state{}) ->
     keep_state_and_data;
 
 %% [Candidate] Handle Election Timeout (5.2)
-%% Candidate doesn't get enough votes after a period of time, restart election.
+%% Candidate doesn't get enough votes after a period of time, restart election or fallback
+%% to follower if the local replica is no longer eligible.
 candidate(state_timeout, _, #raft_state{votes = Votes} = State) ->
     ?SERVER_LOG_NOTICE(State, "election timed out with votes ~0p.", [Votes]),
-    {repeat_state, State};
+    case candidate_eligible(State) of
+        true -> {repeat_state, State};
+        false -> {next_state, follower, State}
+    end;
 
 %% [Command] Defer to common handling for generic RAFT server commands
 candidate(Type, ?RAFT_COMMAND(_, _) = Event, #raft_state{} = State) ->
@@ -2137,10 +2161,10 @@ command(State, {call, From}, ?RESIGN_COMMAND, #raft_state{} = Data) when State =
 command(
     State,
     Type,
-    ?ADJUST_MEMBERSHIP_COMMAND(Action, Peer, _),
+    ?ADJUST_CONFIG_COMMAND(Action, _),
     #raft_state{} = Data
 ) when State =/= leader ->
-    ?SERVER_LOG_NOTICE(State, Data, "cannot ~0p peer ~0p because we are not leader.", [Action, Peer]),
+    ?SERVER_LOG_NOTICE(State, Data, "refusing to adjust config with action ~0p because we are not leader.", [Action]),
     reply(Type, {error, not_leader}),
     {keep_state, Data};
 
@@ -2218,18 +2242,23 @@ command(State, Type, Event, #raft_state{} = Data) ->
 %% RAFT Server - State Machine Implementation - Cluster Configuration Helpers
 %%------------------------------------------------------------------------------
 
-%% Determine if the specified peer is a member of the current cluster configuration,
-%% returning false if the specified peer is not a member or there is no current cluster
-%% configuration.
--spec member(Peer :: peer(), Config :: config()) -> boolean().
-member(Peer, Config) ->
-    member(Peer, Config, false).
+%% Return whether or not the specified peer is a member of in the provided configuration.
+%% Raises an error if the membership list is missing or empty.
+-spec is_member(Peer :: peer(), Config :: config()) -> boolean().
+is_member(Peer, Config) ->
+    lists:member(Peer, config_membership(Config)).
 
--spec member(Peer :: peer(), Config :: config(), Default :: boolean()) -> boolean().
-member(Peer, #{membership := Membership}, _) ->
-    lists:member(Peer, Membership);
-member(_, _, Default) ->
-    Default.
+-spec is_self(Peer :: peer(), Data :: #raft_state{}) -> boolean().
+is_self({Name, Node}, #raft_state{self = #raft_identity{name = Name, node = Node}}) -> true;
+is_self(_, _) -> false.
+
+-spec is_self_member(Data :: #raft_state{}) -> boolean().
+is_self_member(#raft_state{self = #raft_identity{name = Name, node = Node}} = Data) ->
+    is_member({Name, Node}, config(Data)).
+
+-spec is_self_witness(Data :: #raft_state{}) -> boolean().
+is_self_witness(#raft_state{self = #raft_identity{name = Name, node = Node}} = Data) ->
+    lists:member({Name, Node}, config_witnesses(config(Data))).
 
 %% Returns true only if the membership of the current configuration contains exactly
 %% the provided peer and that the provided peer is not specified as a witness.
@@ -2237,11 +2266,16 @@ member(_, _, Default) ->
 is_single_member(#raft_identity{name = Name, node = Node}, Config) ->
     is_single_member({Name, Node}, Config);
 is_single_member(Peer, #{membership := Membership, witness := Witnesses}) ->
-    Membership =:= [Peer] andalso not lists:member(Peer, Witnesses);
-is_single_member(Peer, #{membership := Membership}) ->
-    Membership =:= [Peer];
-is_single_member(_, #{}) ->
-    false.
+    Membership =:= [Peer] andalso not lists:member(Peer, Witnesses).
+
+%% Get the non-empty participiants list from the provided config. Falls back to the
+%% membership list if the participants list is missing or empty. Raises an error if
+%% both the participants and membership lists are missing or empty.
+-spec config_participants(Config :: config()) -> Participants :: membership().
+config_participants(#{participants := Participants}) when Participants =/= [] ->
+    Participants;
+config_participants(Config) ->
+    config_membership(Config).
 
 %% Get the non-empty membership list from the provided config. Raises an error
 %% if the membership list is missing or empty.
@@ -2253,27 +2287,20 @@ config_membership(_) ->
 
 -spec config_witnesses(Config :: config()) -> Witnesses :: [peer()].
 config_witnesses(#{witness := Witnesses}) ->
-    Witnesses;
-config_witnesses(_) ->
-    [].
+    Witnesses.
 
--spec is_self_witness(#raft_state{}) -> boolean().
-is_self_witness(#raft_state{self = #raft_identity{name = Name, node = Node}} = RaftState) ->
-    lists:member({Name, Node}, config_witnesses(config(RaftState))).
+-spec config_participant_identities(Config :: config()) -> Peers :: [#raft_identity{}].
+config_participant_identities(Config) ->
+    [#raft_identity{name = Name, node = Node} || {Name, Node} <- config_participants(Config)].
 
--spec config_identities(Config :: config()) -> Peers :: [#raft_identity{}].
-config_identities(#{membership := Membership}) ->
-    [#raft_identity{name = Name, node = Node} || {Name, Node} <- Membership];
-config_identities(_) ->
-    error(membership_not_set).
+-spec config_member_identities(Config :: config()) -> Peers :: [#raft_identity{}].
+config_member_identities(Config) ->
+    [#raft_identity{name = Name, node = Node} || {Name, Node} <- config_membership(Config)].
 
--spec config_replica_identities(Config :: config()) -> Replicas :: [#raft_identity{}].
-config_replica_identities(#{membership := Membership, witness := Witnesses}) ->
-    [#raft_identity{name = Name, node = Node} || {Name, Node} <- Membership -- Witnesses];
-config_replica_identities(#{membership := Membership}) ->
-    [#raft_identity{name = Name, node = Node} || {Name, Node} <- Membership];
-config_replica_identities(_) ->
-    error(membership_not_set).
+-spec config_full_member_identities(Config :: config()) -> Replicas :: [#raft_identity{}].
+config_full_member_identities(Config) ->
+    FullMembers = config_membership(Config) -- config_witnesses(Config),
+    [#raft_identity{name = Name, node = Node} || {Name, Node} <- FullMembers].
 
 %% Returns the current effective RAFT configuration. This is the most recent configuration
 %% stored in either the RAFT log or the RAFT storage.
@@ -2339,6 +2366,58 @@ load_label_state(#raft_state{storage = Storage, label_module = LabelModule}) whe
     end;
 load_label_state(_) ->
     undefined.
+
+%% Add a new peer to the participants list of the provided cluster
+%% configuration.
+-spec config_add_participant(Peer :: peer(), Config :: config()) -> config().
+config_add_participant(Peer, Config) ->
+    Config#{
+        participants => lists:umerge([Peer], config_participants(Config))
+    }.
+
+%% Add a new peer to the participants and membership lists of the provided
+%% cluster configuration.
+-spec config_add_member(Peer :: peer(), Config :: config()) -> config().
+config_add_member(Peer, Config) ->
+    Config#{
+        participants => lists:umerge([Peer], config_participants(Config)),
+        membership => lists:umerge([Peer], config_membership(Config))
+    }.
+
+%% Add a new peer to the participants, membership, and witness lists of the
+%% provided cluster configuration.
+-spec config_add_witness(Peer :: peer(), Config :: config()) -> config().
+config_add_witness(Peer, Config) ->
+    Config#{
+        participants => lists:umerge([Peer], config_participants(Config)),
+        membership => lists:umerge([Peer], config_membership(Config)),
+        witness => lists:umerge([Peer], config_witnesses(Config))
+    }.
+
+%% Add a peer to just the witness list of the provided cluster configuration.
+-spec config_add_witness_only(Peer :: peer(), Config :: config()) -> config().
+config_add_witness_only(Peer, Config) ->
+    Config#{
+        witness => lists:umerge([Peer], config_witnesses(Config))
+    }.
+
+%% Remove a peer from the participants, membership, and witness lists of the
+%% provided cluster configuration.
+-spec config_remove_participant(Peer :: peer(), Config :: config()) -> config().
+config_remove_participant(Peer, Config) ->
+    Config#{
+        participants => config_participants(Config) -- [Peer],
+        membership => config_membership(Config) -- [Peer],
+        witness => config_witnesses(Config) -- [Peer]
+    }.
+
+%% Remove a peer from the membership list of the provided
+%% cluster configuration.
+-spec config_remove_member(Peer :: peer(), Config :: config()) -> config().
+config_remove_member(Peer, Config) ->
+    Config#{
+        membership => config_membership(Config) -- [Peer]
+    }.
 
 %% After an apply is sent to storage, check to see if it is a new configuration
 %% being applied. If it is, then update the cached configuration.
@@ -2696,6 +2775,24 @@ advance_term(
     Data2.
 
 %%------------------------------------------------------------------------------
+%% RAFT Server - State Machine Implementation - Elections
+%%------------------------------------------------------------------------------
+
+%% Whether or not the local replica is eligible to maintain leadership.
+%% Generally, this requires that the replica is a member of cluster and is
+%% eligible to be leader.
+-spec leader_eligible(Data :: #raft_state{}) -> boolean().
+leader_eligible(#raft_state{application = App} = Data) ->
+    ?RAFT_LEADER_ELIGIBLE(App) andalso is_self_member(Data).
+
+%% Whether or not the local replica is eligible to start elections.
+%% Generally, this requires that the replica is a member of cluster, is
+%% eligible to be leader and has a non-zero election weight.
+-spec candidate_eligible(Data :: #raft_state{}) -> boolean().
+candidate_eligible(#raft_state{application = App} = Data) ->
+    leader_eligible(Data) andalso ?RAFT_ELECTION_WEIGHT(App) =/= 0.
+
+%%------------------------------------------------------------------------------
 %% RAFT Server - State Machine Implementation - Leader Methods
 %%------------------------------------------------------------------------------
 
@@ -2703,7 +2800,7 @@ advance_term(
 append_entries_to_followers(Data0) ->
     Data1 = commit_pending(Data0, high),
     Data2 = commit_pending(Data1, low),
-    Data3 = lists:foldl(fun heartbeat/2, Data2, config_identities(config(Data2))),
+    Data3 = lists:foldl(fun heartbeat/2, Data2, config_participant_identities(config(Data2))),
     Data3.
 
 -spec commit_pending(Data :: #raft_state{}, Priority :: wa_raft_acceptor:priority()) -> #raft_state{}.
@@ -2898,7 +2995,7 @@ stub_command(_) -> noop_omitted.
 
 -spec compute_handover_candidates(State :: #raft_state{}) -> [node()].
 compute_handover_candidates(#raft_state{application = App, log_view = View} = State) ->
-    Replicas = config_replica_identities(config(State)),
+    Replicas = config_full_member_identities(config(State)),
     LastIndex = wa_raft_log:last_index(View),
     MatchCutoffIndex = LastIndex - ?RAFT_HANDOVER_MAX_ENTRIES(App),
     ApplyCutoffIndex =
@@ -2935,46 +3032,63 @@ is_eligible_for_handover(
 %% RAFT Server - State Machine Implementation - Configuration Changes
 %%------------------------------------------------------------------------------
 
--spec config_change_allowed(State :: #raft_state{}) -> boolean().
-config_change_allowed(
+-spec leader_config_change_allowed(
+    Index :: wa_raft_log:log_index() | undefined,
+    State :: #raft_state{}
+) -> boolean().
+leader_config_change_allowed(
+    Index,
     #raft_state{
         log_view = View,
         commit_index = CommitIndex,
         last_applied = LastApplied,
+        cached_config = {CachedConfigIndex, _},
         first_current_term_log_index = TermStartIndex
     } = State
 ) ->
     % A leader must establish quorum on at least one log entry in the current
     % term because it is ready for a configuration change.
-    case CommitIndex >= TermStartIndex of
-        true ->
-            % No two configuration changes can be in the log at the same time
-            % and both be not yet committed.
-            case wa_raft_log:config(View) of
-                {ok, ConfigIndex, _} when ConfigIndex > LastApplied ->
-                    ?SERVER_LOG_NOTICE(
-                        leader,
-                        State,
-                        "at ~0p is not ready for a new configuration because a new configuration is not yet committed at ~0p.",
-                        [CommitIndex, ConfigIndex]
-                    ),
-                    false;
-                _ ->
-                    true
-            end;
-        false ->
+    QuorumReady = CommitIndex >= TermStartIndex,
+    % No two configuration changes can be in the log at the same time
+    % and both be not yet committed.
+    ConfigIndex = case wa_raft_log:config(View) of
+        {ok, LogConfigIndex, _} -> erlang:max(CachedConfigIndex, LogConfigIndex);
+        _ -> CachedConfigIndex
+    end,
+    if
+        not QuorumReady ->
             ?SERVER_LOG_NOTICE(
                 leader,
                 State,
                 "at ~0p is not ready for a new configuration because it has not established a quorum in the current term.",
                 [CommitIndex]
             ),
-            false
+            false;
+        ConfigIndex > LastApplied ->
+            ?SERVER_LOG_NOTICE(
+                leader,
+                State,
+                "at ~0p is not ready for a new configuration because a new configuration is not yet committed at ~0p.",
+                [CommitIndex, ConfigIndex]
+            ),
+            false;
+        Index =:= undefined ->
+            true;
+        Index =/= ConfigIndex ->
+            ?SERVER_LOG_NOTICE(
+                leader,
+                State,
+                "refuses a new configuration because the configuration at ~0p is not at the required ~0p",
+                [ConfigIndex, Index]
+            ),
+            false;
+        true ->
+            true
     end.
 
--spec change_config(NewConfig :: wa_raft_server:config(), State :: #raft_state{}) ->
+-spec leader_change_config(NewConfig :: wa_raft_server:config(), State :: #raft_state{}) ->
     {ok, NewConfigPosition :: wa_raft_log:log_pos(), NewState :: #raft_state{}} | {error, Reason :: term()}.
-change_config(NewConfig, #raft_state{log_view = View, current_term = CurrentTerm} = State0) ->
+leader_change_config(NewConfig, #raft_state{log_view = View, current_term = CurrentTerm} = State0) ->
     {LogEntry, State1} = make_log_entry({make_ref(), {config, NewConfig}}, State0),
     case wa_raft_log:try_append(View, [LogEntry]) of
         {ok, NewView} ->
@@ -2987,39 +3101,61 @@ change_config(NewConfig, #raft_state{log_view = View, current_term = CurrentTerm
             {error, Reason}
     end.
 
--spec adjust_config_membership(
-    Action :: membership_action(),
-    Peer :: peer(),
-    Config :: config(),
-    State :: #raft_state{}
-) -> {ok, NewConfig :: config()} | {error, Reason :: atom()}.
-adjust_config_membership(Action, {Name, Node}, Config, #raft_state{self = Self}) ->
-    PeerIdentity = ?IDENTITY_REQUIRES_MIGRATION(Name, Node),
-    Membership = get_config_members(Config),
-    Witness = get_config_witnesses(Config),
+-spec leader_adjust_config(Action :: config_action(), State :: #raft_state{}) ->
+    {ok, NewConfig :: config()} | {error, Reason :: atom()}.
+leader_adjust_config(refresh, Data) ->
+    {ok, config(Data)};
+leader_adjust_config({Action, Peer}, Data) ->
+    Config = config(Data),
+    IsSelf = is_self(Peer, Data),
+    IsMember = lists:member(Peer, config_membership(Config)),
+    IsWitness = lists:member(Peer, config_witnesses(Config)),
+    IsParticipant = lists:member(Peer, config_participants(Config)),
     case Action of
         add ->
-            case lists:member(PeerIdentity, Membership) of
-                true  -> {error, already_member};
-                false -> {ok, set_config_members([PeerIdentity | Membership], Config)}
+            if
+                IsMember -> {error, already_member};
+                IsWitness -> {error, already_witness};
+                true -> {ok, config_add_member(Peer, Config)}
             end;
         add_witness ->
-            case {lists:member(PeerIdentity, Witness), lists:member(PeerIdentity, Membership)} of
-                {true, true}  -> {error, already_witness};
-                {true, _}     -> {error, already_member};
-                {false, _}    -> {ok, set_config_members([PeerIdentity | Membership], [PeerIdentity | Witness], Config)}
+            if
+                IsMember andalso IsWitness -> {error, already_witness};
+                IsMember -> {error, already_member};
+                IsParticipant andalso not IsWitness -> {error, not_a_witness};
+                true -> {ok, config_add_witness(Peer, Config)}
+            end;
+        add_participant ->
+            if
+                IsMember -> {error, already_member};
+                IsWitness -> {error, already_witness};
+                IsParticipant -> {error, already_participating};
+                true -> {ok, config_add_participant(Peer, Config)}
             end;
         remove ->
-            case {PeerIdentity, lists:member(PeerIdentity, Membership)} of
-                {Self, _}  -> {error, cannot_remove_self};
-                {_, false} -> {error, not_a_member};
-                {_, true}  -> {ok, set_config_members(lists:delete(PeerIdentity, Membership), lists:delete(PeerIdentity, Witness), Config)}
+            if
+                IsSelf -> {error, cannot_remove_self};
+                not IsParticipant -> {error, not_a_participant};
+                true -> {ok, config_remove_participant(Peer, Config)}
             end;
         remove_witness ->
-            case {PeerIdentity, lists:member(PeerIdentity, Witness)} of
-                {Self, _}  -> {error, cannot_remove_self};
-                {_, false} -> {error, not_a_witness};
-                {_, true}  -> {ok, set_config_members(lists:delete(PeerIdentity, Membership), lists:delete(PeerIdentity, Witness), Config)}
+            if
+                IsSelf -> {error, cannot_remove_self};
+                not IsWitness -> {error, not_a_witness};
+                true -> {ok, config_remove_participant(Peer, Config)}
+            end;
+        remove_membership ->
+            if
+                IsSelf -> {error, cannot_remove_self};
+                not IsMember -> {error, not_a_member};
+                true -> {ok, config_remove_member(Peer, Config)}
+            end;
+        demote_to_witness ->
+            if
+                IsSelf -> {error, cannot_demote_self};
+                not IsParticipant -> {error, not_a_participant};
+                IsWitness -> {error, already_witness};
+                true -> {ok, config_add_witness_only(Peer, Config)}
             end
     end.
 
@@ -3344,9 +3480,9 @@ reply_rpc(_, _, #raft_state{}) ->
 send_rpc(Destination, Procedure, #raft_state{self = Self, current_term = Term} = State) ->
     cast(Destination, make_rpc(Self, Term, Procedure), State).
 
--spec broadcast_rpc(ProcedureCall :: normalized_procedure(), State :: #raft_state{}) -> term().
-broadcast_rpc(ProcedureCall, #raft_state{self = Self} = State) ->
-    [send_rpc(Peer, ProcedureCall, State) || Peer <- config_identities(config(State)), Peer =/= Self].
+-spec send_rpc_to_all_members(ProcedureCall :: normalized_procedure(), State :: #raft_state{}) -> term().
+send_rpc_to_all_members(ProcedureCall, #raft_state{self = Self} = State) ->
+    [send_rpc(Peer, ProcedureCall, State) || Peer <- config_member_identities(config(State)), Peer =/= Self].
 
 -spec cast(Destination :: #raft_identity{}, RPC :: rpc(), State :: #raft_state{}) -> ok | {error, term()}.
 cast(
