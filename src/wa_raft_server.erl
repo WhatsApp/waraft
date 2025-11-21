@@ -389,18 +389,12 @@ get_config_witnesses(_) ->
     [].
 
 -spec is_data_replica(Identity :: #raft_identity{}, Config :: config() | config_all()) -> boolean().
-is_data_replica(#raft_identity{name = Name, node = Node}, #{version := 1, membership := Membership, witness := Witnesses}) ->
-    lists:member({Name, Node}, Membership) and not lists:member({Name, Node}, Witnesses);
-is_data_replica(#raft_identity{name = Name, node = Node}, #{version := 1, membership := Membership}) ->
-    lists:member({Name, Node}, Membership);
-is_data_replica(_, _) ->
-    false.
+is_data_replica(Identity, Config) ->
+    lists:member(Identity, get_config_participants(Config)) and not lists:member(Identity, get_config_witnesses(Config)).
 
 -spec is_witness(Identity :: #raft_identity{}, Config :: config() | config_all()) -> boolean().
-is_witness(#raft_identity{name = Name, node = Node}, #{version := 1, witness := Witnesses}) ->
-    lists:member({Name, Node}, Witnesses);
-is_witness(_, _) ->
-    false.
+is_witness(Identity, Config) ->
+    lists:member(Identity, get_config_witnesses(Config)).
 
 %% Create a new cluster configuration with no members.
 %% Without any members, this cluster configuration should not be used as
