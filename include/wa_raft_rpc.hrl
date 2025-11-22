@@ -77,6 +77,7 @@
 -define(COMMIT_COMMAND(From, Op, Priority),         ?RAFT_COMMAND(commit, {From, Op, Priority})).
 -define(READ_COMMAND(Op),                           ?RAFT_COMMAND(read, Op)).
 
+-define(CURRENT_CONFIG_COMMAND,                     ?RAFT_COMMAND(current_config, undefined)).
 -define(STATUS_COMMAND,                             ?RAFT_COMMAND(status, undefined)).
 -define(TRIGGER_ELECTION_COMMAND(TermOrOffset),     ?RAFT_COMMAND(trigger_election, {TermOrOffset})).
 -define(PROMOTE_COMMAND(TermOrOffset, Force),       ?RAFT_COMMAND(promote, {TermOrOffset, Force})).

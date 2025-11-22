@@ -69,6 +69,10 @@
 %%------------------------------------------------------------------------------
 
 -export([
+    get_current_config/1
+]).
+
+-export([
     status/1,
     status/2,
     membership/1
@@ -272,13 +276,14 @@
 -type legacy_rpc() :: ?LEGACY_RAFT_RPC(atom(), wa_raft_log:log_term(), node(), undefined | tuple()).
 -type rpc_named() :: ?RAFT_NAMED_RPC(atom(), wa_raft_log:log_term(), atom(), node(), undefined | tuple()).
 
--type command() :: commit_command() | read_command() | status_command() | trigger_election_command() |
-                   promote_command() | resign_command() | adjust_config_command() |
+-type command() :: commit_command() | read_command() | current_config_command() | status_command() |
+                   trigger_election_command() | promote_command() | resign_command() | adjust_config_command() |
                    snapshot_available_command() | handover_candidates_command() | handover_command() |
                    enable_command() | disable_command() | bootstrap_command() | notify_complete_command().
 
 -type commit_command()              :: ?COMMIT_COMMAND(gen_server:from(), wa_raft_acceptor:op(), wa_raft_acceptor:priority()).
 -type read_command()                :: ?READ_COMMAND(wa_raft_acceptor:read_op()).
+-type current_config_command()      :: ?CURRENT_CONFIG_COMMAND.
 -type status_command()              :: ?STATUS_COMMAND.
 -type trigger_election_command()    :: ?TRIGGER_ELECTION_COMMAND(term_or_offset()).
 -type promote_command()             :: ?PROMOTE_COMMAND(term_or_offset(), boolean()).
@@ -475,6 +480,10 @@ normalize_config(#{}) ->
 %%------------------------------------------------------------------------------
 %% RAFT Server - Public APIs
 %%------------------------------------------------------------------------------
+
+-spec get_current_config(Server :: gen_statem:server_ref()) -> wa_raft_server:config().
+get_current_config(Server) ->
+    gen_statem:call(Server, ?CURRENT_CONFIG_COMMAND, ?RAFT_RPC_CALL_TIMEOUT()).
 
 -spec status(Server :: gen_statem:server_ref()) -> status().
 status(Server) ->
@@ -2009,6 +2018,11 @@ command(
             keep_state_and_data
     end;
 command(_, cast, ?NOTIFY_COMPLETE_COMMAND(), #raft_state{}) ->
+    keep_state_and_data;
+
+%% [CurrentConfig] Get replica's effective RAFT cluster configuration
+command(_, Type, ?CURRENT_CONFIG_COMMAND, #raft_state{} = Data) ->
+    reply(Type, config(Data)),
     keep_state_and_data;
 
 %% [Status] Get status of node.
