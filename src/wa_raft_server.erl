@@ -746,8 +746,9 @@ init(
 
     State1 = load_config(State0),
     rand:seed(exsp, {erlang:monotonic_time(), erlang:time_offset(), erlang:unique_integer()}),
-    % TODO(hsun324): When we have proper error handling for data corruption vs. stalled server
-    %                then handle {error, Reason} type returns from load_state.
+    % TODO T246543655 When we have proper error handling for data corruption
+    %                 vs. stalled server then handle {error, Reason} type
+    %                 returns from load_state.
     State2 = case wa_raft_durable_state:load(State1) of
         {ok, NewState} -> NewState;
         _              -> State1
@@ -1434,7 +1435,8 @@ leader(
         handover = undefined
     } = State0
 ) ->
-    % TODO(hsun324): For the time being, assume that all members of the cluster use the same server name.
+    % TODO T246543673 For the time being, assume that all members of the
+    %                 cluster use the same server name.
     case is_member({Name, Peer}, config(State0)) of
         false ->
             ?SERVER_LOG_WARNING(State0, "dropping handover to unknown peer ~0p.", [Peer]),
