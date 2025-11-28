@@ -221,14 +221,14 @@
 -type peer() :: {Name :: atom(), Node :: node()}.
 -type membership() :: [peer()].
 
--opaque config() ::
+-type config() ::
     #{
         version := 1,
         participants := membership(),
         membership := membership(),
         witness := membership()
     }.
--opaque config_all() :: config_v1_all().
+-type config_all() :: config_v1_all().
 
 -type config_v1_all() ::
     #{
@@ -481,7 +481,7 @@ normalize_config(#{}) ->
 %% RAFT Server - Public APIs
 %%------------------------------------------------------------------------------
 
--spec get_current_config(Server :: gen_statem:server_ref()) -> wa_raft_server:config().
+-spec get_current_config(Server :: gen_statem:server_ref()) -> config().
 get_current_config(Server) ->
     gen_statem:call(Server, ?CURRENT_CONFIG_COMMAND, ?RAFT_RPC_CALL_TIMEOUT()).
 
