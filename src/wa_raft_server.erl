@@ -313,6 +313,10 @@
     {add_witness, Peer :: peer()} |
     %% Add a new peer to the cluster as a non-voting participant.
     {add_participant, Peer :: peer()} |
+    %% Promote a non-voting participant to a voting member if the participant
+    %% is ready. A participant is ready if it would be eligible for a handover
+    %% if it were a voting member.
+    {promote_participant_if_ready, Peer :: peer()} |
     %% Remove a voting member's membership and participation or a non-voting
     %% participant's participation from the cluster.
     {remove, Peer :: peer()} |
@@ -1403,11 +1407,11 @@ leader(Type, ?ADJUST_CONFIG_COMMAND(Action, Index), State0) ->
 
 %% [Handover Candidates] Return list of handover candidates (peers that are not lagging too much)
 leader({call, From}, ?HANDOVER_CANDIDATES_COMMAND, #raft_state{} = State) ->
-    {keep_state_and_data, {reply, From, {ok, compute_handover_candidates(State)}}};
+    {keep_state_and_data, {reply, From, {ok, get_handover_candidates(State)}}};
 
 %% [Handover] With peer 'undefined' randomly select a valid candidate to handover to
 leader(Type, ?HANDOVER_COMMAND(undefined), #raft_state{} = State) ->
-    case compute_handover_candidates(State) of
+    case get_handover_candidates(State) of
         [] ->
             ?SERVER_LOG_NOTICE(State, "has no valid peer to handover to.", []),
             reply(Type, {error, no_valid_peer}),
@@ -3003,26 +3007,41 @@ stub_command(noop) -> noop;
 stub_command({config, _} = ConfigCmd) -> ConfigCmd;
 stub_command(_) -> noop_omitted.
 
--spec compute_handover_candidates(State :: #raft_state{}) -> [node()].
-compute_handover_candidates(#raft_state{application = App, log_view = View} = State) ->
-    Replicas = config_full_member_identities(config(State)),
-    LastIndex = wa_raft_log:last_index(View),
-    MatchCutoffIndex = LastIndex - ?RAFT_HANDOVER_MAX_ENTRIES(App),
-    ApplyCutoffIndex =
-        case ?RAFT_HANDOVER_MAX_UNAPPLIED_ENTRIES(App) of
-            undefined -> MatchCutoffIndex;
-            Limit -> LastIndex - Limit
-        end,
-    [Peer || ?IDENTITY_REQUIRES_MIGRATION(_, Peer) = Replica <- Replicas, Peer =/= node(), is_eligible_for_handover(Replica, MatchCutoffIndex, ApplyCutoffIndex, State)].
+-spec get_handover_eligibility_match_cutoff(State :: #raft_state{}) -> wa_raft_log:log_index().
+get_handover_eligibility_match_cutoff(#raft_state{application = App, log_view = View}) ->
+    wa_raft_log:last_index(View) - ?RAFT_HANDOVER_MAX_ENTRIES(App).
 
--spec is_eligible_for_handover(
-    Candidate :: #raft_identity{},
+-spec get_handover_eligibility_apply_cutoff(State :: #raft_state{}) -> wa_raft_log:log_index().
+get_handover_eligibility_apply_cutoff(#raft_state{application = App, log_view = View}) ->
+    LastIndex = wa_raft_log:last_index(View),
+    case ?RAFT_HANDOVER_MAX_UNAPPLIED_ENTRIES(App) of
+        undefined -> LastIndex - ?RAFT_HANDOVER_MAX_ENTRIES(App);
+        Limit -> LastIndex - Limit
+    end.
+
+-spec get_handover_candidates(State :: #raft_state{}) -> [node()].
+get_handover_candidates(State) ->
+    Replicas = config_full_member_identities(config(State)),
+    MatchCutoffIndex = get_handover_eligibility_match_cutoff(State),
+    ApplyCutoffIndex = get_handover_eligibility_apply_cutoff(State),
+    [Peer || ?IDENTITY_REQUIRES_MIGRATION(_, Peer) <- Replicas,
+        Peer =/= node(),
+        is_eligible_for_handover_impl(Peer, MatchCutoffIndex, ApplyCutoffIndex, State)].
+
+-spec is_eligible_for_handover(Peer :: peer(), Data :: #raft_state{}) -> boolean().
+is_eligible_for_handover({_, Node}, Data) ->
+    MatchCutoffIndex = get_handover_eligibility_match_cutoff(Data),
+    ApplyCutoffIndex = get_handover_eligibility_apply_cutoff(Data),
+    is_eligible_for_handover_impl(Node, MatchCutoffIndex, ApplyCutoffIndex, Data).
+
+-spec is_eligible_for_handover_impl(
+    Node :: node(),
     MatchCutoffIndex :: wa_raft_log:log_index(),
     ApplyCutoffIndex :: wa_raft_log:log_index(),
-    State :: #raft_state{}
+    Data :: #raft_state{}
 ) -> boolean().
-is_eligible_for_handover(
-    ?IDENTITY_REQUIRES_MIGRATION(_, CandidateId),
+is_eligible_for_handover_impl(
+    Node,
     MatchCutoffIndex,
     ApplyCutoffIndex,
     #raft_state{
@@ -3031,7 +3050,7 @@ is_eligible_for_handover(
     }
 ) ->
     % A peer whose matching index or last applied index is unknown should not be eligible for handovers.
-    case {maps:find(CandidateId, MatchIndices), maps:find(CandidateId, LastAppliedIndices)} of
+    case {maps:find(Node, MatchIndices), maps:find(Node, LastAppliedIndices)} of
         {{ok, MatchIndex}, {ok, LastAppliedIndex}} ->
             MatchIndex >= MatchCutoffIndex andalso LastAppliedIndex >= ApplyCutoffIndex;
         _ ->
@@ -3118,6 +3137,7 @@ leader_adjust_config(refresh, Data) ->
 leader_adjust_config({Action, Peer}, Data) ->
     Config = config(Data),
     IsSelf = is_self(Peer, Data),
+    IsReady = is_eligible_for_handover(Peer, Data),
     IsMember = lists:member(Peer, config_membership(Config)),
     IsWitness = lists:member(Peer, config_witnesses(Config)),
     IsParticipant = lists:member(Peer, config_participants(Config)),
@@ -3141,6 +3161,14 @@ leader_adjust_config({Action, Peer}, Data) ->
                 IsWitness -> {error, already_witness};
                 IsParticipant -> {error, already_participating};
                 true -> {ok, config_add_participant(Peer, Config)}
+            end;
+        promote_participant_if_ready ->
+            if
+                IsMember -> {error, already_member};
+                IsWitness -> {error, already_witness};
+                not IsParticipant -> {error, not_a_participant};
+                not IsReady -> {error, not_ready};
+                true -> {ok, config_add_member(Peer, Config)}
             end;
         remove ->
             if
