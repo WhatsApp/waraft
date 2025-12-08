@@ -147,7 +147,7 @@
 -define(RAFT_MAX_PENDING_HIGH_PRIORITY_COMMITS(App), ?RAFT_APP_CONFIG(App, ?RAFT_MAX_PENDING_HIGH_PRIORITY_COMMITS, 1500)).
 %% Maximum number of pending low priority commits for any single RAFT partition
 -define(RAFT_MAX_PENDING_LOW_PRIORITY_COMMITS, raft_max_pending_low_priority_commits).
--define(RAFT_MAX_PENDING_LOW_PRIORITY_COMMITS(App), ?RAFT_APP_CONFIG(App, ?RAFT_MAX_PENDING_LOW_PRIORITY_COMMITS, 150)).
+-define(RAFT_MAX_PENDING_LOW_PRIORITY_COMMITS(App), ?RAFT_APP_CONFIG(App, ?RAFT_MAX_PENDING_LOW_PRIORITY_COMMITS, 250)).
 %% Maximum number of pending reads for any single RAFT partition
 -define(RAFT_MAX_PENDING_READS, raft_max_pending_reads).
 -define(RAFT_MAX_PENDING_READS(App), ?RAFT_APP_CONFIG(App, ?RAFT_MAX_PENDING_READS, 5000)).
