@@ -150,13 +150,14 @@ handle_info(Info, #state{number = Number} = State) ->
 
 -spec terminate(term(), state()) -> ok.
 terminate(Reason, #state{states = States}) ->
-    maps:fold(
-        fun (Module, State, _) ->
-            case erlang:function_exported(Module, transport_terminate, 2) of
-                true  -> Module:transport_terminate(Reason, State);
-                false -> ok
-            end
-        end, ok, States).
+    [
+        case erlang:function_exported(Module, transport_terminate, 2) of
+            true  -> Module:transport_terminate(Reason, State);
+            false -> ok
+        end
+     || Module := State <- States
+    ],
+    ok.
 
 -spec get_module_state(module(), state()) -> {ok, state()} | {stop, term()}.
 get_module_state(Module, #state{node = Node, states = States}) ->
