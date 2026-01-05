@@ -404,7 +404,7 @@ init(
     [atomics:put(Counters, Index, 0) || Index <- lists:seq(1, ?RAFT_NUMBER_OF_QUEUE_SIZE_COUNTERS)],
 
     % Create ETS table for pending reads.
-    ReadsName = ets:new(ReadsName, [ordered_set | ?RAFT_QUEUE_TABLE_OPTIONS]),
+    ets:new(ReadsName, [ordered_set | ?RAFT_QUEUE_TABLE_OPTIONS]),
 
     {ok, #state{name = Name}}.
 

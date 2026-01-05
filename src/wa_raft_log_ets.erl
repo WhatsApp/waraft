@@ -166,7 +166,7 @@ append_decode(Index, [Entry | Entries]) ->
 
 -spec init(Log :: wa_raft_log:log()) -> ok.
 init(#raft_log{name = LogName}) ->
-    LogName = ets:new(LogName, [ordered_set, public, named_table]),
+    ets:new(LogName, [ordered_set, public, named_table]),
     ok.
 
 -spec open(Log :: wa_raft_log:log()) -> {ok, State :: state()}.
