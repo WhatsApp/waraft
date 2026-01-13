@@ -28,8 +28,6 @@
 -define(RAFT_ACCEPTOR_NAME(Table, Partition), (wa_raft_acceptor:registered_name(Table, Partition))).
 %% Registered name of the RAFT log server for a RAFT partition
 -define(RAFT_LOG_NAME(Table, Partition), (wa_raft_log:registered_name(Table, Partition))).
-%% Registered name of the RAFT log catchup server for a RAFT partition
--define(RAFT_LOG_CATCHUP_NAME(Table, Partition), (wa_raft_log_catchup:registered_name(Table, Partition))).
 %% Registered name of the RAFT server for a RAFT partition
 -define(RAFT_SERVER_NAME(Table, Partition), (wa_raft_server:registered_name(Table, Partition))).
 %% Registered name of the RAFT storage server for a RAFT partition
@@ -102,13 +100,11 @@
 %% Default call timeout for storage related operation (we need bigger default since storage can be slower)
 -define(RAFT_STORAGE_CALL_TIMEOUT(), ?RAFT_CONFIG(raft_storage_call_timeout, 60000)).
 
-%% Maximum number of concurrent catchups by bulk log transfer
--define(RAFT_MAX_CONCURRENT_LOG_CATCHUP(), ?RAFT_CONFIG(raft_max_log_catchup, 5)).
-%% Maximum number of concurrent catchups by snapshot transfer
+%% Maximum number of concurrent outgoing snapshot transfers initiated by leaders.
 -define(RAFT_MAX_CONCURRENT_SNAPSHOT_CATCHUP(), ?RAFT_CONFIG(raft_max_snapshot_catchup, 5)).
-%% Maximum number of incoming snapshots by snapshot transfer.
+%% Maximum number of concurrent incoming snapshot transfers.
 -define(RAFT_MAX_CONCURRENT_INCOMING_SNAPSHOT_TRANSFERS(), ?RAFT_CONFIG(raft_max_incoming_snapshot_transfers, 5)).
-%% Maximum number of incoming witness snapshots by snapshot transfer.
+%% Maximum number of concurrent incoming snapshot transfers of witness snapshots.
 -define(RAFT_MAX_CONCURRENT_INCOMING_WITNESS_SNAPSHOT_TRANSFERS(), ?RAFT_CONFIG(raft_max_incoming_witness_snapshot_transfers, 10)).
 
 %% Default cross-node call timeout for heartbeats made for bulk logs catchup
@@ -260,27 +256,21 @@
     (?RAFT_APP_CONFIG(App, ?RAFT_LOG_HEARTBEAT_BINARY_ENTRIES, false) =:= true)
 ).
 
-%% Minimum number of log entries after which RAFT servers should use bulk logs catchup to bring peers
-%% back into sync if enabled.
--define(RAFT_CATCHUP_BULK_LOG_THRESHOLD, raft_catchup_threshold).
--define(RAFT_CATCHUP_BULK_LOG_THRESHOLD(App), ?RAFT_APP_CONFIG(App, {?RAFT_CATCHUP_BULK_LOG_THRESHOLD, catchup_max_follower_lag}, 50000)).
-%% Minimum number of unapplied log entries after which RAFT servers should use snapshot catchup to bring peers
-%% back into sync if enabled.
--define(RAFT_CATCHUP_APPLY_BACKLOG_THRESHOLD, raft_catchup_apply_backlog_threshold).
--define(RAFT_CATCHUP_APPLY_BACKLOG_THRESHOLD(App), ?RAFT_APP_CONFIG(App, {?RAFT_CATCHUP_APPLY_BACKLOG_THRESHOLD, catchup_max_follower_apply_backlog}, 100000)).
-%% Maximum log entries per heartbeat for catchup by bulk log transfer
--define(RAFT_CATCHUP_MAX_ENTRIES_PER_BATCH, raft_catchup_log_batch_entries).
--define(RAFT_CATCHUP_MAX_ENTRIES_PER_BATCH(App), ?RAFT_APP_CONFIG(App, ?RAFT_CATCHUP_MAX_ENTRIES_PER_BATCH, 800)).
-%% Maximum bytes per heartbeat for catchup by bulk log transfer
--define(RAFT_CATCHUP_MAX_BYTES_PER_BATCH, raft_catchup_log_batch_bytes).
--define(RAFT_CATCHUP_MAX_BYTES_PER_BATCH(App), ?RAFT_APP_CONFIG(App, ?RAFT_CATCHUP_MAX_BYTES_PER_BATCH, 4 * 1024 * 1024)).
-% Time to wait before retrying snapshot transport to a overloaded peer.
--define(RAFT_SNAPSHOT_CATCHUP_OVERLOADED_BACKOFF_MS, snapshot_catchup_overloaded_backoff_ms).
+%% The number of log entries that have yet to be applied on a follower after
+%% which leaders should send a storage snapshot in lieu of continuing regular
+%% replication using log entries in heartbeats.
+-define(RAFT_SNAPSHOT_CATCHUP_THRESHOLD, raft_snapshot_catchup_threshold).
+-define(RAFT_SNAPSHOT_CATCHUP_THRESHOLD(App), ?RAFT_APP_CONFIG(App, ?RAFT_SNAPSHOT_CATCHUP_THRESHOLD, 100000)).
+%% Number of milliseconds to wait before attempting to send a new storage snapshot
+%% to a follower that previously rejected a snapshot due to being overloaded.
+-define(RAFT_SNAPSHOT_CATCHUP_OVERLOADED_BACKOFF_MS, raft_snapshot_catchup_overloaded_backoff_ms).
 -define(RAFT_SNAPSHOT_CATCHUP_OVERLOADED_BACKOFF_MS(App), ?RAFT_APP_CONFIG(App, ?RAFT_SNAPSHOT_CATCHUP_OVERLOADED_BACKOFF_MS, 1000)).
-% Time to wait before allowing a rerun of a completed snapshot transport.
+%% Number of milliseconds to wait before attempting to send a new storage snapshot
+%% to a follower that previously successfully received a storage snapshot.
 -define(RAFT_SNAPSHOT_CATCHUP_COMPLETED_BACKOFF_MS, raft_snapshot_catchup_completed_backoff_ms).
 -define(RAFT_SNAPSHOT_CATCHUP_COMPLETED_BACKOFF_MS(App), ?RAFT_APP_CONFIG(App, ?RAFT_SNAPSHOT_CATCHUP_COMPLETED_BACKOFF_MS, 20 * 1000)).
-% Time to wait before allowing a rerun of a failed snapshot transport.
+%% Number of milliseconds to wait before attempting to send a new storage snapshot
+%% to a follower that previously failed to receive a storage snapshot.
 -define(RAFT_SNAPSHOT_CATCHUP_FAILED_BACKOFF_MS, raft_snapshot_catchup_failed_backoff_ms).
 -define(RAFT_SNAPSHOT_CATCHUP_FAILED_BACKOFF_MS(App), ?RAFT_APP_CONFIG(App, ?RAFT_SNAPSHOT_CATCHUP_FAILED_BACKOFF_MS, 10 * 1000)).
 
@@ -378,9 +368,6 @@
     log_name :: atom(),
     log_module :: module(),
 
-    % Log catchup options
-    log_catchup_name :: atom(),
-
     % Queue options
     queue_name :: atom(),
     queue_counters :: atomics:atomics_ref(),
@@ -435,8 +422,6 @@
 
     %% Name of this RAFT replica's storage server
     storage :: atom(),
-    %% Name of this RAFT replica's catchup server
-    catchup :: atom(),
 
     %% The index of the latest log entry in the local log that is known to
     %% match the log entries committed by the cluster

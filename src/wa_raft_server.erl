@@ -707,7 +707,6 @@ init(
         label_module = LabelModule,
         distribution_module = DistributionModule,
         log_name = Log,
-        log_catchup_name = Catchup,
         server_name = Name,
         storage_name = Storage
     } = Options
@@ -742,7 +741,6 @@ init(
         last_label = undefined,
         distribution_module = DistributionModule,
         storage = Storage,
-        catchup = Catchup,
         commit_index = Last#raft_log_pos.index,
         last_applied = Last#raft_log_pos.index,
         current_term = Last#raft_log_pos.term,
@@ -1171,11 +1169,6 @@ leader(
     HeartbeatResponse1 = HeartbeatResponse0#{FollowerId => erlang:monotonic_time(millisecond)},
     State1 = State0#raft_state{heartbeat_response_ts = HeartbeatResponse1},
 
-    case select_follower_replication_mode(FollowerMatchIndex, FollowerLastAppliedIndex, State1) of
-        bulk_logs -> request_bulk_logs_for_follower(Sender, FollowerMatchIndex, State1);
-        _         -> cancel_bulk_logs_for_follower(Sender, State1)
-    end,
-
     NextIndex = maps:get(FollowerId, NextIndices, TermStartIndex),
     NewMatchIndices = MatchIndices#{FollowerId => FollowerMatchIndex},
     NewNextIndices = NextIndices#{FollowerId => max(NextIndex, FollowerMatchIndex + 1)},
@@ -1211,9 +1204,8 @@ leader(
     ?SERVER_LOG_DEBUG(State0, "at commit index ~0p failed append to ~0p whose log now ends at ~0p.",
         [CommitIndex, Sender, FollowerEndIndex]),
 
-    select_follower_replication_mode(FollowerEndIndex, FollowerLastAppliedIndex, State0) =:= snapshot andalso
-        request_snapshot_for_follower(FollowerId, State0),
-    cancel_bulk_logs_for_follower(Sender, State0),
+    % Check to see if we should request a snapshot due to this failure
+    leader_maybe_request_snapshot(FollowerId, FollowerEndIndex, FollowerLastAppliedIndex, State0),
 
     % We must trust the follower's last log index here because the follower may have
     % applied a snapshot since the last successful heartbeat. In such case, we need
@@ -2923,7 +2915,6 @@ heartbeat(
         application = App,
         name = Name,
         log_view = View,
-        catchup = Catchup,
         commit_index = CommitIndex,
         next_indices = NextIndices,
         match_indices = MatchIndices,
@@ -2937,23 +2928,22 @@ heartbeat(
     FollowerMatchIndex = maps:get(FollowerId, MatchIndices, 0),
     FollowerMatchIndex =/= 0 andalso
         ?RAFT_GATHER('raft.leader.follower.lag', CommitIndex - FollowerMatchIndex),
-    IsCatchingUp = wa_raft_log_catchup:is_catching_up(Catchup, Sender),
     NowTs = erlang:monotonic_time(millisecond),
     LastFollowerHeartbeatTs = maps:get(FollowerId, LastHeartbeatTs, undefined),
     State1 = State0#raft_state{last_heartbeat_ts = LastHeartbeatTs#{FollowerId => NowTs}, leader_heartbeat_ts = NowTs},
     LastIndex = wa_raft_log:last_index(View),
-    case PrevLogTermRes =:= not_found orelse IsCatchingUp of %% catching up, or prep
-        true ->
-            {ok, LastTerm} = wa_raft_log:term(View, LastIndex),
+    case PrevLogTermRes of %% no log entry to replicate
+        not_found ->
             ?RAFT_COUNT('raft.leader.heartbeat.not_ready'),
-            ?SERVER_LOG_DEBUG(leader, State1, "sends empty heartbeat to follower ~p (local ~p, prev ~p, catching-up ~p)",
-                [FollowerId, LastIndex, PrevLogIndex, IsCatchingUp]),
+            ?SERVER_LOG_DEBUG(leader, State1, "at ~0p sends empty heartbeat to follower ~0p at ~0p.",
+                [CommitIndex, FollowerId, FollowerNextIndex]),
             % Send append entries request.
+            {ok, LastTerm} = wa_raft_log:term(View, LastIndex),
             send_rpc(Sender, ?APPEND_ENTRIES(LastIndex, LastTerm, [], CommitIndex, 0), State1),
             LastFollowerHeartbeatTs =/= undefined andalso
                 ?RAFT_GATHER('raft.leader.heartbeat.interval_ms', erlang:monotonic_time(millisecond) - LastFollowerHeartbeatTs),
             State1;
-        false ->
+        _ ->
             MaxLogEntries = ?RAFT_HEARTBEAT_MAX_ENTRIES(App),
             MaxHeartbeatSize = ?RAFT_HEARTBEAT_MAX_BYTES(App),
             Witnesses = config_witnesses(config(State0)),
@@ -2969,8 +2959,8 @@ heartbeat(
             % track when we send out a heartbeat that is empty but also not at the end of the log
             Entries =:= [] andalso PrevLogIndex =/= LastIndex andalso ?RAFT_COUNT('raft.leader.heartbeat.empty'),
             ?RAFT_GATHER('raft.leader.heartbeat.size', length(Entries)),
-            ?SERVER_LOG_DEBUG(leader, State1, "heartbeat to follower ~p from ~p(~p entries). Commit index ~p",
-                [FollowerId, FollowerNextIndex, length(Entries), CommitIndex]),
+            ?SERVER_LOG_DEBUG(leader, State1, "at ~0p sends heartbeat to follower ~0p at ~0p with ~0p entr(ies).",
+                [CommitIndex, FollowerId, FollowerNextIndex, length(Entries)]),
             % Compute trim index.
             TrimIndex = lists:min(to_member_list(MatchIndices#{node() => LastIndex}, 0, config(State1))),
             % Send append entries request.
@@ -3687,39 +3677,45 @@ check_leader_liveness(
     % Update message queue length
     wa_raft_info:set_message_queue_length(Name).
 
-%% Based on information that the leader has available as a result of heartbeat replies, attempt
-%% to discern what the best subsequent replication mode would be for this follower.
--spec select_follower_replication_mode(
+%% Check if the leader should send a storage snapshot to this follower and request
+%% if necessary.
+-spec leader_maybe_request_snapshot(
+    Follower :: node(),
     FollowerLastIndex :: wa_raft_log:log_index(),
     FollowerLastAppliedIndex :: wa_raft_log:log_index() | undefined,
     State :: #raft_state{}
-) -> snapshot | bulk_logs | logs.
-select_follower_replication_mode(
+) -> ok.
+leader_maybe_request_snapshot(
+    Follower,
     FollowerLastIndex,
     FollowerLastAppliedIndex,
-    #raft_state{
-        application = App,
-        log_view = View,
-        last_applied = LastAppliedIndex
-    }
+    #raft_state{log_view = View} = State
 ) ->
-    BulkLogThreshold = ?RAFT_CATCHUP_BULK_LOG_THRESHOLD(App),
-    ApplyBacklogThreshold = ?RAFT_CATCHUP_APPLY_BACKLOG_THRESHOLD(App),
-    LeaderFirstIndex = wa_raft_log:first_index(View),
-    if
-        % Snapshot is required if the follower is stalled or we are missing
-        % the logs required for incremental replication.
-        FollowerLastIndex =:= 0                                                   -> snapshot;
-        LeaderFirstIndex > FollowerLastIndex                                      -> snapshot;
-        % If follower apply backlog is really large send a snapshot.
-        FollowerLastAppliedIndex =/= undefined andalso
-            FollowerLastIndex - FollowerLastAppliedIndex > ApplyBacklogThreshold  -> snapshot;
-        % Past a certain threshold, we should try to use bulk log catchup
-        % to quickly bring the follower back up to date.
-        LastAppliedIndex - FollowerLastIndex > BulkLogThreshold                   -> bulk_logs;
-        % Otherwise, replicate normally.
-        true                                                                      -> logs
-    end.
+    FirstIndex = wa_raft_log:first_index(View),
+    leader_should_send_snapshot(FirstIndex, FollowerLastIndex, FollowerLastAppliedIndex, State) andalso
+        request_snapshot_for_follower(Follower, State),
+    ok.
+
+%% Leaders should send a storage snapshot to a follower instead of replicating
+%% when the follower:
+%%  * is stalled or otherwise missing their entire log,
+%%  * requires a log entry that is already rotated out, or
+%%  * is very far behind (past the snapshot catchup threshold).
+-spec leader_should_send_snapshot(
+    FirstIndex :: wa_raft_log:log_index(),
+    FollowerLastIndex :: wa_raft_log:log_index(),
+    FollowerLastAppliedIndex :: wa_raft_log:log_index() | undefined,
+    State :: #raft_state{}
+) -> boolean().
+leader_should_send_snapshot(_, 0, _, _) ->
+    true;
+leader_should_send_snapshot(FirstIndex, FollowerLastIndex, _, _) when FirstIndex > FollowerLastIndex ->
+    true;
+leader_should_send_snapshot(_, _, undefined, _) ->
+    false;
+leader_should_send_snapshot(_, FollowerLastIndex, FollowerLastAppliedIndex, #raft_state{application = App}) ->
+    SnapshotCatchupThreshold = ?RAFT_SNAPSHOT_CATCHUP_THRESHOLD(App),
+    FollowerLastIndex - FollowerLastAppliedIndex > SnapshotCatchupThreshold.
 
 %% Try to start a snapshot transport to a follower if the snapshot transport
 %% service is available. If the follower is a witness or too many snapshot
@@ -3737,29 +3733,6 @@ request_snapshot_for_follower(
 ) ->
     Witness = lists:member({Name, FollowerId}, config_witnesses(config(State))),
     wa_raft_snapshot_catchup:catchup(App, Name, FollowerId, Table, Partition, Witness).
-
--spec request_bulk_logs_for_follower(
-    Peer :: #raft_identity{},
-    FollowerLastIndex :: wa_raft_log:log_index(),
-    State :: #raft_state{}
-) -> ok.
-request_bulk_logs_for_follower(
-    ?IDENTITY_REQUIRES_MIGRATION(_, FollowerId) = Peer,
-    FollowerLastIndex,
-    #raft_state{
-        name = Name,
-        catchup = Catchup,
-        current_term = CurrentTerm,
-        commit_index = CommitIndex
-    } = State
-) ->
-    ?SERVER_LOG_DEBUG(leader, State, "requesting bulk logs catchup for follower ~0p.", [Peer]),
-    Witness = lists:member({Name, FollowerId}, config_witnesses(config(State))),
-    wa_raft_log_catchup:start_catchup_request(Catchup, Peer, FollowerLastIndex, CurrentTerm, CommitIndex, Witness).
-
--spec cancel_bulk_logs_for_follower(Peer :: #raft_identity{}, State :: #raft_state{}) -> ok.
-cancel_bulk_logs_for_follower(Peer, #raft_state{catchup = Catchup}) ->
-    wa_raft_log_catchup:cancel_catchup_request(Catchup, Peer).
 
 -spec follower_or_witness_state(State :: #raft_state{}) -> state().
 follower_or_witness_state(State) ->

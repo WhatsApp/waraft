@@ -38,7 +38,6 @@ init(_) ->
     % Setup tables used by shared services.
     wa_raft_info:init_tables(),
     wa_raft_transport:setup_tables(),
-    wa_raft_log_catchup:init_tables(),
 
     % Configure startup of shared services.
     ChildSpecs = [
