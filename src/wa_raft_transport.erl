@@ -555,7 +555,7 @@ handle_call({cancel, ID, Reason}, _From, #state{counters = Counters} = State) ->
                 fun
                     (#{status := running} = Info) ->
                         NowMillis = erlang:system_time(millisecond),
-                        Info#{status => cancelled, end_ts => NowMillis, error => {cancelled, Reason}};
+                        Info#{status := cancelled, end_ts => NowMillis, error => {cancelled, Reason}};
                     (Info) ->
                         Info
                 end,
