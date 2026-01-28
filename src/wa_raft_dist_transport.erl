@@ -137,7 +137,7 @@ transport_send_loop(ID, FileID, Fd, Offset, Peer, Chunks, ChunkSize, MaxInflight
             RequestId = gen_server:send_request({?MODULE, Peer}, {chunk, ID, FileID, Offset, Data}),
             wa_raft_transport:update_file_info(ID, FileID,
                 fun (#{completed_bytes := Completed} = Info) ->
-                    Info#{completed_bytes => Completed + byte_size(Data)}
+                    Info#{completed_bytes := Completed + byte_size(Data)}
                 end),
             transport_send_loop(ID, FileID, Fd, Offset + byte_size(Data), Peer, Chunks ++ [RequestId], ChunkSize, MaxInflight, State);
         eof ->
@@ -162,7 +162,7 @@ handle_call({chunk, ID, FileID, Offset, Data}, _From, #receiver_state{} = State0
                 ok ->
                     wa_raft_transport:update_file_info(ID, FileID,
                         fun (#{completed_bytes := Completed} = Info) ->
-                            Info#{completed_bytes => Completed + byte_size(Data)}
+                            Info#{completed_bytes := Completed + byte_size(Data)}
                         end),
 
                     {ok, State1};
