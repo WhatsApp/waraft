@@ -117,7 +117,7 @@ transport_send_loop(ID, FileID, _Fd, eof, Peer, [], _ChunkSize, _MaxInflight, St
     gen_server:cast({?MODULE, Peer}, {complete, ID, FileID}),
     {ok, State};
 transport_send_loop(ID, FileID, Fd, Offset, Peer, [RequestId | Chunks], ChunkSize, MaxInflight, State)
-        when Offset =:= eof orelse length(Chunks) >= MaxInflight ->
+        when Offset =:= eof ; length(Chunks) >= MaxInflight ->
     case gen_server:wait_response(RequestId, 5000) of
         {reply, ok} ->
             transport_send_loop(ID, FileID, Fd, Offset, Peer, Chunks, ChunkSize, MaxInflight, State);
