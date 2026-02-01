@@ -2454,7 +2454,7 @@ random_election_timeout(#raft_state{application = App}) ->
             false -> Min
         end,
     case ?RAFT_ELECTION_WEIGHT(App) of
-        Weight when Weight > 0 andalso Weight =< ?RAFT_ELECTION_MAX_WEIGHT ->
+        Weight when Weight > 0, Weight =< ?RAFT_ELECTION_MAX_WEIGHT ->
             % higher weight, shorter timeout so it has more chances to initiate an leader election
             round(Timeout * ?RAFT_ELECTION_MAX_WEIGHT div Weight);
         _ ->

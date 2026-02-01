@@ -813,7 +813,7 @@ decode_snapshot_name(SnapshotName) ->
     case string:lexemes(SnapshotName, ".") of
         [?SNAPSHOT_PREFIX, IndexStr, TermStr | _] ->
             case {list_to_integer(IndexStr), list_to_integer(TermStr)} of
-                {Index, Term} when Index >= 0 andalso Term >= 0 ->
+                {Index, Term} when Index >= 0, Term >= 0 ->
                     {true, {#raft_log_pos{index = Index, term = Term}, SnapshotName}};
                 _ ->
                     ?RAFT_LOG_WARNING(

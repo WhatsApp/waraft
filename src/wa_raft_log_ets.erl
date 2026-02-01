@@ -80,7 +80,7 @@ fold(Log, Start, End, SizeLimit, Func, Acc) ->
     Func :: fun((Index :: wa_raft_log:log_index(), Size :: non_neg_integer(), Entry :: wa_raft_log:log_entry(), Acc) -> Acc),
     Acc
 ) -> {ok, Acc}.
-fold_impl(_Log, Start, End, Size, SizeLimit, _Func, Acc) when End < Start orelse Size >= SizeLimit ->
+fold_impl(_Log, Start, End, Size, SizeLimit, _Func, Acc) when End < Start; Size >= SizeLimit ->
     {ok, Acc};
 fold_impl(#raft_log{name = Name} = Log, Start, End, Size, SizeLimit, Func, Acc) ->
     case ets:lookup(Name, Start) of

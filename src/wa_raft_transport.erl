@@ -864,7 +864,7 @@ maybe_notify_complete(ID, _Info, #state{}) ->
     ?RAFT_LOG_NOTICE("wa_raft_transport finished transport ~p but does not know what to do with it", [ID]).
 
 -spec maybe_notify(transport_id(), transport_info()) -> transport_info().
-maybe_notify(ID, #{status := Status, notify := Notify, start_ts := Start, end_ts := End} = Info) when Status =/= requested andalso Status =/= running ->
+maybe_notify(ID, #{status := Status, notify := Notify, start_ts := Start, end_ts := End} = Info) when Status =/= requested, Status =/= running ->
     ?RAFT_COUNT({'raft.transport', Status}),
     ?RAFT_GATHER_LATENCY({'raft.transport', Status, latency_ms}, End - Start),
     gen_server:reply(Notify, {ok, ID}),

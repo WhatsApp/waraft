@@ -559,7 +559,7 @@ fold_terms_impl(Log, First, Last, Func, AccIn) ->
 %% this function may return 'not_found' even if the underlying log entry still
 %% exists if the entry is outside of the log view.
 -spec term(LogOrView :: log() | view(), Index :: log_index()) -> {ok, Term :: log_term()} | not_found | {error, term()}.
-term(#log_view{first = First, last = Last}, Index) when Index < First orelse Last < Index ->
+term(#log_view{first = First, last = Last}, Index) when Index < First; Last < Index ->
     not_found;
 term(#log_view{log = Log}, Index) ->
     Provider = provider(Log),
@@ -572,7 +572,7 @@ term(Log, Index) ->
 %% this function may return 'not_found' even if the underlying log entry still
 %% exists if the entry is outside of the log view.
 -spec get(LogOrView :: log() | view(), Index :: log_index()) -> {ok, Entry :: log_entry()} | not_found | {error, term()}.
-get(#log_view{first = First, last = Last}, Index) when Index < First orelse Last < Index ->
+get(#log_view{first = First, last = Last}, Index) when Index < First; Last < Index ->
     not_found;
 get(#log_view{log = Log}, Index) ->
     ?RAFT_COUNT('raft.log.get'),
