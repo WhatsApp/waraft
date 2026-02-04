@@ -1020,7 +1020,9 @@ stalled(
                     ?SERVER_LOG_WARNING(State0, "failed to bootstrap due to ~0P.", [Reason, 20]),
                     {keep_state_and_data, {reply, From, {error, Reason}}}
             after
-                catch file:del_dir_r(Path)
+                try file:del_dir_r(Path)
+                catch _:_ -> ok
+                end
             end;
         false ->
             ?SERVER_LOG_NOTICE(State0, "at ~0p rejecting request to bootstrap with data.", [LastApplied]),
