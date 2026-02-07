@@ -543,13 +543,13 @@ handle_call(?STATUS_REQUEST, _From, #state{module = Module, handle = Handle} = S
     end,
     {reply, BaseStatus ++ ModuleStatus, State};
 
-handle_call(?POSITION_REQUEST, _From, #state{module = Module, handle = Handle} = State) ->
-    ?RAFT_COUNT('raft.storage.position'),
+handle_call(?POSITION_REQUEST, _From, #state{table = Table, module = Module, handle = Handle} = State) ->
+    ?RAFT_COUNT(Table, 'storage.position'),
     Result = Module:storage_position(Handle),
     {reply, Result, State};
 
-handle_call(?LABEL_REQUEST, _From, #state{module = Module, handle = Handle} = State) ->
-    ?RAFT_COUNT('raft.storage.label'),
+handle_call(?LABEL_REQUEST, _From, #state{table = Table, module = Module, handle = Handle} = State) ->
+    ?RAFT_COUNT(Table, 'storage.label'),
     Result = Module:storage_label(Handle),
     {reply, Result, State};
 
@@ -664,13 +664,14 @@ handle_apply(
     Priority,
     #state{
         application = Application,
+        table = Table,
         name = Name,
         server = Server,
         queues = Queues,
         position = #raft_log_pos{index = Index}
     } = State
 ) when LogIndex =:= Index + 1 ->
-    ?RAFT_COUNT('raft.storage.apply'),
+    ?RAFT_COUNT(Table, 'storage.apply'),
     StartT = os:timestamp(),
     {Reply, NewState} = handle_command(Label, Command, LogPosition, State),
     From =/= undefined andalso wa_raft_queue:commit_completed(Queues, From, Reply, Priority),
@@ -678,7 +679,7 @@ handle_apply(
     wa_raft_queue:apply_queue_size(Queues) =:= 0 andalso ?RAFT_STORAGE_NOTIFY_COMPLETE(Application) andalso
         wa_raft_server:notify_complete(Server),
     ?RAFT_LOG_DEBUG("Storage[~0p] finishes applying ~0p.", [Name, LogPosition]),
-    ?RAFT_GATHER('raft.storage.apply.func', timer:now_diff(os:timestamp(), StartT)),
+    ?RAFT_GATHER(Table, 'storage.apply.func', timer:now_diff(os:timestamp(), StartT)),
     NewState;
 %% Otherwise, the apply is out of order.
 handle_apply(_From, LogPosition, _Label, _Command, _Priority, #state{name = Name, position = Position}) ->

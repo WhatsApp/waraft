@@ -79,10 +79,10 @@
 
 -define(RAFT_METRICS_MODULE_KEY, {?RAFT_APPLICATION, raft_metrics_module}).
 -define(RAFT_METRICS_MODULE, (persistent_term:get(?RAFT_METRICS_MODULE_KEY, wa_raft_metrics))).
--define(RAFT_COUNT(Metric), ?RAFT_METRICS_MODULE:count(Metric)).
--define(RAFT_COUNTV(Metric, Value), ?RAFT_METRICS_MODULE:countv(Metric, Value)).
--define(RAFT_GATHER(Metric, Value), ?RAFT_METRICS_MODULE:gather(Metric, Value)).
--define(RAFT_GATHER_LATENCY(Metric, Value), ?RAFT_METRICS_MODULE:gather_latency(Metric, Value)).
+-define(RAFT_COUNT(Table, Metric), ?RAFT_METRICS_MODULE:count({raft, Table, Metric})).
+-define(RAFT_COUNTV(Table, Metric, Value), ?RAFT_METRICS_MODULE:countv({raft, Table, Metric}, Value)).
+-define(RAFT_GATHER(Table, Metric, Value), ?RAFT_METRICS_MODULE:gather({raft, Table, Metric}, Value)).
+-define(RAFT_GATHER_LATENCY(Table, Metric, Value), ?RAFT_METRICS_MODULE:gather_latency({raft, Table, Metric}, Value)).
 
 %%-------------------------------------------------------------------
 %% Global Configuration

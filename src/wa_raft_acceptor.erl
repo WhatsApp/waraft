@@ -98,6 +98,8 @@
 -record(state, {
     % Acceptor service name
     name :: atom(),
+    % RAFT table
+    table :: wa_raft:table(),
     % Server service name
     server :: atom(),
     % Queues handle
@@ -207,6 +209,7 @@ init(#raft_options{table = Table, partition = Partition, acceptor_name = Name, s
 
     {ok, #state{
         name = Name,
+        table = Table,
         server = Server,
         queues = wa_raft_queue:queues(Options)
     }}.
@@ -251,7 +254,7 @@ terminate(Reason, #state{name = Name}) ->
 
 %% Enqueue a commit.
 -spec commit_impl(From :: gen_server:from(), Request :: op(), Priority :: priority(), State :: #state{}) -> continue | commit_error().
-commit_impl(From, {Key, _} = Op, Priority, #state{name = Name, server = Server, queues = Queues}) ->
+commit_impl(From, {Key, _} = Op, Priority, #state{table = Table, name = Name, server = Server, queues = Queues}) ->
     StartT = os:timestamp(),
     try
         ?RAFT_LOG_DEBUG("Acceptor[~0p] starts to handle commit of ~0P from ~0p.", [Name, Op, 30, From]),
@@ -261,39 +264,39 @@ commit_impl(From, {Key, _} = Op, Priority, #state{name = Name, server = Server, 
                     "Acceptor[~0p] is rejecting commit request from ~0p because the commit queue is full.",
                     [Name, From]
                 ),
-                ?RAFT_COUNT({'raft.acceptor.error.commit_queue_full', Priority}),
+                ?RAFT_COUNT(Table, {'acceptor.error.commit_queue_full', Priority}),
                 {error, {commit_queue_full, Key}};
             apply_queue_full ->
                 ?RAFT_LOG_WARNING(
                     "Acceptor[~0p] is rejecting commit request from ~0p because the apply queue is full.",
                     [Name, From]
                 ),
-                ?RAFT_COUNT('raft.acceptor.error.apply_queue_full'),
+                ?RAFT_COUNT(Table, 'acceptor.error.apply_queue_full'),
                 {error, {apply_queue_full, Key}};
             ok ->
                 wa_raft_server:commit(Server, From, Op, Priority),
                 continue
         end
     after
-        ?RAFT_GATHER('raft.acceptor.commit.func', timer:now_diff(os:timestamp(), StartT))
+        ?RAFT_GATHER(Table, 'acceptor.commit.func', timer:now_diff(os:timestamp(), StartT))
     end.
 
 %% Enqueue a strongly-consistent read.
 -spec read_impl(gen_server:from(), command(), #state{}) -> continue | read_error().
-read_impl(From, Command, #state{name = Name, server = Server, queues = Queues}) ->
+read_impl(From, Command, #state{table = Table, name = Name, server = Server, queues = Queues}) ->
     StartT = os:timestamp(),
     ?RAFT_LOG_DEBUG("Acceptor[~p] starts to handle read of ~0P from ~0p.", [Name, Command, 100, From]),
     try
         case wa_raft_queue:reserve_read(Queues) of
             read_queue_full ->
-                ?RAFT_COUNT('raft.acceptor.strong_read.error.read_queue_full'),
+                ?RAFT_COUNT(Table, 'acceptor.strong_read.error.read_queue_full'),
                 ?RAFT_LOG_WARNING(
                     "Acceptor[~0p] is rejecting read request from ~0p because the read queue is full.",
                     [Name, From]
                 ),
                 {error, read_queue_full};
             apply_queue_full ->
-                ?RAFT_COUNT('raft.acceptor.strong_read.error.apply_queue_full'),
+                ?RAFT_COUNT(Table, 'acceptor.strong_read.error.apply_queue_full'),
                 ?RAFT_LOG_WARNING(
                     "Acceptor[~0p] is rejecting read request from ~0p because the apply queue is full.",
                     [Name, From]
@@ -304,5 +307,5 @@ read_impl(From, Command, #state{name = Name, server = Server, queues = Queues}) 
                 continue
         end
     after
-        ?RAFT_GATHER('raft.acceptor.strong_read.func', timer:now_diff(os:timestamp(), StartT))
+        ?RAFT_GATHER(Table, 'acceptor.strong_read.func', timer:now_diff(os:timestamp(), StartT))
     end.

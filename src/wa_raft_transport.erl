@@ -458,6 +458,7 @@ handle_call({start_wait, Peer, Meta, Root}, From, #state{counters = Counters} = 
         {error, Reason} -> {reply, {error, Reason}, State}
     end;
 handle_call({transport, ID, Peer, Module, Meta, Files}, From, #state{counters = Counters} = State) ->
+    Table = maps:get(table, Meta, undefined),
     try
         IsWitness = maps:get(witness, Meta, false),
         {MaxIncomingSnapshotTransfers, NumActiveReceives} = case IsWitness of
@@ -472,7 +473,7 @@ handle_call({transport, ID, Peer, Module, Meta, Files}, From, #state{counters = 
             {not_found, true} ->
                 {reply, {error, receiver_overloaded}, State};
             {not_found, _} ->
-                ?RAFT_COUNT('raft.transport.receive'),
+                ?RAFT_COUNT(Table, 'transport.receive'),
                 ?RAFT_LOG_NOTICE("wa_raft_transport starting transport receive for ~p", [ID]),
 
                 TransportAtomics = atomics:new(?RAFT_TRANSPORT_TRANSPORT_ATOMICS_COUNT, []),
@@ -531,7 +532,7 @@ handle_call({transport, ID, Peer, Module, Meta, Files}, From, #state{counters = 
         end
     catch
         T:E:S ->
-            ?RAFT_COUNT('raft.transport.receive.error'),
+            ?RAFT_COUNT(Table, 'transport.receive.error'),
             ?RAFT_LOG_WARNING("wa_raft_transport failed to accept transport ~p due to ~p ~p: ~n~p", [ID, T, E, S]),
             update_and_get_transport_info(
                 ID,
@@ -574,12 +575,16 @@ handle_call(Request, _From, #state{} = State) ->
     when Request :: {complete, ID :: transport_id(), FileID :: file_id(), Status :: term()}.
 handle_cast({complete, ID, FileID, Status}, #state{counters = Counters} = State) ->
     NowMillis = erlang:system_time(millisecond),
-    ?RAFT_COUNT({'raft.transport.file.send', normalize_status(Status)}),
+    Table = case transport_info(ID) of
+        {ok, #{meta := Meta}} -> maps:get(table, Meta, undefined);
+        _                     -> undefined
+    end,
+    ?RAFT_COUNT(Table, {'transport.file.send', normalize_status(Status)}),
     Result0 = update_file_info(ID, FileID,
         fun (Info) ->
             case Info of
                 #{start_ts := StartMillis} ->
-                    ?RAFT_GATHER_LATENCY({'raft.transport.file.send', Status, latency_ms}, NowMillis - StartMillis);
+                    ?RAFT_GATHER_LATENCY(Table, {'transport.file.send.latency_ms', Status}, NowMillis - StartMillis);
                 _ ->
                     ok
             end,
@@ -659,8 +664,9 @@ make_id() ->
 -spec handle_transport_start(From :: gen_server:from() | undefined, Peer :: node(), Meta :: meta(), Root :: string(), Counters :: counters:counters_ref()) -> {ok, ID :: transport_id()} | {error, Reason :: term()}.
 handle_transport_start(From, Peer, Meta, Root, Counters) ->
     ID = make_id(),
+    Table = maps:get(table, Meta, undefined),
 
-    ?RAFT_COUNT('raft.transport.start'),
+    ?RAFT_COUNT(Table, 'transport.start'),
     ?RAFT_LOG_NOTICE(
         "wa_raft_transport starting transport ~p of ~p to ~p with metadata ~p",
         [ID, Root, Peer, Meta]
@@ -725,8 +731,9 @@ handle_transport_start(From, Peer, Meta, Root, Counters) ->
                                 Info2 = Info1#{status => completed, end_ts => NowMillis},
                                 maybe_notify(ID, Info2);
                             _ ->
+                                Table = maps:get(table, Meta, undefined),
                                 Sup = wa_raft_transport_sup:get_or_start(Peer),
-                                [gen_server:cast(Pid, {notify, ID}) || {_Id, Pid, _Type, _Modules} <- supervisor:which_children(Sup), is_pid(Pid)],
+                                [gen_server:cast(Pid, {notify, ID, Table}) || {_Id, Pid, _Type, _Modules} <- supervisor:which_children(Sup), is_pid(Pid)],
                                 Info1#{status => running}
                         end
                     end,
@@ -734,7 +741,7 @@ handle_transport_start(From, Peer, Meta, Root, Counters) ->
                 ),
                 {ok, ID};
             {error, receiver_overloaded} ->
-                ?RAFT_COUNT('raft.transport.rejected.receiver_overloaded'),
+                ?RAFT_COUNT(Table, 'transport.rejected.receiver_overloaded'),
                 ?RAFT_LOG_WARNING("wa_raft_transport peer ~p rejected transport ~p because of overload", [Peer, ID]),
                 update_and_get_transport_info(
                     ID,
@@ -749,7 +756,7 @@ handle_transport_start(From, Peer, Meta, Root, Counters) ->
                 ),
                 {error, receiver_overloaded};
             Error ->
-                ?RAFT_COUNT('raft.transport.rejected'),
+                ?RAFT_COUNT(Table, 'transport.rejected'),
                 ?RAFT_LOG_WARNING("wa_raft_transport peer ~p rejected transport ~p with error ~p", [Peer, ID, Error]),
                 update_and_get_transport_info(
                     ID,
@@ -766,7 +773,7 @@ handle_transport_start(From, Peer, Meta, Root, Counters) ->
         end
     catch
         T:E:S ->
-            ?RAFT_COUNT('raft.transport.start.error'),
+            ?RAFT_COUNT(Table, 'transport.start.error'),
             ?RAFT_LOG_WARNING(
                 "wa_raft_transport failed to start transport ~p due to ~p ~p: ~n~p",
                 [ID, T, E, S]
@@ -865,8 +872,9 @@ maybe_notify_complete(ID, _Info, #state{}) ->
 
 -spec maybe_notify(transport_id(), transport_info()) -> transport_info().
 maybe_notify(ID, #{status := Status, notify := Notify, start_ts := Start, end_ts := End} = Info) when Status =/= requested, Status =/= running ->
-    ?RAFT_COUNT({'raft.transport', Status}),
-    ?RAFT_GATHER_LATENCY({'raft.transport', Status, latency_ms}, End - Start),
+    Table = maps:get(table, maps:get(meta, Info, #{}), undefined),
+    ?RAFT_COUNT(Table, {'transport', Status}),
+    ?RAFT_GATHER_LATENCY(Table, {'transport.latency_ms', Status}, End - Start),
     gen_server:reply(Notify, {ok, ID}),
     maps:remove(notify, Info);
 maybe_notify(_ID, Info) ->

@@ -67,7 +67,7 @@ load(#raft_state{name = Name, partition_path = PartitionPath} = State) ->
     end.
 
 -spec store(#raft_state{}) -> ok | {error, Reason :: term()}.
-store(#raft_state{name = Name, partition_path = PartitionPath, current_term = CurrentTerm, voted_for = VotedFor, disable_reason = DisableReason}) ->
+store(#raft_state{name = Name, table = Table, partition_path = PartitionPath, current_term = CurrentTerm, voted_for = VotedFor, disable_reason = DisableReason}) ->
     StateList = [
         {current_term, CurrentTerm},
         {voted_for, VotedFor},
@@ -85,17 +85,17 @@ store(#raft_state{name = Name, partition_path = PartitionPath, current_term = Cu
                         ok ->
                             ok;
                         {error, Reason} ->
-                            ?RAFT_COUNT({'raft.server.persist_state.error.rename', Reason}),
+                            ?RAFT_COUNT(Table, {'server.persist_state.error.rename', Reason}),
                             ?RAFT_LOG_ERROR("~p failed to rename temporary state file due to ~p.", [Name, Reason]),
                             {error, {rename, Reason}}
                     end;
                 {error, Reason} ->
-                    ?RAFT_COUNT({'raft.server.persist_state.error.write', Reason}),
+                    ?RAFT_COUNT(Table, {'server.persist_state.error.write', Reason}),
                     ?RAFT_LOG_ERROR("~p failed to write current state to temporary file due to ~p.", [Name, Reason]),
                     {error, {write, Reason}}
             end;
         {error, Reason} ->
-            ?RAFT_COUNT({'raft.server.persist_state.error.ensure_dir', Reason}),
+            ?RAFT_COUNT(Table, {'server.persist_state.error.ensure_dir', Reason}),
             ?RAFT_LOG_ERROR("~p failed to ensure directory exists due to ~p.", [Name, Reason]),
             {error, {ensure_dir, Reason}}
     end.

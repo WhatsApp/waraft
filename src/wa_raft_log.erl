@@ -344,18 +344,18 @@ try_append(View, Entries, Priority) ->
 %% Append new log entries to the end of the log.
 -spec append(View :: view(), Entries :: [log_entry() | binary()], Mode :: strict | relaxed, Priority :: wa_raft_acceptor:priority()) ->
     {ok, NewView :: view()} | skipped | {error, Reason :: term()}.
-append(#log_view{last = Last} = View, Entries, Mode, Priority) ->
-    ?RAFT_COUNT('raft.log.append'),
+append(#log_view{log = #raft_log{table = Table}, last = Last} = View, Entries, Mode, Priority) ->
+    ?RAFT_COUNT(Table, 'log.append'),
     Provider = provider(View),
     case Provider:append(View, Entries, Mode, Priority) of
         ok ->
-            ?RAFT_COUNT('raft.log.append.ok'),
+            ?RAFT_COUNT(Table, 'log.append.ok'),
             {ok, refresh_config(View#log_view{last = Last + length(Entries)})};
         skipped when Mode =:= relaxed ->
-            ?RAFT_COUNT('raft.log.append.skipped'),
+            ?RAFT_COUNT(Table, 'log.append.skipped'),
             skipped;
         {error, Reason} ->
-            ?RAFT_COUNT('raft.log.append.error'),
+            ?RAFT_COUNT(Table, 'log.append.error'),
             {error, Reason}
     end.
 
@@ -378,7 +378,7 @@ append(#log_view{last = Last} = View, Entries, Mode, Priority) ->
     {error, term()}.
 check_heartbeat(#log_view{first = First, last = Last}, Start, _Entries) when Start =< 0; Start < First; Start > Last ->
     {invalid, out_of_range};
-check_heartbeat(#log_view{log = Log, last = Last}, Start, Entries) ->
+check_heartbeat(#log_view{log = #raft_log{table = Table} = Log, last = Last}, Start, Entries) ->
     Provider = provider(Log),
     End = Start + length(Entries) - 1,
     try Provider:fold_terms(Log, Start, End, fun check_heartbeat_terms/3, {Start, Entries}) of
@@ -388,13 +388,13 @@ check_heartbeat(#log_view{log = Log, last = Last}, Start, Entries) ->
         {ok, {Next, NewEntries}} when Next =:= Last + 1 ->
             {ok, NewEntries};
         {error, Reason} ->
-            ?RAFT_COUNT('raft.log.heartbeat.error'),
+            ?RAFT_COUNT(Table, 'log.heartbeat.error'),
             {error, Reason}
     catch
         throw:{conflict, ConflictIndex, ConflictEntries} ->
             {conflict, ConflictIndex, ConflictEntries};
         throw:{missing, Index} ->
-            ?RAFT_COUNT('raft.log.heartbeat.corruption'),
+            ?RAFT_COUNT(Table, 'log.heartbeat.corruption'),
             {error, {missing, Index}}
     end.
 
@@ -456,11 +456,11 @@ fold(LogOrView, First, Last, Func, Acc) ->
     Acc
 ) -> {ok, Acc} | {error, Reason :: term()}.
 fold(LogOrView, RawFirst, RawLast, SizeLimit, Func, Acc) ->
-    Log = log(LogOrView),
+    #raft_log{table = Table} = Log = log(LogOrView),
     First = max(RawFirst, first_index(LogOrView)),
     Last = min(RawLast, last_index(LogOrView)),
-    ?RAFT_COUNT('raft.log.fold'),
-    ?RAFT_COUNTV('raft.log.fold.total', Last - First + 1),
+    ?RAFT_COUNT(Table, 'log.fold'),
+    ?RAFT_COUNTV(Table, 'log.fold.total', Last - First + 1),
     AdjFunc = if
         is_function(Func, 3) -> fun (Index, _Size, Entry, InnerAcc) -> Func(Index, Entry, InnerAcc) end;
         is_function(Func, 4) -> Func
@@ -470,7 +470,7 @@ fold(LogOrView, RawFirst, RawLast, SizeLimit, Func, Acc) ->
         {ok, AccOut} ->
             {ok, AccOut};
         {error, Reason} ->
-            ?RAFT_COUNT('raft.log.fold.error'),
+            ?RAFT_COUNT(Table, 'log.fold.error'),
             {error, Reason}
     end.
 
@@ -502,17 +502,17 @@ fold_binary(LogOrView, First, Last, Func, Acc) ->
     Acc
 ) -> {ok, Acc} | {error, term()}.
 fold_binary(LogOrView, RawFirst, RawLast, SizeLimit, Func, Acc) ->
-    Log = log(LogOrView),
+    #raft_log{table = Table} = Log = log(LogOrView),
     First = max(RawFirst, first_index(LogOrView)),
     Last = min(RawLast, last_index(LogOrView)),
-    ?RAFT_COUNT('raft.log.fold_binary'),
-    ?RAFT_COUNTV('raft.log.fold_binary.total', Last - First + 1),
+    ?RAFT_COUNT(Table, 'log.fold_binary'),
+    ?RAFT_COUNTV(Table, 'log.fold_binary.total', Last - First + 1),
     Provider = provider(Log),
     case Provider:fold_binary(Log, First, Last, SizeLimit, Func, Acc) of
         {ok, AccOut} ->
             {ok, AccOut};
         {error, Reason} ->
-            ?RAFT_COUNT('raft.log.fold_binary.error'),
+            ?RAFT_COUNT(Table, 'log.fold_binary.error'),
             {error, Reason}
     end.
 
@@ -543,15 +543,15 @@ fold_terms(Log, First, Last, Func, Acc) ->
     Func :: fun((Index :: log_index(), Term :: log_term(), Acc) -> Acc),
     Acc :: term()
 ) -> {ok, Acc} | {error, term()}.
-fold_terms_impl(Log, First, Last, Func, AccIn) ->
-    ?RAFT_COUNT('raft.log.fold_terms'),
-    ?RAFT_COUNTV('raft.log.fold_terms.total', Last - First + 1),
+fold_terms_impl(#raft_log{table = Table} = Log, First, Last, Func, AccIn) ->
+    ?RAFT_COUNT(Table, 'log.fold_terms'),
+    ?RAFT_COUNTV(Table, 'log.fold_terms.total', Last - First + 1),
     Provider = provider(Log),
     case Provider:fold_terms(Log, First, Last, Func, AccIn) of
         {ok, AccOut} ->
             {ok, AccOut};
         {error, Reason} ->
-            ?RAFT_COUNT('raft.log.fold_terms.error'),
+            ?RAFT_COUNT(Table, 'log.fold_terms.error'),
             {error, Reason}
     end.
 
@@ -574,12 +574,12 @@ term(Log, Index) ->
 -spec get(LogOrView :: log() | view(), Index :: log_index()) -> {ok, Entry :: log_entry()} | not_found | {error, term()}.
 get(#log_view{first = First, last = Last}, Index) when Index < First; Last < Index ->
     not_found;
-get(#log_view{log = Log}, Index) ->
-    ?RAFT_COUNT('raft.log.get'),
+get(#log_view{log = #raft_log{table = Table} = Log}, Index) ->
+    ?RAFT_COUNT(Table, 'log.get'),
     Provider = provider(Log),
     Provider:get(Log, Index);
-get(Log, Index) ->
-    ?RAFT_COUNT('raft.log.get'),
+get(#raft_log{table = Table} = Log, Index) ->
+    ?RAFT_COUNT(Table, 'log.get'),
     Provider = provider(Log),
     Provider:get(Log, Index).
 
@@ -771,11 +771,11 @@ rotate(#log_view{log = #raft_log{application = App}} = View, Index) ->
 %% we keep some number of log entries and only trigger trimming operations
 %% every so often.
 -spec rotate(View :: view(), Index :: log_index(), Interval :: pos_integer(), Keep :: non_neg_integer()) -> {ok, NewView :: view()}.
-rotate(#log_view{first = First} = View, Index, Interval, Keep) when Index - Keep - First >= Interval ->
-    ?RAFT_COUNT('raft.log.rotate'),
+rotate(#log_view{log = #raft_log{table = Table}, first = First} = View, Index, Interval, Keep) when Index - Keep - First >= Interval ->
+    ?RAFT_COUNT(Table, 'log.rotate'),
     trim(View, Index - Keep);
-rotate(View, _Index, _Interval, _Keep) ->
-    ?RAFT_COUNT('raft.log.rotate'),
+rotate(#log_view{log = #raft_log{table = Table}} = View, _Index, _Interval, _Keep) ->
+    ?RAFT_COUNT(Table, 'log.rotate'),
     {ok, View}.
 
 %% Try to flush any underlying log data that is not yet on disk to disk.
@@ -914,8 +914,8 @@ terminate(Reason, #log_state{log = Log, state = State}) ->
 -spec handle_open(Position :: log_pos(), State :: #log_state{}) ->
     {{ok, NewView :: view()} | {error, Reason :: term()}, NewState :: #log_state{}}.
 handle_open(#raft_log_pos{index = Index, term = Term} = Position,
-            #log_state{log = #raft_log{name = Name, provider = Provider} = Log} = State0) ->
-    ?RAFT_COUNT('raft.log.open'),
+            #log_state{log = #raft_log{name = Name, table = Table, provider = Provider} = Log} = State0) ->
+    ?RAFT_COUNT(Table, 'log.open'),
     ?RAFT_LOG_NOTICE("[~p] opening log at position ~p:~p", [Name, Index, Term]),
     case Provider:open(Log) of
         {ok, ProviderState} ->
@@ -938,7 +938,7 @@ handle_open(#raft_log_pos{index = Index, term = Term} = Position,
             View0 = #log_view{log = Log},
             case Action of
                 none ->
-                    ?RAFT_COUNT('raft.log.open.normal'),
+                    ?RAFT_COUNT(Table, 'log.open.normal'),
                     View1 = case Provider:first_index(Log) of
                         undefined ->
                             ?RAFT_LOG_WARNING(
@@ -962,20 +962,20 @@ handle_open(#raft_log_pos{index = Index, term = Term} = Position,
                     View3 = refresh_config(View2),
                     {{ok, View3}, State1};
                 reset ->
-                    ?RAFT_COUNT('raft.log.open.reset'),
+                    ?RAFT_COUNT(Table, 'log.open.reset'),
                     case handle_reset(Position, View0, State1) of
                         {ok, View1, State2} ->
                             {{ok, View1}, State2};
                         {error, Reason} ->
-                            ?RAFT_COUNT('raft.log.open.reset.error'),
+                            ?RAFT_COUNT(Table, 'log.open.reset.error'),
                             {{error, Reason}, State1}
                     end;
                 {failed, Return} ->
-                    ?RAFT_COUNT('raft.log.open.error'),
+                    ?RAFT_COUNT(Table, 'log.open.error'),
                     {Return, State1}
             end;
         {error, Reason} ->
-            ?RAFT_COUNT('raft.log.open.error'),
+            ?RAFT_COUNT(Table, 'log.open.error'),
             {{error, Reason}, State0#log_state{state = ?PROVIDER_NOT_OPENED}}
     end.
 
@@ -987,8 +987,8 @@ handle_reset(#raft_log_pos{index = 0, term = Term}, _View, #log_state{log = Log}
     ?RAFT_LOG_ERROR("[~p] rejects reset to index 0 with non-zero term ~p", [log_name(Log), Term]),
     {error, invalid_position};
 handle_reset(#raft_log_pos{index = Index, term = Term} = Position, View0,
-             #log_state{log = Log, state = ProviderState} = State0) ->
-    ?RAFT_COUNT('raft.log.reset'),
+             #log_state{log = #raft_log{table = Table} = Log, state = ProviderState} = State0) ->
+    ?RAFT_COUNT(Table, 'log.reset'),
     ?RAFT_LOG_NOTICE("[~p] resetting log to position ~p:~p", [log_name(Log), Index, Term]),
     Provider = provider(Log),
     case Provider:reset(Log, Position, ProviderState) of
@@ -997,7 +997,7 @@ handle_reset(#raft_log_pos{index = Index, term = Term} = Position, View0,
             State1 = State0#log_state{state = NewProviderState},
             {ok, View1, State1};
         {error, Reason} ->
-            ?RAFT_COUNT('raft.log.reset.error'),
+            ?RAFT_COUNT(Table, 'log.reset.error'),
             {error, Reason}
     end.
 
@@ -1008,8 +1008,8 @@ handle_truncate(_Index, _View, #log_state{state = ?PROVIDER_NOT_OPENED}) ->
 handle_truncate(Index, #log_view{first = First}, #log_state{log = Log}) when Index =< First ->
     ?RAFT_LOG_ERROR("[~p] rejects log deletion by truncation to ~p for log starting at ~p", [log_name(Log), Index, First]),
     {error, invalid_position};
-handle_truncate(Index, #log_view{last = Last} = View0, #log_state{log = Log, state = ProviderState} = State0) ->
-    ?RAFT_COUNT('raft.log.truncate'),
+handle_truncate(Index, #log_view{last = Last} = View0, #log_state{log = #raft_log{table = Table} = Log, state = ProviderState} = State0) ->
+    ?RAFT_COUNT(Table, 'log.truncate'),
     ?RAFT_LOG_NOTICE("[~p] truncating log from ~p to past ~p", [log_name(Log), Last, Index]),
     Provider = provider(Log),
     case Provider:truncate(Log, Index, ProviderState) of
@@ -1019,7 +1019,7 @@ handle_truncate(Index, #log_view{last = Last} = View0, #log_state{log = Log, sta
             State1 = State0#log_state{state = NewProviderState},
             {ok, View2, State1};
         {error, Reason} ->
-            ?RAFT_COUNT('raft.log.truncate.error'),
+            ?RAFT_COUNT(Table, 'log.truncate.error'),
             {error, Reason}
     end.
 
@@ -1030,14 +1030,14 @@ handle_truncate(Index, #log_view{last = Last} = View0, #log_state{log = Log, sta
     {ok, NewState :: #log_state{}} | {error, Reason :: term()}.
 handle_trim(_Index, #log_state{state = ?PROVIDER_NOT_OPENED}) ->
     {error, not_open};
-handle_trim(Index, #log_state{log = Log, state = ProviderState} = State) ->
-    ?RAFT_COUNT('raft.log.trim'),
+handle_trim(Index, #log_state{log = #raft_log{table = Table} = Log, state = ProviderState} = State) ->
+    ?RAFT_COUNT(Table, 'log.trim'),
     ?RAFT_LOG_DEBUG("[~p] trimming log to ~p", [log_name(Log), Index]),
     Provider = provider(Log),
     case Provider:trim(Log, Index, ProviderState) of
         {ok, NewProviderState} ->
             {ok, State#log_state{state = NewProviderState}};
         {error, Reason} ->
-            ?RAFT_COUNT('raft.log.trim.error'),
+            ?RAFT_COUNT(Table, 'log.trim.error'),
             {error, Reason}
     end.

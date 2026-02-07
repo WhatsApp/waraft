@@ -107,6 +107,7 @@
 
 -record(queues, {
     application :: atom(),
+    table :: wa_raft:table(),
     counters :: atomics:atomics_ref(),
     reads :: atom()
 }).
@@ -120,6 +121,7 @@
 queues(Options) ->
     #queues{
         application = Options#raft_options.application,
+        table = Options#raft_options.table,
         counters = Options#raft_options.queue_counters,
         reads = Options#raft_options.queue_reads
     }.
@@ -226,10 +228,10 @@ registered_name(Table, Partition) ->
 %%-------------------------------------------------------------------
 
 -spec commit_started(Queues :: queues(), Priority :: wa_raft_acceptor:priority()) -> ok | apply_queue_full | commit_queue_full.
-commit_started(#queues{counters = Counters} = Queues, Priority) ->
+commit_started(#queues{table = Table, counters = Counters} = Queues, Priority) ->
     case commit_queue_full(Queues, Priority) of
         true ->
-            ?RAFT_COUNT({'raft.acceptor.commit.queue.full', Priority}),
+            ?RAFT_COUNT(Table, {'acceptor.error.commit_queue_full', Priority}),
             commit_queue_full;
         false ->
             case apply_queue_full(Queues) of
@@ -243,7 +245,7 @@ commit_started(#queues{counters = Counters} = Queues, Priority) ->
                             low ->
                                 atomics:add_get(Counters, ?RAFT_LOW_PRIORITY_COMMIT_QUEUE_SIZE_COUNTER, 1)
                         end,
-                    ?RAFT_GATHER({'raft.acceptor.commit.request.pending', Priority}, PendingCommits),
+                    ?RAFT_GATHER(Table, {'acceptor.commit.request.pending', Priority}, PendingCommits),
                     ok
             end
     end.
@@ -282,7 +284,7 @@ commit_completed(#queues{counters = Counters}, From, Reply, Priority) ->
 % because the acceptor does not have enough information to add the read
 % to the ETS table directly.
 -spec reserve_read(Queues :: queues()) -> ok | read_queue_full | apply_queue_full.
-reserve_read(#queues{application = App, counters = Counters}) ->
+reserve_read(#queues{application = App, table = Table, counters = Counters}) ->
     PendingReads = atomics:get(Counters, ?RAFT_READ_QUEUE_SIZE_COUNTER),
     case PendingReads >= ?RAFT_MAX_PENDING_READS(App) of
         true -> read_queue_full;
@@ -290,7 +292,7 @@ reserve_read(#queues{application = App, counters = Counters}) ->
             case atomics:get(Counters, ?RAFT_APPLY_QUEUE_SIZE_COUNTER) >= ?RAFT_MAX_PENDING_APPLIES(App) of
                 true -> apply_queue_full;
                 false ->
-                    ?RAFT_GATHER('raft.acceptor.strong_read.request.pending', PendingReads + 1),
+                    ?RAFT_GATHER(Table, 'acceptor.strong_read.request.pending', PendingReads + 1),
                     atomics:add(Counters, ?RAFT_READ_QUEUE_SIZE_COUNTER, 1),
                     ok
             end

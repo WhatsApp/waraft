@@ -36,10 +36,12 @@
 -type state() :: #state{}.
 
 -record(transport, {
-    id :: wa_raft_transport:transport_id()
+    id :: wa_raft_transport:transport_id(),
+    table :: wa_raft:table() | undefined
 }).
 -record(file, {
     id :: wa_raft_transport:transport_id(),
+    table :: wa_raft:table() | undefined,
     file :: wa_raft_transport:file_id()
 }).
 -type job() :: #transport{} | #file{}.
@@ -77,9 +79,9 @@ handle_call(Request, From, #state{number = Number} = State) ->
     {noreply, State, ?CONTINUE_TIMEOUT}.
 
 -spec handle_cast(Request, State :: state()) -> {noreply, NewState :: state(), Timeout :: timeout()}
-    when Request :: {notify, wa_raft_transport:transport_id()}.
-handle_cast({notify, ID}, #state{jobs = Jobs} = State) ->
-    {noreply, State#state{jobs = queue:in(#transport{id = ID}, Jobs)}, ?CONTINUE_TIMEOUT};
+    when Request :: {notify, wa_raft_transport:transport_id(), wa_raft:table() | undefined}.
+handle_cast({notify, ID, Table}, #state{jobs = Jobs} = State) ->
+    {noreply, State#state{jobs = queue:in(#transport{id = ID, table = Table}, Jobs)}, ?CONTINUE_TIMEOUT};
 handle_cast(Request, #state{number = Number} = State) ->
     ?RAFT_LOG_WARNING("[~p] received unrecognized cast ~p", [Number, Request]),
     {noreply, State, ?CONTINUE_TIMEOUT}.
@@ -91,13 +93,13 @@ handle_info(timeout, #state{number = Number, jobs = Jobs, states = States} = Sta
     case queue:out(Jobs) of
         {empty, NewJobs} ->
             {noreply, State#state{jobs = NewJobs}, hibernate};
-        {{value, #transport{id = ID}}, NewJobs} ->
+        {{value, #transport{id = ID, table = Table}}, NewJobs} ->
             case wa_raft_transport:pop_file(ID) of
                 {ok, FileID} ->
-                    ?RAFT_COUNT('raft.transport.file.send'),
+                    ?RAFT_COUNT(Table, 'transport.file.send'),
                     wa_raft_transport:update_file_info(ID, FileID,
                         fun (Info) -> Info#{status => sending, start_ts => erlang:system_time(millisecond)} end),
-                    NewJob = #file{id = ID, file = FileID},
+                    NewJob = #file{id = ID, table = Table, file = FileID},
                     {noreply, State#state{jobs = queue:in(NewJob, NewJobs)}, ?CONTINUE_TIMEOUT};
                 _Other ->
                     {noreply, State#state{jobs = NewJobs}, ?CONTINUE_TIMEOUT}
