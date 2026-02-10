@@ -885,7 +885,8 @@ handle_call(Request, From, #log_state{log = Log} = State) ->
 
 -spec handle_cast(Request, State :: #log_state{}) -> {noreply, NewState :: #log_state{}}
     when Request :: flush | {trim, Index :: log_index()}.
-handle_cast(flush, #log_state{log = Log} = State) ->
+handle_cast(flush, #log_state{log = #raft_log{table = Table} = Log} = State) ->
+    ?RAFT_COUNT(Table, 'log.flush'),
     Provider = provider(Log),
     Provider:flush(Log),
     {noreply, State};
