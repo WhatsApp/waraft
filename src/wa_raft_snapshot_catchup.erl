@@ -13,9 +13,6 @@
 -include_lib("wa_raft/include/wa_raft.hrl").
 -include_lib("wa_raft/include/wa_raft_logger.hrl").
 
-% elp:ignore W0048 (no_dialyzer_attribute): improper list expected by gen interface
--dialyzer({no_improper_lists, [handle_cast/2]}).
-
 %% Supervisor callbacks
 -export([
     child_spec/0,
