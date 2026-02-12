@@ -66,7 +66,9 @@ transport_send(ID, FileID, State) ->
                     case prim_file:open(Path, [binary, read]) of
                         {ok, Fd} ->
                             try
-                                catch prim_file:advise(Fd, 0, 0, sequential),
+                                try prim_file:advise(Fd, 0, 0, sequential)
+                                catch _:_ -> ok
+                                end,
                                 case transport_send_loop(ID, FileID, Fd, Peer, State) of
                                     {ok, NewState} ->
                                         {ok, NewState};
@@ -218,7 +220,9 @@ open_file(ID, FileID, #receiver_state{fds = Fds} = State0) ->
         #{} ->
             case wa_raft_transport:file_info(ID, FileID) of
                 {ok, #{name := File, path := Path}} ->
-                    catch filelib:ensure_dir(Path),
+                    try filelib:ensure_dir(Path)
+                    catch _:_ -> ok
+                    end,
                     case prim_file:open(Path, [binary, write]) of
                         {ok, Fd} ->
                             State1 = State0#receiver_state{fds = Fds#{{ID, FileID} => Fd}},
@@ -240,7 +244,9 @@ open_file(ID, FileID, #receiver_state{fds = Fds} = State0) ->
 close_file(ID, FileID, #receiver_state{fds = Fds} = State0) ->
     case Fds of
         #{{ID, FileID} := Fd} ->
-            catch prim_file:close(Fd),
+            try prim_file:close(Fd)
+            catch _:_ -> ok
+            end,
             State1 = State0#receiver_state{fds = maps:remove({ID, FileID}, Fds)},
             {ok, State1};
         _ ->
