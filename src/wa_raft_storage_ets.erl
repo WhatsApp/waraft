@@ -154,10 +154,10 @@ storage_open_snapshot(SnapshotPath, SnapshotPosition, #state{storage = Storage} 
                 SnapshotPosition ->
                     NewState = State#state{storage = NewStorage},
                     storage_check_config(NewState),
-                    catch ets:delete(Storage),
+                    try ets:delete(Storage) catch _:_ -> ok end,
                     {ok, NewState};
                 _IncorrectPosition ->
-                    catch ets:delete(NewStorage),
+                    try ets:delete(NewStorage) catch _:_ -> ok end,
                     {error, bad_position}
             end;
         {error, Reason} ->
