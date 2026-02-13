@@ -400,7 +400,7 @@ get_config_witnesses(_) ->
 
 -spec is_data_replica(Identity :: #raft_identity{}, Config :: config() | config_all()) -> boolean().
 is_data_replica(Identity, Config) ->
-    lists:member(Identity, get_config_participants(Config)) and not lists:member(Identity, get_config_witnesses(Config)).
+    lists:member(Identity, get_config_participants(Config)) andalso not lists:member(Identity, get_config_witnesses(Config)).
 
 -spec is_witness(Identity :: #raft_identity{}, Config :: config() | config_all()) -> boolean().
 is_witness(Identity, Config) ->
