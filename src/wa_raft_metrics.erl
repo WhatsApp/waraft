@@ -34,13 +34,13 @@
 %% RAFT Metrics Behaviour
 %%-------------------------------------------------------------------
 
-%% Report a single occurence of some metric.
+%% Report a single occurrence of some metric.
 -callback count(metric()) -> ok.
-%% Report a number of occurences of some metric.
+%% Report a number of occurrences of some metric.
 -callback countv(metric(), value()) -> ok.
-%% Report the measured value of an occurence of some metric.
+%% Report the measured value of an occurrence of some metric.
 -callback gather(metric(), value()) -> ok.
-%% Report the measured latency of an occurence of some metric.
+%% Report the measured latency of an occurrence of some metric.
 -callback gather_latency(metric(), value()) -> ok.
 
 %%-------------------------------------------------------------------

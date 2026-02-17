@@ -217,7 +217,7 @@
 -callback get(Log :: log(), Index :: log_index()) -> {ok, Entry :: log_entry()} | not_found | {error, Reason :: term()}.
 
 %% Get only the term of a specific log entry. This API is specified
-%% seperately because some implementations may have more efficient ways to
+%% separately because some implementations may have more efficient ways to
 %% get just the term of a particular log entry. If the log entry does not
 %% exist, then return 'not_found'.
 -callback term(Log :: log(), Index :: log_index()) -> {ok, Term :: log_term()} | not_found | {error, Reason :: term()}.
@@ -1024,7 +1024,7 @@ handle_truncate(Index, #log_view{last = Last} = View0, #log_state{log = #raft_lo
             {error, Reason}
     end.
 
-%% Trim is an asychronous operation so we do not use the view here.
+%% Trim is an asynchronous operation so we do not use the view here.
 %% Rather, the wa_raft_log:trim/2 API will assume that the trim succeeded and
 %% optimistically update the view to advance the start of the log to the provided index.
 -spec handle_trim(Index :: log_index(), State :: #log_state{}) ->

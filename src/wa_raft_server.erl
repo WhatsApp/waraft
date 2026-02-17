@@ -933,7 +933,7 @@ defaultize_payload(Defaults, Payload, N, M) when N < M ->
 %% fresh copy of the FSM state and log that is guaranteed to reflect any
 %% quorums that the machine supported before it was lost or replaced.
 %%
-%% This is acheived by preventing a stalled node from participating in quorum
+%% This is achieved by preventing a stalled node from participating in quorum
 %% for both log entries and election. A leader of the cluster must provide a
 %% fresh copy of its FSM state before the stalled node can return to normal
 %% operation.
