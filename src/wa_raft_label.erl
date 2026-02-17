@@ -16,5 +16,5 @@
 %%%  Behaviour callbacks
 %%%
 
-% Produce a label for a new log record based on the log payload and the label of the preceeding log entry.
+% Produce a label for a new log record based on the log payload and the label of the preceding log entry.
 -callback new_label(LastLabel :: label(), Command :: wa_raft_acceptor:command()) -> NewLabel :: label().
