@@ -3608,7 +3608,7 @@ check_follower_liveness(
         false ->
             ?SERVER_LOG_NOTICE(State, Data, "is no longer live after last leader heartbeat at ~0p", [LeaderHeartbeatTs]),
             wa_raft_info:set_live(Table, Partition, false),
-            wa_raft_info:get_stale(Table, Partition) =:= false andalso begin
+            wa_raft_info:get_stale(Table, Partition) orelse begin
                 ?SERVER_LOG_NOTICE(State, Data, "is now stale due to liveness", []),
                 wa_raft_info:set_stale(Table, Partition, true)
             end
