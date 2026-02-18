@@ -12,7 +12,7 @@ jobs:
     strategy:
       matrix:
         platform: [ubuntu-latest]
-        otp-version: [24]
+        otp-version: [25]
     runs-on: ${{ matrix.platform }}
     container:
       image: erlang:${{ matrix.otp-version }}
@@ -43,4 +43,4 @@ jobs:
       run: rebar3 do dialyzer, xref
     - name: Produce Documentation
       run: rebar3 edoc
-      if: ${{ matrix.otp-version == '24' }}
+      if: ${{ matrix.otp-version == '25' }}
