@@ -3250,7 +3250,7 @@ open_snapshot(Root, Position, #raft_state{storage = Storage} = Data) ->
 
 handle_heartbeat(
     State,
-    Event,
+    _Event,
     Leader,
     PrevLogIndex,
     PrevLogTerm,
@@ -3261,7 +3261,6 @@ handle_heartbeat(
         application = App,
         table = Table,
         queues = Queues,
-        current_term = CurrentTerm,
         log_view = View,
         commit_index = CommitIndex,
         last_applied = LastApplied
@@ -3278,7 +3277,6 @@ handle_heartbeat(
         {ok, Accepted, NewMatchIndex, Data1} ->
             AdjustedLastApplied = max(0, LastApplied - wa_raft_queue:apply_queue_size(Queues)),
             send_rpc(Leader, ?APPEND_ENTRIES_RESPONSE(PrevLogIndex, Accepted, NewMatchIndex, AdjustedLastApplied), Data1),
-            reply_rpc(Event, ?LEGACY_APPEND_ENTRIES_RESPONSE_RPC(CurrentTerm, node(), PrevLogIndex, Accepted, NewMatchIndex), Data1),
 
             Data2 = Data1#raft_state{leader_heartbeat_ts = erlang:monotonic_time(millisecond)},
             Data3 = case Accepted of
@@ -3510,13 +3508,6 @@ reply({call, From}, Message) ->
     gen_statem:reply(From, Message);
 reply(Type, Message) ->
     ?RAFT_LOG_WARNING("Attempted to reply to non-reply event type ~0p with message ~0P.", [Type, Message, 20]),
-    ok.
-
-%% Generic reply function for RPC requests that operates based on event type.
--spec reply_rpc(Type :: gen_statem:event_type(), Reply :: term(), Data :: #raft_state{}) -> term().
-reply_rpc({call, From}, Reply, #raft_state{identifier = Identifier, distribution_module = Distribution}) ->
-    Distribution:reply(From, Identifier, Reply);
-reply_rpc(_, _, #raft_state{}) ->
     ok.
 
 -spec send_rpc(
