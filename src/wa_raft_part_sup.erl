@@ -19,15 +19,20 @@
     start_link/2
 ]).
 
-%% Internal API
+%% Options API
 -export([
     default_name/2,
+    registered_name/2
+]).
+
+%% Options API
+-export([
+    partition_path/2,
     default_partition_path/3,
-    registered_name/2,
     registered_partition_path/2
 ]).
 
-%% Internal API
+%% Options API
 -export([
     options/2
 ]).
@@ -105,12 +110,6 @@ start_link(Application, Spec) ->
 default_name(Table, Partition) ->
     list_to_atom("raft_sup_" ++ atom_to_list(Table) ++ "_" ++ integer_to_list(Partition)).
 
-%% Get the default location for the database directory associated with the
-%% provided RAFT partition given the database of the RAFT root.
--spec default_partition_path(Root :: file:filename(), Table :: wa_raft:table(), Partition :: wa_raft:partition()) -> Database :: file:filename().
-default_partition_path(Root, Table, Partition) ->
-    filename:join(Root, atom_to_list(Table) ++ "." ++ integer_to_list(Partition)).
-
 %% Get the registered name for the RAFT partition supervisor associated with the
 %% provided RAFT partition or the default name if no registration exists.
 -spec registered_name(Table :: wa_raft:table(), Partition :: wa_raft:partition()) -> Name :: atom().
@@ -119,6 +118,19 @@ registered_name(Table, Partition) ->
         undefined -> default_name(Table, Partition);
         Options   -> Options#raft_options.supervisor_name
     end.
+
+%% Get the database directory that should be used by the RAFT partition that
+%% is started under the provided application with the provided arguments.
+-spec partition_path(Application :: atom(), Spec :: wa_raft:args()) -> Database :: file:filename().
+partition_path(Application, #{table := Table, partition := Partition}) ->
+    Root = wa_raft_env:database_path(Application),
+    default_partition_path(Root, Table, Partition).
+
+%% Get the default location for the database directory associated with the
+%% provided RAFT partition given the database of the RAFT root.
+-spec default_partition_path(Root :: file:filename(), Table :: wa_raft:table(), Partition :: wa_raft:partition()) -> Database :: file:filename().
+default_partition_path(Root, Table, Partition) ->
+    filename:join(Root, atom_to_list(Table) ++ "." ++ integer_to_list(Partition)).
 
 %% Get the registered database directory for the provided RAFT partition. An
 %% error is raised if no registration exists.
@@ -135,8 +147,7 @@ options(Table, Partition) ->
 
 -spec normalize_spec(Application :: atom(), Spec :: wa_raft:args()) -> #raft_options{}.
 normalize_spec(Application, #{table := Table, partition := Partition} = Spec) ->
-    Root = wa_raft_env:database_path(Application),
-    Database = default_partition_path(Root, Table, Partition),
+    Database = partition_path(Application, Spec),
     ServerName = wa_raft_server:default_name(Table, Partition),
     LogName = wa_raft_log:default_name(Table, Partition),
     StorageName = wa_raft_storage:default_name(Table, Partition),
