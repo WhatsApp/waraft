@@ -618,7 +618,9 @@ handle_cast(?APPLY_READ_REQUEST(From, Command), #state{module = Module, handle =
     {noreply, State};
 
 handle_cast(?DELETE_SNAPSHOT_REQUEST(SnapshotName), #state{name = Name, path = Path} = State) ->
-    Result = catch file:del_dir_r(filename:join(Path, SnapshotName)),
+    Result = try file:del_dir_r(filename:join(Path, SnapshotName))
+             catch Class:Reason -> {Class, Reason}
+             end,
     ?RAFT_LOG_NOTICE("Storage[~0p] deletes snapshot ~0p: ~0P.", [Name, SnapshotName, Result, 20]),
     {noreply, State};
 
