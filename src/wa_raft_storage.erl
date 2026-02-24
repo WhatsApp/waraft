@@ -41,6 +41,7 @@
     create_snapshot/2,
     create_witness_snapshot/1,
     create_witness_snapshot/2,
+    create_snapshot/3,
     delete_snapshot/2,
     make_empty_snapshot/5
 ]).
@@ -68,6 +69,7 @@
 
 -export_type([
     storage_handle/0,
+    snapshot_options/0,
     metadata/0,
     status/0
 ]).
@@ -241,6 +243,12 @@
 %% position when loaded.
 -callback storage_create_snapshot(Path :: file:filename(), Handle :: storage_handle()) -> ok | {error, Reason :: term()}.
 
+%% Create a new snapshot of the current storage state at the provided path,
+%% with the given options. The options are opaque to the RAFT implementation
+%% and are passed through to the storage provider for interpretation.
+-callback storage_create_snapshot(Path :: file:filename(), Options :: snapshot_options(), Handle :: storage_handle()) -> ok | {error, Reason :: term()}.
+-optional_callbacks([storage_create_snapshot/3]).
+
 %% Create a new witness snapshot at the provided path which must contain the current
 %% position in storage and configuration.
 %% The snapshot will be empty (without actual storage data) but will retain all
@@ -277,6 +285,7 @@
 
 -type metadata() :: config | atom().
 -type storage_handle() :: dynamic().
+-type snapshot_options() :: map().
 
 -type status() :: [status_element()].
 -type status_element() ::
@@ -326,6 +335,7 @@
 -define(CREATE_SNAPSHOT_REQUEST(Name), {create_snapshot, Name}).
 -define(CREATE_WITNESS_SNAPSHOT_REQUEST(), create_witness_snapshot).
 -define(CREATE_WITNESS_SNAPSHOT_REQUEST(Name), {create_witness_snapshot, Name}).
+-define(CREATE_SNAPSHOT_REQUEST(Name, Options), {create_snapshot, Name, Options}).
 -define(OPEN_SNAPSHOT_REQUEST(Path, Position), {open_snapshot, Path, Position}).
 -define(DELETE_SNAPSHOT_REQUEST(Name), {delete_snapshot, Name}).
 
@@ -349,7 +359,7 @@
 -type apply_request() :: ?APPLY_REQUEST(From :: gen_server:from() | undefined, Record :: wa_raft_log:log_record(), Size :: non_neg_integer(), Priority :: wa_raft_acceptor:priority()).
 -type apply_read_request() :: ?APPLY_READ_REQUEST(From :: gen_server:from(), Comman :: wa_raft_acceptor:command()).
 
--type create_snapshot_request() :: ?CREATE_SNAPSHOT_REQUEST() | ?CREATE_SNAPSHOT_REQUEST(Name :: string()).
+-type create_snapshot_request() :: ?CREATE_SNAPSHOT_REQUEST() | ?CREATE_SNAPSHOT_REQUEST(Name :: string()) | ?CREATE_SNAPSHOT_REQUEST(Name :: string(), Options :: snapshot_options()).
 -type create_witness_snapshot_request() :: ?CREATE_WITNESS_SNAPSHOT_REQUEST() | ?CREATE_WITNESS_SNAPSHOT_REQUEST(Name :: string()).
 -type open_snapshot_request() :: ?OPEN_SNAPSHOT_REQUEST(Path :: string(), Position :: wa_raft_log:log_pos()).
 -type delete_snapshot_request() :: ?DELETE_SNAPSHOT_REQUEST(Name :: string()).
@@ -451,6 +461,19 @@ create_witness_snapshot(Storage) ->
 -spec create_witness_snapshot(Storage :: gen_server:server_ref(), Name :: string()) -> {ok, Pos :: wa_raft_log:log_pos()} | {error, Reason :: term()}.
 create_witness_snapshot(Storage, Name) ->
     gen_server:call(Storage, ?CREATE_WITNESS_SNAPSHOT_REQUEST(Name), ?RAFT_STORAGE_CALL_TIMEOUT()).
+
+%% Be careful when using the same name for two snapshots as the RAFT storage
+%% server will not recreate an existing snapshot even if the storage state has
+%% advanced since the snapshot was created; however, this method will always
+%% return the current position upon success.
+%% Options are opaque to the RAFT implementation and are passed through to the
+%% storage provider for interpretation.
+%% Snaphots created with custom options should not be created using the default
+%% snapshot name as RAFT may confuse it with a generic snapshot and incorrectly use
+%% it for transport or other RAFT operations.
+-spec create_snapshot(Storage :: gen_server:server_ref(), Name :: string(), Options :: snapshot_options()) -> {ok, Pos :: wa_raft_log:log_pos()} | {error, Reason :: term()}.
+create_snapshot(Storage, Name, Options) ->
+    gen_server:call(Storage, ?CREATE_SNAPSHOT_REQUEST(Name, Options), ?RAFT_STORAGE_CALL_TIMEOUT()).
 
 -spec delete_snapshot(Storage :: gen_server:server_ref(), Name :: string()) -> ok.
 delete_snapshot(Storage, Name) ->
@@ -584,6 +607,9 @@ handle_call(?CREATE_WITNESS_SNAPSHOT_REQUEST(), _From, #state{position = #raft_l
 
 handle_call(?CREATE_WITNESS_SNAPSHOT_REQUEST(Name), _From, #state{} = State) ->
     {reply, handle_create_witness_snapshot(Name, State), State};
+
+handle_call(?CREATE_SNAPSHOT_REQUEST(Name, Options), _From, #state{} = State) ->
+    {reply, handle_create_snapshot(Name, Options, State), State};
 
 handle_call(?MAKE_EMPTY_SNAPSHOT_REQUEST(SnapshotPath, SnapshotPosition, Config, Data), _From, #state{name = Name, options = Options, module = Module} = State) ->
     ?RAFT_LOG_NOTICE(
@@ -763,6 +789,27 @@ handle_create_witness_snapshot(SnapshotName, #state{name = Name, path = Path, mo
             case erlang:function_exported(Module, storage_create_witness_snapshot, 2) of
                 true ->
                     case Module:storage_create_witness_snapshot(SnapshotPath, Handle) of
+                        ok -> {ok, Position};
+                        Other -> Other
+                    end;
+                false ->
+                    {error, not_supported}
+            end
+    end.
+
+-spec handle_create_snapshot(SnapshotName :: string(), Options :: snapshot_options(), Storage :: #state{}) -> {ok, wa_raft_log:log_pos()} | {error, Reason :: term()}.
+handle_create_snapshot(SnapshotName, Options, #state{name = Name, path = Path, module = Module, handle = Handle, position = Position} = State) ->
+    SnapshotPath = filename:join(Path, SnapshotName),
+    case filelib:is_dir(SnapshotPath, prim_file) of
+        true ->
+            ?RAFT_LOG_NOTICE("Storage[~0p] skips recreating existing snapshot ~0p.", [Name, SnapshotName]),
+            {ok, Position};
+        false ->
+            cleanup_snapshots(State),
+            ?RAFT_LOG_NOTICE("Storage[~0p] is creating snapshot ~0p with options ~0p.", [Name, SnapshotName, Options]),
+            case erlang:function_exported(Module, storage_create_snapshot, 3) of
+                true ->
+                    case Module:storage_create_snapshot(SnapshotPath, Options, Handle) of
                         ok -> {ok, Position};
                         Other -> Other
                     end;
