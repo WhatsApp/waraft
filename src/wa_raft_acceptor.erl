@@ -28,7 +28,9 @@
 
 %% Client API - RAFT apis
 -export([
-    adjust_config/3
+    adjust_config/3,
+    adjust_config_async/3,
+    adjust_config_async/4
 ]).
 
 %% Internal API
@@ -100,7 +102,7 @@
 -type default_op() :: ?OP_DEFAULT(Op :: op()).
 -type adjust_config_op() :: ?OP_ADJUST_CONFIG(Action :: wa_raft_server:config_action(), Index :: wa_raft_log:log_index() | undefined).
 -type commit_request() :: ?COMMIT_REQUEST(Op :: commit_op(), Priority :: priority()).
--type commit_async_request() :: ?COMMIT_ASYNC_REQUEST(From :: gen_server:from(), Op :: op(), Priority :: priority()).
+-type commit_async_request() :: ?COMMIT_ASYNC_REQUEST(From :: gen_server:from(), Op :: commit_op(), Priority :: priority()).
 -type commit_error_type() ::
     not_supported |
     not_leader |
@@ -173,7 +175,7 @@ commit_async(ServerRef, From, Op) ->
 
 -spec commit_async(ServerRef :: gen_server:server_ref(), From :: {pid(), term()}, Op :: op(), Priority :: priority()) -> ok.
 commit_async(ServerRef, From, Op, Priority) ->
-    gen_server:cast(ServerRef, ?COMMIT_ASYNC_REQUEST(From, Op, Priority)).
+    gen_server:cast(ServerRef, ?COMMIT_ASYNC_REQUEST(From, ?OP_DEFAULT(Op), Priority)).
 
 % Strong-read
 -spec read(ServerRef :: gen_server:server_ref(), Command :: command()) -> read_result().
@@ -200,6 +202,23 @@ adjust_config(ServerRef, Action, Index) ->
 ) -> commit_result().
 adjust_config(ServerRef, Action, Index, Timeout) ->
     call(ServerRef, ?COMMIT_REQUEST(?OP_ADJUST_CONFIG(Action, Index), high), Timeout).
+
+-spec adjust_config_async(
+    ServerRef :: gen_server:server_ref(),
+    From :: gen_server:from(),
+    Action :: wa_raft_server:config_action()
+) -> ok.
+adjust_config_async(ServerRef, From, Action) ->
+    adjust_config_async(ServerRef, From, Action, undefined).
+
+-spec adjust_config_async(
+    ServerRef :: gen_server:server_ref(),
+    From :: gen_server:from(),
+    Action :: wa_raft_server:config_action(),
+    Index :: wa_raft_log:log_index() | undefined
+) -> ok.
+adjust_config_async(ServerRef, From, Action, Index) ->
+    gen_server:cast(ServerRef, ?COMMIT_ASYNC_REQUEST(From, ?OP_ADJUST_CONFIG(Action, Index), high)).
 
 -spec call(ServerRef :: gen_server:server_ref(), Request :: term(), Timeout :: timeout()) -> call_result().
 call(ServerRef, Request, Timeout) ->
@@ -267,7 +286,7 @@ handle_call(Request, From, #state{name = Name} = State) ->
 
 -spec handle_cast(commit_async_request(), #state{}) -> {noreply, #state{}}.
 handle_cast(?COMMIT_ASYNC_REQUEST(From, Op, Priority), State) ->
-    Result = commit_impl(From, ?OP_DEFAULT(Op), Priority, State),
+    Result = commit_impl(From, Op, Priority, State),
     Result =/= continue andalso gen_server:reply(From, Result),
     {noreply, State};
 handle_cast(Request, #state{name = Name} = State) ->
