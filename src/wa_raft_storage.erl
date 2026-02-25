@@ -724,7 +724,11 @@ handle_command(Label, noop = Command, Position, #state{} = State) ->
     handle_command_impl(Label, Command, Position, State);
 handle_command(_Label, {config, Config}, Position, #state{name = Name, module = Module, handle = Handle} = State) ->
     ?RAFT_LOG_INFO("Storage[~0p] is applying a new configuration ~0p at ~0p.", [Name, Config, Position]),
-    {Reply, NewHandle} = Module:storage_apply_config(Config, Position, Handle),
+    {Reply, NewHandle} =
+        case Module:storage_apply_config(Config, Position, Handle) of
+            {ok, H} -> {{ok, Position}, H};
+            {Other, H} -> {Other, H}
+        end,
     {Reply, refresh_config(State#state{handle = NewHandle, position = Position})};
 handle_command(Label, _Command, Position, #state{application = Application, witness = true, skipped = Skipped} = State) ->
     case Skipped >= ?RAFT_STORAGE_WITNESS_APPLY_INTERVAL(Application) of

@@ -83,7 +83,8 @@
 -define(PROMOTE_COMMAND(TermOrOffset, Force),       ?RAFT_COMMAND(promote, {TermOrOffset, Force})).
 -define(RESIGN_COMMAND,                             ?RAFT_COMMAND(resign, undefined)).
 
--define(ADJUST_CONFIG_COMMAND(Action, Index),       ?RAFT_COMMAND(adjust_config, {Action, Index})).
+-define(ADJUST_CONFIG_COMMAND(Action, Index),       ?ADJUST_CONFIG_COMMAND(undefined, Action, Index)).
+-define(ADJUST_CONFIG_COMMAND(From, Action, Index), ?RAFT_COMMAND(adjust_config, {From, Action, Index})).
 -define(REFRESH_CONFIG_COMMAND(),                   ?RAFT_COMMAND(refresh_config, undefined)).
 
 -define(SNAPSHOT_AVAILABLE_COMMAND(Root, Position), ?RAFT_COMMAND(snapshot_available, {Root, Position})).

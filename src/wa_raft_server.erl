@@ -106,6 +106,7 @@
     snapshot_available/3,
     adjust_config/2,
     adjust_config/3,
+    adjust_config/4,
     adjust_membership/3,
     adjust_membership/4,
     refresh_config/1,
@@ -166,7 +167,8 @@
     config/0,
     config_all/0,
     membership/0,
-    status/0
+    status/0,
+    config_action/0
 ]).
 
 %%------------------------------------------------------------------------------
@@ -289,7 +291,7 @@
 -type trigger_election_command()    :: ?TRIGGER_ELECTION_COMMAND(term_or_offset()).
 -type promote_command()             :: ?PROMOTE_COMMAND(term_or_offset(), boolean()).
 -type resign_command()              :: ?RESIGN_COMMAND.
--type adjust_config_command()       :: ?ADJUST_CONFIG_COMMAND(config_action(), wa_raft_log:log_index() | undefined).
+-type adjust_config_command()       :: ?ADJUST_CONFIG_COMMAND(gen_server:from() | undefined, config_action(), wa_raft_log:log_index() | undefined).
 -type snapshot_available_command()  :: ?SNAPSHOT_AVAILABLE_COMMAND(string(), wa_raft_log:log_pos()).
 -type handover_candidates_command() :: ?HANDOVER_CANDIDATES_COMMAND.
 -type handover_command()            :: ?HANDOVER_COMMAND(node()).
@@ -599,7 +601,16 @@ adjust_config(Server, Action) ->
     Index :: wa_raft_log:log_index() | undefined
 ) -> {ok, Position :: wa_raft_log:log_pos()} | {error, Reason :: term()}.
 adjust_config(Server, Action, Index) ->
-    gen_statem:call(Server, ?ADJUST_CONFIG_COMMAND(Action, Index), ?RAFT_RPC_CALL_TIMEOUT()).
+    gen_statem:call(Server, ?ADJUST_CONFIG_COMMAND(undefined, Action, Index), ?RAFT_RPC_CALL_TIMEOUT()).
+
+-spec adjust_config(
+    Server :: gen_statem:server_ref(),
+    From :: gen_server:from(),
+    Action :: config_action(),
+    Index :: wa_raft_log:log_index() | undefined
+) -> ok.
+adjust_config(Server, From, Action, Index) ->
+    gen_statem:cast(Server, ?ADJUST_CONFIG_COMMAND(From, Action, Index)).
 
 -spec adjust_membership(
     Server :: gen_statem:server_ref(),
@@ -1361,45 +1372,35 @@ leader({call, From}, ?RESIGN_COMMAND, #raft_state{} = State0) ->
     {next_state, follower_or_witness_state(State1), State1, {reply, From, ok}};
 
 %% [Adjust Membership] Leader attempts to commit a single-node membership change.
-leader(Type, ?ADJUST_CONFIG_COMMAND(Action, Index), State0) ->
-    case leader_config_change_allowed(Index, State0) of
-        true ->
-            case leader_adjust_config(Action, State0) of
-                {ok, NewConfig} ->
-                    % With all checks completed, we can now attempt to append the new
-                    % configuration to the log. If successful, a round of heartbeats is
-                    % immediately started to replicate the change as soon as possible.
-                    case leader_change_config(NewConfig, State0) of
-                        {ok, #raft_log_pos{index = NewConfigIndex} = NewConfigPosition, State1} ->
-                            ?SERVER_LOG_NOTICE(
-                                State1,
-                                "is attempting to change configuration from ~0p to ~0p at ~0p.",
-                                [config(State0), NewConfig, NewConfigIndex]
-                            ),
-                            State2 = apply_single_node_cluster(State1),
-                            State3 = append_entries_to_followers(State2),
-                            reply(Type, {ok, NewConfigPosition}),
-                            {keep_state, State3, ?HEARTBEAT_TIMEOUT(State3)};
-                        {error, Reason} ->
-                            ?SERVER_LOG_NOTICE(
-                                State0,
-                                "failed to append a new configuration due to ~0P.",
-                                [Reason, 20]
-                            ),
-                            reply(Type, {error, Reason}),
-                            keep_state_and_data
-                    end;
-                {error, Reason} ->
-                    ?SERVER_LOG_NOTICE(
-                        State0,
-                        "failed to adjust configuration ~0p with action ~0p due to ~0P.",
-                        [config(State0), Action, Reason, 20]
-                    ),
-                    reply(Type, {error, Reason}),
-                    keep_state_and_data
-            end;
-        false ->
-            reply(Type, {error, rejected}),
+leader(Type, ?ADJUST_CONFIG_COMMAND(From, Action, Index), #raft_state{queues = Queues} = State0) ->
+    maybe
+        ok ?= leader_config_change_allowed(Index, State0),
+        {ok, NewConfig} ?= leader_adjust_config(Action, State0),
+        % With all checks completed, we can now attempt to append the new
+        % configuration to the log. If successful, a round of heartbeats is
+        % immediately started to replicate the change as soon as possible.
+        {ok, #raft_log_pos{index = NewConfigIndex} = NewConfigPosition, State1} ?=
+            leader_change_config(NewConfig, State0),
+
+        ?SERVER_LOG_NOTICE(
+            State1,
+            "is attempting to change configuration from ~0p to ~0p at ~0p.",
+            [config(State0), NewConfig, NewConfigIndex]
+        ),
+        State2 = apply_single_node_cluster(State1),
+        State3 = append_entries_to_followers(State2),
+        reply(Type, {ok, NewConfigPosition}),
+        {keep_state, State3, ?HEARTBEAT_TIMEOUT(State3)}
+    else
+        {error, Reason} ->
+            ?SERVER_LOG_NOTICE(
+                State0,
+                "failed to apply action ~0p to current configuration ~0p due to ~0P.",
+                [Action, config(State0), Reason, 20]
+            ),
+            From =/= undefined andalso
+                wa_raft_queue:commit_completed(Queues, From, {error, Reason}, high),
+            reply(Type, {error, Reason}),
             keep_state_and_data
     end;
 
@@ -2181,10 +2182,12 @@ command(State, {call, From}, ?RESIGN_COMMAND, #raft_state{} = Data) when State =
 command(
     State,
     Type,
-    ?ADJUST_CONFIG_COMMAND(Action, _),
-    #raft_state{} = Data
+    ?ADJUST_CONFIG_COMMAND(From, Action, _),
+    #raft_state{queues = Queues} = Data
 ) when State =/= leader ->
     ?SERVER_LOG_NOTICE(State, Data, "refusing to adjust config with action ~0p because we are not leader.", [Action]),
+    From =/= undefined andalso
+        wa_raft_queue:commit_cancelled(Queues, From, {error, not_leader}, high),
     reply(Type, {error, not_leader}),
     {keep_state, Data};
 
@@ -3071,7 +3074,7 @@ is_eligible_for_handover_impl(
 -spec leader_config_change_allowed(
     Index :: wa_raft_log:log_index() | undefined,
     State :: #raft_state{}
-) -> boolean().
+) -> ok | {error, Reason :: term()}.
 leader_config_change_allowed(
     Index,
     #raft_state{
@@ -3099,7 +3102,7 @@ leader_config_change_allowed(
                 "at ~0p is not ready for a new configuration because it has not established a quorum in the current term.",
                 [CommitIndex]
             ),
-            false;
+            {error, no_quorum};
         ConfigIndex > LastApplied ->
             ?SERVER_LOG_NOTICE(
                 leader,
@@ -3107,9 +3110,9 @@ leader_config_change_allowed(
                 "at ~0p is not ready for a new configuration because a new configuration is not yet committed at ~0p.",
                 [CommitIndex, ConfigIndex]
             ),
-            false;
+            {error, not_ready};
         Index =:= undefined ->
-            true;
+            ok;
         Index =/= ConfigIndex ->
             ?SERVER_LOG_NOTICE(
                 leader,
@@ -3117,9 +3120,9 @@ leader_config_change_allowed(
                 "refuses a new configuration because the configuration at ~0p is not at the required ~0p",
                 [ConfigIndex, Index]
             ),
-            false;
+            {error, config_index_mismatch};
         true ->
-            true
+            ok
     end.
 
 -spec leader_change_config(NewConfig :: wa_raft_server:config(), State :: #raft_state{}) ->

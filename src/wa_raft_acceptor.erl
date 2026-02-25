@@ -26,6 +26,11 @@
     read/3
 ]).
 
+%% Client API - RAFT apis
+-export([
+    adjust_config/3
+]).
+
 %% Internal API
 -export([
     default_name/2,
@@ -63,6 +68,15 @@
 -include_lib("wa_raft/include/wa_raft.hrl").
 -include_lib("wa_raft/include/wa_raft_logger.hrl").
 
+%% Request type macros
+-define(READ_REQUEST(Command), {read, Command}).
+-define(COMMIT_REQUEST(Op, Priority), {commit, Op, Priority}).
+-define(COMMIT_ASYNC_REQUEST(From, Op, Priority), {commit, From, Op, Priority}).
+
+%% Commit op type macros
+-define(OP_DEFAULT(Op), {default, Op}).
+-define(OP_ADJUST_CONFIG(Action, Index), {adjust_config, Action, Index}).
+
 -type command() :: noop_command() | noop_omitted_command() | config_command() | dynamic().
 -type noop_command() :: noop.
 -type noop_omitted_command() :: noop_omitted.
@@ -77,17 +91,21 @@
 -type call_error() :: {error, call_error_type()}.
 -type call_result() :: Result :: dynamic() | Error :: call_error().
 
--type read_request() :: {read, Command :: command()}.
+-type read_request() :: ?READ_REQUEST(Command :: command()).
 -type read_error_type() :: not_leader | read_queue_full | apply_queue_full | {notify_redirect, Peer :: node()}.
 -type read_error() :: {error, read_error_type()}.
 -type read_result() :: Result :: dynamic() | Error :: read_error() | call_error().
 
--type commit_request() :: {commit, Op :: op()} | {commit, Op :: op(), Priority :: priority()}.
--type commit_async_request() :: {commit, From :: gen_server:from(), Op :: op()} | {commit, From :: gen_server:from(), Op :: op(), Priority :: priority()}.
+-type commit_op() :: default_op() | adjust_config_op().
+-type default_op() :: ?OP_DEFAULT(Op :: op()).
+-type adjust_config_op() :: ?OP_ADJUST_CONFIG(Action :: wa_raft_server:config_action(), Index :: wa_raft_log:log_index() | undefined).
+-type commit_request() :: ?COMMIT_REQUEST(Op :: commit_op(), Priority :: priority()).
+-type commit_async_request() :: ?COMMIT_ASYNC_REQUEST(From :: gen_server:from(), Op :: op(), Priority :: priority()).
 -type commit_error_type() ::
+    not_supported |
     not_leader |
-    {commit_queue_full, Key :: key()} |
-    {apply_queue_full, Key :: key()} |
+    commit_queue_full |
+    apply_queue_full |
     {notify_redirect, Peer :: node()} |
     commit_stalled |
     cancelled.
@@ -143,19 +161,19 @@ commit(ServerRef, Op) ->
 
 -spec commit(ServerRef :: gen_server:server_ref(), Op :: op(), Timeout :: timeout()) -> commit_result().
 commit(ServerRef, Op, Timeout) ->
-    call(ServerRef, {commit, Op}, Timeout).
+    commit(ServerRef, Op, Timeout, high).
 
 -spec commit(ServerRef :: gen_server:server_ref(), Op :: op(), Timeout :: timeout(), Priority :: priority()) -> commit_result().
 commit(ServerRef, Op, Timeout, Priority) ->
-    call(ServerRef, {commit, Op, Priority}, Timeout).
+    call(ServerRef, ?COMMIT_REQUEST(?OP_DEFAULT(Op), Priority), Timeout).
 
 -spec commit_async(ServerRef :: gen_server:server_ref(), From :: {pid(), term()}, Op :: op()) -> ok.
 commit_async(ServerRef, From, Op) ->
-    gen_server:cast(ServerRef, {commit, From, Op}).
+    commit_async(ServerRef, From, Op, high).
 
 -spec commit_async(ServerRef :: gen_server:server_ref(), From :: {pid(), term()}, Op :: op(), Priority :: priority()) -> ok.
 commit_async(ServerRef, From, Op, Priority) ->
-    gen_server:cast(ServerRef, {commit, From, Op, Priority}).
+    gen_server:cast(ServerRef, ?COMMIT_ASYNC_REQUEST(From, Op, Priority)).
 
 % Strong-read
 -spec read(ServerRef :: gen_server:server_ref(), Command :: command()) -> read_result().
@@ -164,7 +182,24 @@ read(ServerRef, Command) ->
 
 -spec read(ServerRef :: gen_server:server_ref(), Command :: command(), Timeout :: timeout()) -> read_result().
 read(ServerRef, Command, Timeout) ->
-    call(ServerRef, {read, Command}, Timeout).
+    call(ServerRef, ?READ_REQUEST(Command), Timeout).
+
+-spec adjust_config(
+    ServerRef :: gen_server:server_ref(),
+    Action :: wa_raft_server:config_action(),
+    Index :: wa_raft_log:log_index() | undefined
+) -> commit_result().
+adjust_config(ServerRef, Action, Index) ->
+    adjust_config(ServerRef, Action, Index, ?RAFT_RPC_CALL_TIMEOUT()).
+
+-spec adjust_config(
+    ServerRef :: gen_server:server_ref(),
+    Action :: wa_raft_server:config_action(),
+    Index :: wa_raft_log:log_index() | undefined,
+    Timeout :: timeout()
+) -> commit_result().
+adjust_config(ServerRef, Action, Index, Timeout) ->
+    call(ServerRef, ?COMMIT_REQUEST(?OP_ADJUST_CONFIG(Action, Index), high), Timeout).
 
 -spec call(ServerRef :: gen_server:server_ref(), Request :: term(), Timeout :: timeout()) -> call_result().
 call(ServerRef, Request, Timeout) ->
@@ -216,14 +251,12 @@ init(#raft_options{table = Table, partition = Partition, acceptor_name = Name, s
 
 -spec handle_call(read_request(), gen_server:from(), #state{}) -> {reply, read_result(), #state{}} | {noreply, #state{}};
                  (commit_request(), gen_server:from(), #state{}) -> {reply, commit_result(), #state{}} | {noreply, #state{}}.
-handle_call({read, Command}, From, State) ->
+handle_call(?READ_REQUEST(Command), From, State) ->
     case read_impl(From, Command, State) of
         continue           -> {noreply, State};
         {error, _} = Error -> {reply, Error, State}
     end;
-handle_call({commit, Op}, From, State) ->
-    ?MODULE:handle_call({commit, Op, high}, From, State);
-handle_call({commit, Op, Priority}, From, State) ->
+handle_call(?COMMIT_REQUEST(Op, Priority), From, State) ->
     case commit_impl(From, Op, Priority, State) of
         continue           -> {noreply, State};
         {error, _} = Error -> {reply, Error, State}
@@ -233,10 +266,8 @@ handle_call(Request, From, #state{name = Name} = State) ->
     {noreply, State}.
 
 -spec handle_cast(commit_async_request(), #state{}) -> {noreply, #state{}}.
-handle_cast({commit, From, Op}, State) ->
-    ?MODULE:handle_cast({commit, From, Op, high}, State);
-handle_cast({commit, From, Op, Priority}, State) ->
-    Result = commit_impl(From, Op, Priority, State),
+handle_cast(?COMMIT_ASYNC_REQUEST(From, Op, Priority), State) ->
+    Result = commit_impl(From, ?OP_DEFAULT(Op), Priority, State),
     Result =/= continue andalso gen_server:reply(From, Result),
     {noreply, State};
 handle_cast(Request, #state{name = Name} = State) ->
@@ -253,29 +284,39 @@ terminate(Reason, #state{name = Name}) ->
 %%-------------------------------------------------------------------
 
 %% Enqueue a commit.
--spec commit_impl(From :: gen_server:from(), Request :: op(), Priority :: priority(), State :: #state{}) -> continue | commit_error().
-commit_impl(From, {Key, _} = Op, Priority, #state{table = Table, name = Name, server = Server, queues = Queues}) ->
+-spec commit_impl(
+    From :: gen_server:from(),
+    CommitOp :: commit_op(),
+    Priority :: priority(),
+    State :: #state{}
+) -> continue | commit_error().
+commit_impl(From, CommitOp, Priority, #state{table = Table, name = Name, server = Server, queues = Queues}) ->
     StartT = os:timestamp(),
+    ?RAFT_LOG_DEBUG("Acceptor[~0p] starts to handle commit of ~0P from ~0p.", [Name, CommitOp, 30, From]),
     try
-        ?RAFT_LOG_DEBUG("Acceptor[~0p] starts to handle commit of ~0P from ~0p.", [Name, Op, 30, From]),
         case wa_raft_queue:commit_started(Queues, Priority) of
-            commit_queue_full ->
-                ?RAFT_LOG_WARNING(
-                    "Acceptor[~0p] is rejecting commit request from ~0p because the commit queue is full.",
-                    [Name, From]
-                ),
-                ?RAFT_COUNT(Table, {'acceptor.error.commit_queue_full', Priority}),
-                {error, {commit_queue_full, Key}};
-            apply_queue_full ->
-                ?RAFT_LOG_WARNING(
-                    "Acceptor[~0p] is rejecting commit request from ~0p because the apply queue is full.",
-                    [Name, From]
-                ),
-                ?RAFT_COUNT(Table, 'acceptor.error.apply_queue_full'),
-                {error, {apply_queue_full, Key}};
             ok ->
-                wa_raft_server:commit(Server, From, Op, Priority),
-                continue
+                case CommitOp of
+                    ?OP_DEFAULT(Op) ->
+                        wa_raft_server:commit(Server, From, Op, Priority),
+                        continue;
+                    ?OP_ADJUST_CONFIG(Action, Index) ->
+                        wa_raft_server:adjust_config(Server, From, Action, Index),
+                        continue;
+                    _ ->
+                        ?RAFT_LOG_WARNING(
+                            "Acceptor[~0p] does not know how to handle commit op ~0P.",
+                            [Name, CommitOp, 20]
+                        ),
+                        {error, not_supported}
+                end;
+            Reason ->
+                ?RAFT_COUNT(Table, {'acceptor.error', Reason, Priority}),
+                ?RAFT_LOG_WARNING(
+                    "Acceptor[~0p] is rejecting commit request from ~0p due to ~0p.",
+                    [Name, From, Reason]
+                ),
+                {error, Reason}
         end
     after
         ?RAFT_GATHER(Table, 'acceptor.commit.func', timer:now_diff(os:timestamp(), StartT))
@@ -288,23 +329,16 @@ read_impl(From, Command, #state{table = Table, name = Name, server = Server, que
     ?RAFT_LOG_DEBUG("Acceptor[~p] starts to handle read of ~0P from ~0p.", [Name, Command, 100, From]),
     try
         case wa_raft_queue:reserve_read(Queues) of
-            read_queue_full ->
-                ?RAFT_COUNT(Table, 'acceptor.strong_read.error.read_queue_full'),
-                ?RAFT_LOG_WARNING(
-                    "Acceptor[~0p] is rejecting read request from ~0p because the read queue is full.",
-                    [Name, From]
-                ),
-                {error, read_queue_full};
-            apply_queue_full ->
-                ?RAFT_COUNT(Table, 'acceptor.strong_read.error.apply_queue_full'),
-                ?RAFT_LOG_WARNING(
-                    "Acceptor[~0p] is rejecting read request from ~0p because the apply queue is full.",
-                    [Name, From]
-                ),
-                {error, apply_queue_full};
             ok ->
                 wa_raft_server:read(Server, {From, Command}),
-                continue
+                continue;
+            Reason ->
+                ?RAFT_COUNT(Table, {'acceptor.strong_read.error', Reason}),
+                ?RAFT_LOG_WARNING(
+                    "Acceptor[~0p] is rejecting read request from ~0p due to ~0p.",
+                    [Name, From, Reason]
+                ),
+                {error, Reason}
         end
     after
         ?RAFT_GATHER(Table, 'acceptor.strong_read.func', timer:now_diff(os:timestamp(), StartT))
