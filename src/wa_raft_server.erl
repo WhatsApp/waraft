@@ -1380,7 +1380,7 @@ leader(Type, ?ADJUST_CONFIG_COMMAND(From, Action, Index), #raft_state{queues = Q
         % configuration to the log. If successful, a round of heartbeats is
         % immediately started to replicate the change as soon as possible.
         {ok, #raft_log_pos{index = NewConfigIndex} = NewConfigPosition, State1} ?=
-            leader_change_config(NewConfig, State0),
+            leader_change_config(NewConfig, From, State0),
 
         ?SERVER_LOG_NOTICE(
             State1,
@@ -3125,15 +3125,26 @@ leader_config_change_allowed(
             ok
     end.
 
--spec leader_change_config(NewConfig :: wa_raft_server:config(), State :: #raft_state{}) ->
+-spec leader_change_config(NewConfig :: wa_raft_server:config(), From :: undefined | gen_server:from(), State :: #raft_state{}) ->
     {ok, NewConfigPosition :: wa_raft_log:log_pos(), NewState :: #raft_state{}} | {error, Reason :: term()}.
-leader_change_config(NewConfig, #raft_state{log_view = View, current_term = CurrentTerm} = State0) ->
+leader_change_config(NewConfig, From, #raft_state{log_view = View, current_term = CurrentTerm} = State0) ->
     {LogEntry, State1} = make_log_entry({make_ref(), {config, NewConfig}}, State0),
     case wa_raft_log:try_append(View, [LogEntry]) of
         {ok, NewView} ->
-            NewConfigPosition = #raft_log_pos{index = wa_raft_log:last_index(NewView), term = CurrentTerm},
+            NewConfigIndex = wa_raft_log:last_index(NewView),
+            NewConfigPosition = #raft_log_pos{index = NewConfigIndex, term = CurrentTerm},
             State2 = State1#raft_state{log_view = NewView},
-            {ok, NewConfigPosition, State2};
+            % When initiated from the commit flow (via wa_raft_acceptor), From is
+            % non-undefined and needs to be stored in the queued map so that the
+            % storage can reply to the caller when the config change is applied.
+            State3 = case From of
+                undefined ->
+                    State2;
+                _ ->
+                    Queued = State2#raft_state.queued,
+                    State2#raft_state{queued = Queued#{NewConfigIndex => {From, high}}}
+            end,
+            {ok, NewConfigPosition, State3};
         skipped ->
             {error, commit_stalled};
         {error, Reason} ->
