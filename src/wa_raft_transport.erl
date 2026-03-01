@@ -731,7 +731,6 @@ handle_transport_start(From, Peer, Meta, Root, Counters) ->
                                 Info2 = Info1#{status => completed, end_ts => NowMillis},
                                 maybe_notify(ID, Info2);
                             _ ->
-                                Table = maps:get(table, Meta, undefined),
                                 Sup = wa_raft_transport_sup:get_or_start(Peer),
                                 [gen_server:cast(Pid, {notify, ID, Table}) || {_Id, Pid, _Type, _Modules} <- supervisor:which_children(Sup), is_pid(Pid)],
                                 Info1#{status => running}
