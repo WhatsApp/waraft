@@ -3528,11 +3528,11 @@ reply(Type, Message) ->
     Destination :: #raft_identity{},
     ProcedureCall :: normalized_procedure(),
     State :: #raft_state{}
-) -> term().
+) -> ok | {error, term()}.
 send_rpc(Destination, Procedure, #raft_state{self = Self, current_term = Term} = State) ->
     cast(Destination, make_rpc(Self, Term, Procedure), State).
 
--spec send_rpc_to_all_members(ProcedureCall :: normalized_procedure(), State :: #raft_state{}) -> term().
+-spec send_rpc_to_all_members(ProcedureCall :: normalized_procedure(), State :: #raft_state{}) -> [ok | {error, term()}].
 send_rpc_to_all_members(ProcedureCall, #raft_state{self = Self} = State) ->
     [send_rpc(Peer, ProcedureCall, State) || Peer <- config_member_identities(config(State)), Peer =/= Self].
 

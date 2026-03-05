@@ -25,12 +25,16 @@
 %%%  Behaviour callbacks
 %%%
 
--callback cast(dest_addr(), #raft_identifier{}, term()) -> term().
+-callback cast(dest_addr(), #raft_identifier{}, term()) -> ok | term().
 
 %%% ------------------------------------------------------------------------
 %%%  Erlang distribution default implementation
 %%%
 
--spec cast(DestAddr :: dest_addr(), Identifier :: #raft_identifier{}, Message :: term()) -> term().
+-spec cast(DestAddr :: dest_addr(), Identifier :: #raft_identifier{}, Message :: term()) -> ok | {error, Reason} when
+    Reason :: noconnect | nosuspend.
 cast(DestAddr, _Identifier, Message) ->
-    erlang:send(DestAddr, {'$gen_cast', Message}, [noconnect, nosuspend]).
+    case erlang:send(DestAddr, {'$gen_cast', Message}, [noconnect, nosuspend]) of
+        ok -> ok;
+        Reason -> {error, Reason}
+    end.
