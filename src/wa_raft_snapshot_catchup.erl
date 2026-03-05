@@ -194,14 +194,15 @@ handle_info(Info, #state{} = State) ->
 
 -spec terminate(Reason :: term(), #state{}) -> term().
 terminate(_Reason, #state{transports = Transports, snapshots = Snapshots}) ->
-    maps:foreach(
-        fun ({_Name, _Node}, #transport{id = ID}) ->
-            wa_raft_transport:cancel(ID, terminating)
-        end, Transports),
-    maps:foreach(
-        fun ({Table, Partition, LogPos, Witness}, _) ->
-            delete_snapshot(Table, Partition, LogPos, Witness)
-        end, Snapshots).
+    [
+        wa_raft_transport:cancel(ID, terminating)
+     || {_Name, _Node} := #transport{id = ID} <- Transports
+    ],
+    [
+        delete_snapshot(Table, Partition, LogPos, Witness)
+     || {Table, Partition, LogPos, Witness} := _ <- Snapshots
+    ],
+    ok.
 
 -spec allowed(Now :: integer(), Name :: atom(), Node :: node(), State :: #state{}) -> {boolean(), #state{}}.
 allowed(Now, Name, Node, #state{transports = Transports, overload_backoffs = OverloadBackoffs, retry_backoffs = RetryBackoffs} = State0) ->
