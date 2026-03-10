@@ -26,9 +26,9 @@ load(#raft_state{name = Name, partition_path = PartitionPath} = State) ->
     ],
     StateFile = filename:join(PartitionPath, ?STATE_FILE_NAME),
     case file:consult(StateFile) of
-        {ok, [{crc, CRC} | StateTerms]} ->
+        {ok, [{crc, SavedCRC} | StateTerms]} ->
             case erlang:crc32(term_to_binary(StateTerms, [{minor_version, 1}, deterministic])) of
-                CRC ->
+                SavedCRC ->
                     try
                         {ok, lists:foldl(
                             fun ({Item, Validator, Updater, Default}, StateN) ->
@@ -52,7 +52,7 @@ load(#raft_state{name = Name, partition_path = PartitionPath} = State) ->
                         throw:{error, Reason} -> {error, Reason}
                     end;
                 InvalidCRC ->
-                    ?RAFT_LOG_ERROR("~p read state file but CRCs did not match. (saved crc: ~p, computed crc: ~p)", [Name, InvalidCRC, CRC]),
+                    ?RAFT_LOG_ERROR("~p read state file but CRCs did not match. (saved crc: ~p, computed crc: ~p)", [Name, SavedCRC, InvalidCRC]),
                     {error, invalid_crc}
             end;
         {ok, _} ->
