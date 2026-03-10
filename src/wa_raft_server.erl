@@ -2118,7 +2118,7 @@ command(
         leader_heartbeat_ts = HeartbeatTs,
         leader_id = LeaderId
     } = Data
-) when State =/= stalled; State =/= witness; State =/= disabled ->
+) when State =/= stalled, State =/= witness, State =/= disabled ->
     Now = erlang:monotonic_time(millisecond),
     Eligible = ?RAFT_LEADER_ELIGIBLE(App),
     HeartbeatGracePeriodMs = ?RAFT_PROMOTION_GRACE_PERIOD(App) * 1000,
