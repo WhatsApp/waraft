@@ -1286,7 +1286,7 @@ leader(state_timeout, _, State0) ->
             State1 = append_entries_to_followers(State0),
             State2 = apply_single_node_cluster(State1),
             check_leader_liveness(State2),
-            {keep_state, State1, ?HEARTBEAT_TIMEOUT(State2)};
+            {keep_state, State2, ?HEARTBEAT_TIMEOUT(State2)};
         false ->
             ?SERVER_LOG_NOTICE(State0, "resigns from leadership because this node is ineligible.", []),
             State1 = clear_leader(?FUNCTION_NAME, State0),
