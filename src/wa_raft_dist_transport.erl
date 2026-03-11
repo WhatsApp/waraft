@@ -149,7 +149,7 @@ transport_send_loop(ID, FileID, Fd, Offset, Peer, Chunks, ChunkSize, MaxInflight
             {error, {read_failed, ID, FileID, Reason}, State}
     end.
 
--spec init(Args :: list()) -> {ok, State :: #receiver_state{}}.
+-spec init(Args :: []) -> {ok, State :: #receiver_state{}}.
 init([]) ->
     process_flag(trap_exit, true),
     {ok, #receiver_state{}}.
@@ -206,7 +206,7 @@ handle_cast(Request, #receiver_state{} = State) ->
     ?RAFT_LOG_NOTICE("wa_raft_dist_transport got unrecognized cast ~p", [Request]),
     {noreply, State}.
 
--spec terminate(Reason :: term(), State :: #receiver_state{}) -> term().
+-spec terminate(Reason :: dynamic(), State :: #receiver_state{}) -> ok.
 terminate(Reason, #receiver_state{}) ->
     ?RAFT_LOG_NOTICE("wa_raft_dist_transport terminating due to ~p", [Reason]),
     ok.

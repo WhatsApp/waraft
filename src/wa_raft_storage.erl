@@ -380,7 +380,7 @@ child_spec(Options) ->
         modules => [?MODULE]
     }.
 
--spec start_link(Options :: #raft_options{}) -> {'ok', Pid::pid()} | 'ignore' | {'error', Reason::term()}.
+-spec start_link(Options :: #raft_options{}) -> gen_server:start_ret().
 start_link(#raft_options{storage_name = Name} = Options) ->
     gen_server:start_link({local, Name}, ?MODULE, Options, []).
 

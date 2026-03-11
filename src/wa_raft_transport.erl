@@ -244,7 +244,7 @@ transfer_snapshot(Peer, Table, Partition, LogPos, Root, Witness, Timeout) ->
 cancel(ID, Reason) ->
     gen_server:call(?MODULE, {cancel, ID, Reason}).
 
--spec complete(ID :: transport_id(), FileID :: file_id(), Status :: term()) -> ok.
+-spec complete(ID :: transport_id(), FileID :: file_id(), Status :: dynamic()) -> ok.
 complete(ID, FileID, Status) ->
     gen_server:cast(?MODULE, {complete, ID, FileID, Status}).
 
@@ -278,7 +278,7 @@ transport_info(ID, Item) ->
 
 % This function should only be called from the "gen_server" process since it does not
 % provide any atomicity guarantees.
--spec set_transport_info(ID :: transport_id(), Info :: transport_info(), Counters :: counters:counters_ref()) -> term().
+-spec set_transport_info(ID :: transport_id(), Info :: transport_info(), Counters :: counters:counters_ref()) -> ok.
 set_transport_info(ID, #{atomics := TransportAtomics} = Info, Counters) ->
     true = ets:insert(?TRANSPORT_TABLE, {ID, Info}),
     maybe_update_active_inbound_transport_counts(undefined, Info, Counters),
@@ -345,7 +345,7 @@ maybe_update_active_inbound_transport_counts_impl(_, _, _, _) ->
 
 % This function should only be called from the "worker" process responsible for the
 % transport of the specified file since it does not provide any atomicity guarantees.
--spec set_file_info(ID :: transport_id(), FileID :: file_id(), Info :: file_info()) -> term().
+-spec set_file_info(ID :: transport_id(), FileID :: file_id(), Info :: file_info()) -> ok.
 set_file_info(ID, FileID, #{atomics := {TransportAtomics, FileAtomics}} = Info) ->
     true = ets:insert(?FILE_TABLE, {{ID, FileID}, Info}),
     NowMillis = erlang:system_time(millisecond),
@@ -436,7 +436,7 @@ try_pop_file(Queue) ->
 %%%  gen_server callbacks
 %%%
 
--spec init(Args :: term()) -> {ok, State :: #state{}}.
+-spec init(Args :: []) -> {ok, State :: #state{}}.
 init(_) ->
     process_flag(trap_exit, true),
     Counters = counters:new(?RAFT_TRANSPORT_COUNTERS, [atomics]),
@@ -839,7 +839,7 @@ collect_files_impl(Root, [Filename | Queue], Fun, Acc0) ->
             throw({read_file_info, Reason})
     end.
 
--spec join_names(string(), string()) -> list().
+-spec join_names(string(), string()) -> string() | [string() | char()].
 join_names("", Name) -> Name;
 join_names(Dir, Name) -> [Dir, $/, Name].
 

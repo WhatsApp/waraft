@@ -301,12 +301,12 @@ reserve_read(#queues{application = App, table = Table, counters = Counters}) ->
 % Called from the RAFT server once it knows the proper ReadIndex for the
 % read request to add the read request to the reads table for storage
 % to handle upon applying.
--spec submit_read(Queues :: queues(), wa_raft_log:log_index(), term(), term()) -> ok.
+-spec submit_read(Queues :: queues(), wa_raft_log:log_index(), From :: gen_server:from(), Command :: wa_raft_acceptor:command()) -> ok.
 submit_read(#queues{reads = Reads}, ReadIndex, From, Command) ->
     ets:insert(Reads, {{ReadIndex, make_ref()}, From, Command}),
     ok.
 
--spec query_reads(Queues :: queues(), wa_raft_log:log_index() | infinity) -> [{{wa_raft_log:log_index(), reference()}, term()}].
+-spec query_reads(Queues :: queues(), wa_raft_log:log_index() | infinity) -> [{{wa_raft_log:log_index(), reference()}, wa_raft_acceptor:command()}].
 query_reads(#queues{reads = Reads}, MaxLogIndex) ->
     MatchSpec = ets:fun2ms(
         fun({{LogIndex, Reference}, _, Command}) when LogIndex =< MaxLogIndex ->
@@ -315,7 +315,7 @@ query_reads(#queues{reads = Reads}, MaxLogIndex) ->
     ),
     ets:select(Reads, MatchSpec).
 
--spec fulfill_read(Queues :: queues(), term(), dynamic()) -> ok | not_found.
+-spec fulfill_read(Queues :: queues(), {wa_raft_log:log_index(), reference()}, dynamic()) -> ok | not_found.
 fulfill_read(#queues{counters = Counters, reads = Reads}, Reference, Reply) ->
     case ets:take(Reads, Reference) of
         [{Reference, From, _}] ->
@@ -420,6 +420,6 @@ handle_cast(Request, #state{name = Name} = State) ->
     ?RAFT_LOG_NOTICE("Queue[~p] got unexpected call ~0P", [Name, Request, 100]),
     {noreply, State}.
 
--spec terminate(Reason :: term(), State :: #state{}) -> term().
+-spec terminate(Reason :: dynamic(), State :: #state{}) -> ok.
 terminate(Reason, #state{name = Name}) ->
     ?RAFT_LOG_NOTICE("Queue[~p] terminating due to ~0P", [Name, Reason, 100]).

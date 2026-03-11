@@ -173,7 +173,7 @@ init(#raft_log{name = LogName}) ->
 open(_Log) ->
     {ok, undefined}.
 
--spec close(Log :: wa_raft_log:log(), State :: state()) -> term().
+-spec close(Log :: wa_raft_log:log(), State :: state()) -> ok.
 close(_Log, _State) ->
     ok.
 
@@ -205,6 +205,6 @@ trim_impl(#raft_log{name = Name} = Log, Index) ->
     true = ets:delete(Name, Index),
     trim_impl(Log, ets:prev(Name, Index)).
 
--spec flush(Log :: wa_raft_log:log()) -> term().
+-spec flush(Log :: wa_raft_log:log()) -> ok.
 flush(_Log) ->
     ok.

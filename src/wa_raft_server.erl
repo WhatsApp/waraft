@@ -3661,7 +3661,7 @@ check_follower_lagging(
 %% As leader, compute the quorum of the most recent timestamps of follower's
 %% acknowledgement of heartbeats and update the partition's staleness and
 %% liveness when necessary.
--spec check_leader_liveness(#raft_state{}) -> term().
+-spec check_leader_liveness(#raft_state{}) -> true.
 check_leader_liveness(
     #raft_state{
         application = App,
@@ -3745,7 +3745,7 @@ leader_should_send_snapshot(_, FollowerLastIndex, FollowerLastAppliedIndex, #raf
 %% service is available. If the follower is a witness or too many snapshot
 %% transports have been started then no transport is created. This function
 %% always performs this request asynchronously.
--spec request_snapshot_for_follower(Follower :: node(), State :: #raft_state{}) -> term().
+-spec request_snapshot_for_follower(Follower :: node(), State :: #raft_state{}) -> ok.
 request_snapshot_for_follower(
     FollowerId,
     #raft_state{

@@ -192,7 +192,7 @@ handle_info(Info, #state{} = State) ->
     ?RAFT_LOG_NOTICE("received unrecognized info ~P", [Info, 25]),
     {noreply, State}.
 
--spec terminate(Reason :: term(), #state{}) -> term().
+-spec terminate(Reason :: dynamic(), #state{}) -> ok.
 terminate(_Reason, #state{transports = Transports, snapshots = Snapshots}) ->
     [
         wa_raft_transport:cancel(ID, terminating)
