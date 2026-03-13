@@ -34,6 +34,7 @@
 
 -spec name(node()) -> atom().
 name(Name) ->
+    % elp:ignore W0023 bounded atom for supervisor name
     binary_to_atom(<<"raft_transport_target_sup_", (atom_to_binary(Name))/binary>>).
 
 %%% ------------------------------------------------------------------------

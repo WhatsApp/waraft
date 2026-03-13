@@ -108,6 +108,7 @@ start_link(Application, Spec) ->
 %% provided RAFT partition.
 -spec default_name(Table :: wa_raft:table(), Partition :: wa_raft:partition()) -> Name :: atom().
 default_name(Table, Partition) ->
+    % elp:ignore W0023 bounded atom for supervisor name
     list_to_atom("raft_sup_" ++ atom_to_list(Table) ++ "_" ++ integer_to_list(Partition)).
 
 %% Get the registered name for the RAFT partition supervisor associated with the

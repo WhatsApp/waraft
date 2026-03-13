@@ -145,6 +145,7 @@ stop_partition_under_application(Application, Table, Partition) ->
 
 -spec default_name(Application :: atom()) -> atom().
 default_name(Application) ->
+    % elp:ignore W0023 bounded atom for supervisor name
     list_to_atom("raft_sup_" ++ atom_to_list(Application)).
 
 -spec default_config_apps(Application :: atom()) -> [atom()].
