@@ -201,6 +201,7 @@ apply_queue_full(Table, Partition) ->
 %% provided RAFT partition.
 -spec default_name(Table :: wa_raft:table(), Partition :: wa_raft:partition()) -> Name :: atom().
 default_name(Table, Partition) ->
+    % elp:ignore W0023 bounded atom, one per table/partition at startup
     binary_to_atom(<<"raft_queue_", (atom_to_binary(Table))/bytes, "_", (integer_to_binary(Partition))/bytes>>).
 
 %% Create a properly-sized atomics array for use by a RAFT queue
@@ -212,6 +213,7 @@ default_counters() ->
 %% provided RAFT partition.
 -spec default_read_queue_name(Table :: wa_raft:table(), Partition :: wa_raft:partition()) -> Name :: atom().
 default_read_queue_name(Table, Partition) ->
+    % elp:ignore W0023 bounded atom, one per table/partition at startup
     binary_to_atom(<<"raft_read_queue_", (atom_to_binary(Table))/bytes, "_", (integer_to_binary(Partition))/bytes>>).
 
 %% Get the registered name for the RAFT queue server associated with the
