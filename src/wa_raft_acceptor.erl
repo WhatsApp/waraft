@@ -311,7 +311,7 @@ terminate(Reason, #state{name = Name}) ->
     State :: #state{}
 ) -> continue | commit_error().
 commit_impl(From, CommitOp, Priority, #state{table = Table, name = Name, server = Server, queues = Queues}) ->
-    StartT = os:timestamp(),
+    StartTUsec = erlang:monotonic_time(microsecond),
     ?RAFT_LOG_DEBUG("Acceptor[~0p] starts to handle commit of ~0P from ~0p.", [Name, CommitOp, 30, From]),
     try
         case wa_raft_queue:commit_started(Queues, Priority) of
@@ -339,13 +339,13 @@ commit_impl(From, CommitOp, Priority, #state{table = Table, name = Name, server 
                 {error, Reason}
         end
     after
-        ?RAFT_GATHER(Table, 'acceptor.commit.func', timer:now_diff(os:timestamp(), StartT))
+        ?RAFT_GATHER(Table, 'acceptor.commit.func', erlang:monotonic_time(microsecond) - StartTUsec)
     end.
 
 %% Enqueue a strongly-consistent read.
 -spec read_impl(gen_server:from(), command(), #state{}) -> continue | read_error().
 read_impl(From, Command, #state{table = Table, name = Name, server = Server, queues = Queues}) ->
-    StartT = os:timestamp(),
+    StartTUsec = erlang:monotonic_time(microsecond),
     ?RAFT_LOG_DEBUG("Acceptor[~p] starts to handle read of ~0P from ~0p.", [Name, Command, 100, From]),
     try
         case wa_raft_queue:reserve_read(Queues) of
@@ -361,5 +361,5 @@ read_impl(From, Command, #state{table = Table, name = Name, server = Server, que
                 {error, Reason}
         end
     after
-        ?RAFT_GATHER(Table, 'acceptor.strong_read.func', timer:now_diff(os:timestamp(), StartT))
+        ?RAFT_GATHER(Table, 'acceptor.strong_read.func', erlang:monotonic_time(microsecond) - StartTUsec)
     end.

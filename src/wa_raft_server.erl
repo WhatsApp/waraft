@@ -1182,7 +1182,7 @@ leader(
         first_current_term_log_index = TermStartIndex
     } = State0
 ) ->
-    StartT = os:timestamp(),
+    StartTUsec = erlang:monotonic_time(microsecond),
     ?SERVER_LOG_DEBUG(State0, "at commit index ~0p completed append to ~0p whose log now matches up to ~0p.",
         [CommitIndex, Sender, FollowerMatchIndex]),
     HeartbeatResponse1 = HeartbeatResponse0#{FollowerId => erlang:monotonic_time(millisecond)},
@@ -1203,7 +1203,7 @@ leader(
     },
     State3 = maybe_advance(State2),
     State4 = apply_log_leader(State3),
-    ?RAFT_GATHER(Table, 'leader.apply.func', timer:now_diff(os:timestamp(), StartT)),
+    ?RAFT_GATHER(Table, 'leader.apply.func', erlang:monotonic_time(microsecond) - StartTUsec),
     {keep_state, maybe_heartbeat(State4), ?HEARTBEAT_TIMEOUT(State4)};
 
 %% and failures.
@@ -2637,7 +2637,7 @@ apply_log(
         last_applied = LastApplied
     } = Data0
 ) when CommitIndex > LastApplied ->
-    StartT = os:timestamp(),
+    StartTUsec = erlang:monotonic_time(microsecond),
     case wa_raft_queue:apply_queue_full(Queues) of
         false ->
             % Apply a limited number of log entries (both count and total byte size limited)
@@ -2656,13 +2656,13 @@ apply_log(
             RotateIndex =/= infinity orelse error(bad_state),
             {ok, View2} = wa_raft_log:rotate(View1, RotateIndex),
             Data2 = Data1#raft_state{log_view = View2},
-            ?RAFT_GATHER(Table, 'apply_log.latency_us', timer:now_diff(os:timestamp(), StartT)),
+            ?RAFT_GATHER(Table, 'apply_log.latency_us', erlang:monotonic_time(microsecond) - StartTUsec),
             Data2;
         true ->
             ApplyQueueSize = wa_raft_queue:apply_queue_size(Queues),
             ?RAFT_COUNT(Table, 'apply.delay'),
             ?RAFT_GATHER(Table, 'apply.queue', ApplyQueueSize),
-            ?RAFT_GATHER(Table, 'apply_log.latency_us', timer:now_diff(os:timestamp(), StartT)),
+            ?RAFT_GATHER(Table, 'apply_log.latency_us', erlang:monotonic_time(microsecond) - StartTUsec),
             Data0
     end;
 apply_log(_, _, #raft_state{} = Data) ->
