@@ -701,14 +701,14 @@ handle_apply(
     } = State
 ) when LogIndex =:= Index + 1 ->
     ?RAFT_COUNT(Table, 'storage.apply'),
-    StartT = os:timestamp(),
+    StartTUsec = erlang:monotonic_time(microsecond),
     {Reply, NewState} = handle_command(Label, Command, LogPosition, State),
     From =/= undefined andalso wa_raft_queue:commit_completed(Queues, From, Reply, Priority),
     handle_delayed_reads(NewState),
     wa_raft_queue:apply_queue_size(Queues) =:= 0 andalso ?RAFT_STORAGE_NOTIFY_COMPLETE(Application) andalso
         wa_raft_server:notify_complete(Server),
     ?RAFT_LOG_DEBUG("Storage[~0p] finishes applying ~0p.", [Name, LogPosition]),
-    ?RAFT_GATHER(Table, 'storage.apply.func', timer:now_diff(os:timestamp(), StartT)),
+    ?RAFT_GATHER(Table, 'storage.apply.func', erlang:monotonic_time(microsecond) - StartTUsec),
     NewState;
 %% Otherwise, the apply is out of order.
 handle_apply(_From, LogPosition, _Label, _Command, _Priority, #state{name = Name, position = Position}) ->
