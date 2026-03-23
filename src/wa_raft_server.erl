@@ -784,9 +784,13 @@ callback_mode() ->
     [state_functions, state_enter].
 
 -spec terminate(Reason :: term(), State :: state(), Data :: #raft_state{}) -> ok.
-terminate(Reason, State, #raft_state{name = Name, table = Table, partition = Partition} = Data) ->
-    ?SERVER_LOG_NOTICE(State, Data, "terminating due to ~0P", [Reason, 20]),
-    wa_raft_durable_state:sync(Data),
+terminate(Reason, State, #raft_state{name = Name, table = Table, partition = Partition, handover = Handover} = Data0) ->
+    ?SERVER_LOG_NOTICE(State, Data0, "terminating due to ~0P", [Reason, 20]),
+    case Handover of
+        {Peer, _, _} -> cancel_pending_and_queued({error, {notify_redirect, Peer}}, Data0);
+        undefined    -> cancel_pending_and_queued({error, not_leader}, Data0)
+    end,
+    wa_raft_durable_state:sync(Data0),
     wa_raft_info:delete_state(Table, Partition),
     wa_raft_info:set_live(Table, Partition, false),
     wa_raft_info:set_stale(Table, Partition, true),
@@ -2923,6 +2927,13 @@ cancel_pending(Reason, #raft_state{queues = Queues, pending_high = PendingHigh, 
     [wa_raft_queue:commit_cancelled(Queues, From, Reason, high) || {From, _Op} <- lists:reverse(PendingHigh)],
     [wa_raft_queue:commit_cancelled(Queues, From, Reason, low) || {From, _Op} <- lists:reverse(PendingLow)],
     Data#raft_state{pending_high = [], pending_low = []}.
+
+%% Cancel all pending and queued commits with the given error reason.
+-spec cancel_pending_and_queued(Reason :: wa_raft_acceptor:commit_error(), Data :: #raft_state{}) -> #raft_state{}.
+cancel_pending_and_queued(Reason, #raft_state{queues = Queues, queued = Queued} = Data) ->
+    NewData = cancel_pending(Reason, Data),
+    [wa_raft_queue:commit_cancelled(Queues, From, Reason, Priority) || _ := {From, Priority} <- maps:iterator(Queued, ordered)],
+    NewData#raft_state{queued = #{}}.
 
 -spec heartbeat(Peer :: #raft_identity{}, State :: #raft_state{}) -> #raft_state{}.
 heartbeat(Self, #raft_state{self = Self} = Data) ->
