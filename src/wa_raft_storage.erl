@@ -705,7 +705,7 @@ handle_apply(
     {Reply, NewState} = handle_command(Label, Command, LogPosition, State),
     From =/= undefined andalso wa_raft_queue:commit_completed(Queues, From, Reply, Priority),
     handle_delayed_reads(NewState),
-    wa_raft_queue:apply_queue_size(Queues) =:= 0 andalso ?RAFT_STORAGE_NOTIFY_COMPLETE(Application) andalso
+    wa_raft_queue:apply_queue_size(Queues) =:= 0 andalso ?RAFT_STORAGE_NOTIFY_COMPLETE(Application, Table) andalso
         wa_raft_server:notify_complete(Server),
     ?RAFT_LOG_DEBUG("Storage[~0p] finishes applying ~0p.", [Name, LogPosition]),
     ?RAFT_GATHER(Table, 'storage.apply.func', erlang:monotonic_time(microsecond) - StartTUsec),
@@ -731,8 +731,8 @@ handle_command(_Label, {config, Config}, Position, #state{name = Name, module = 
             {Other, H} -> {Other, H}
         end,
     {Reply, refresh_config(State#state{handle = NewHandle, position = Position})};
-handle_command(Label, _Command, Position, #state{application = Application, witness = true, skipped = Skipped} = State) ->
-    case Skipped >= ?RAFT_STORAGE_WITNESS_APPLY_INTERVAL(Application) of
+handle_command(Label, _Command, Position, #state{application = Application, table = Table, witness = true, skipped = Skipped} = State) ->
+    case Skipped >= ?RAFT_STORAGE_WITNESS_APPLY_INTERVAL(Application, Table) of
         true ->
             {Reply, NewState} = handle_command_impl(Label, noop_omitted, Position, State),
             {Reply, NewState#state{skipped = 0}};

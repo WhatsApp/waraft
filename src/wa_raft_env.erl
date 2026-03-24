@@ -18,7 +18,9 @@
 %% Internal API
 -export([
     get_env/2,
-    get_env/3
+    get_env/3,
+    get_table_env/3,
+    get_table_env/4
 ]).
 
 -type scope() :: Application :: atom() | {Table :: wa_raft:table(), Partition :: wa_raft:partition()} | SearchApps :: [atom()].
@@ -59,6 +61,40 @@ get_env_impl([App | SearchApps], Key, FallbackKey) ->
     case application:get_env(App, Key) of
         {ok, Value} -> {ok, Value};
         undefined   -> get_env_impl(SearchApps, Key, FallbackKey)
+    end.
+
+-doc """
+Get a configuration value with table-level overrides.
+
+Table-level configuration is supported by storing the value as a tagged tuple:
+  `{table_overrides, #{Table => Value}, AppDefault}`
+When this format is found, the table is looked up in the map first.
+If the table is not in the map, AppDefault is used. If the value is a plain
+(untagged) term, it is used directly as the app-level value for all tables.
+""".
+-spec get_table_env(Scope :: scope(), Table :: wa_raft:table(), Key :: key()) -> {ok, Value :: dynamic()} | undefined.
+get_table_env(Scope, Table, Key) ->
+    get_table_env_impl(search_apps(Scope), Table, key(Key), fallback(Key)).
+
+-spec get_table_env(Scope :: scope(), Table :: wa_raft:table(), Key :: key(), Default :: Value) -> Value.
+get_table_env(Scope, Table, Key, Default) ->
+    case get_table_env(Scope, Table, Key) of
+        {ok, Value} -> Value;
+        undefined   -> Default
+    end.
+
+-spec get_table_env_impl(SearchApps :: [atom()], Table :: wa_raft:table(), Key :: atom(), FallbackKey :: atom()) ->
+    {ok, Value :: dynamic()} | undefined.
+get_table_env_impl([], _Table, _Key, FallbackKey) ->
+    ?RAFT_CONFIG(FallbackKey);
+get_table_env_impl([App | SearchApps], Table, Key, FallbackKey) ->
+    case application:get_env(App, Key) of
+        {ok, {table_overrides, TableOverrides, AppDefault}} ->
+            {ok, maps:get(Table, TableOverrides, AppDefault)};
+        {ok, Value} ->
+            {ok, Value};
+        undefined ->
+            get_table_env_impl(SearchApps, Table, Key, FallbackKey)
     end.
 
 -spec search_apps(Scope :: scope()) -> SearchApps :: [atom()].

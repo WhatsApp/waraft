@@ -147,10 +147,10 @@ commit_queue_size(Table, Partition, Priority) ->
     end.
 
 -spec commit_queue_full(Queues :: queues(), Priority :: wa_raft_acceptor:priority()) -> boolean().
-commit_queue_full(#queues{application = App, counters = Counters}, high) ->
-    atomics:get(Counters, ?RAFT_HIGH_PRIORITY_COMMIT_QUEUE_SIZE_COUNTER) >= ?RAFT_MAX_PENDING_HIGH_PRIORITY_COMMITS(App);
-commit_queue_full(#queues{application = App, counters = Counters}, low) ->
-    atomics:get(Counters, ?RAFT_LOW_PRIORITY_COMMIT_QUEUE_SIZE_COUNTER) >= ?RAFT_MAX_PENDING_LOW_PRIORITY_COMMITS(App).
+commit_queue_full(#queues{application = App, table = Table, counters = Counters}, high) ->
+    atomics:get(Counters, ?RAFT_HIGH_PRIORITY_COMMIT_QUEUE_SIZE_COUNTER) >= ?RAFT_MAX_PENDING_HIGH_PRIORITY_COMMITS(App, Table);
+commit_queue_full(#queues{application = App, table = Table, counters = Counters}, low) ->
+    atomics:get(Counters, ?RAFT_LOW_PRIORITY_COMMIT_QUEUE_SIZE_COUNTER) >= ?RAFT_MAX_PENDING_LOW_PRIORITY_COMMITS(App, Table).
 
 -spec commit_queue_full(Table :: wa_raft:table(), Partition :: wa_raft:partition(), Priority :: wa_raft_acceptor:priority()) -> boolean().
 commit_queue_full(Table, Partition, Priority) ->
@@ -182,9 +182,9 @@ apply_queue_byte_size(Table, Partition) ->
     end.
 
 -spec apply_queue_full(Queues :: queues()) -> boolean().
-apply_queue_full(#queues{application = App, counters = Counters}) ->
-    atomics:get(Counters, ?RAFT_APPLY_QUEUE_SIZE_COUNTER) >= ?RAFT_MAX_PENDING_APPLIES(App) orelse
-        atomics:get(Counters, ?RAFT_APPLY_QUEUE_BYTE_SIZE_COUNTER) >= ?RAFT_MAX_PENDING_APPLY_BYTES(App).
+apply_queue_full(#queues{application = App, table = Table, counters = Counters}) ->
+    atomics:get(Counters, ?RAFT_APPLY_QUEUE_SIZE_COUNTER) >= ?RAFT_MAX_PENDING_APPLIES(App, Table) orelse
+        atomics:get(Counters, ?RAFT_APPLY_QUEUE_BYTE_SIZE_COUNTER) >= ?RAFT_MAX_PENDING_APPLY_BYTES(App, Table).
 
 -spec apply_queue_full(wa_raft:table(), wa_raft:partition()) -> boolean().
 apply_queue_full(Table, Partition) ->
@@ -288,10 +288,10 @@ commit_completed(#queues{counters = Counters}, From, Reply, Priority) ->
 -spec reserve_read(Queues :: queues()) -> ok | read_queue_full | apply_queue_full.
 reserve_read(#queues{application = App, table = Table, counters = Counters}) ->
     PendingReads = atomics:get(Counters, ?RAFT_READ_QUEUE_SIZE_COUNTER),
-    case PendingReads >= ?RAFT_MAX_PENDING_READS(App) of
+    case PendingReads >= ?RAFT_MAX_PENDING_READS(App, Table) of
         true -> read_queue_full;
         false ->
-            case atomics:get(Counters, ?RAFT_APPLY_QUEUE_SIZE_COUNTER) >= ?RAFT_MAX_PENDING_APPLIES(App) of
+            case atomics:get(Counters, ?RAFT_APPLY_QUEUE_SIZE_COUNTER) >= ?RAFT_MAX_PENDING_APPLIES(App, Table) of
                 true -> apply_queue_full;
                 false ->
                     ?RAFT_GATHER(Table, 'acceptor.strong_read.request.pending', PendingReads + 1),

@@ -183,9 +183,9 @@
 -define(ELECTION_TIMEOUT(State), {state_timeout, random_election_timeout(State), election}).
 
 %% Timeout in milliseconds before the next heartbeat is to be sent by a RAFT leader with no pending log entries
--define(HEARTBEAT_TIMEOUT(State),    {state_timeout, ?RAFT_HEARTBEAT_INTERVAL(State#raft_state.application), heartbeat}).
+-define(HEARTBEAT_TIMEOUT(State),    {state_timeout, ?RAFT_HEARTBEAT_INTERVAL(State#raft_state.application, State#raft_state.table), heartbeat}).
 %% Timeout in milliseconds before the next heartbeat is to be sent by a RAFT leader with pending log entries
--define(COMMIT_BATCH_TIMEOUT(State), {state_timeout, ?RAFT_COMMIT_BATCH_INTERVAL(State#raft_state.application), batch_commit}).
+-define(COMMIT_BATCH_TIMEOUT(State), {state_timeout, ?RAFT_COMMIT_BATCH_INTERVAL(State#raft_state.application, State#raft_state.table), batch_commit}).
 
 %%------------------------------------------------------------------------------
 
@@ -873,7 +873,7 @@ handle_rpc_impl(_, _, Key, Term, Sender, _, State, #raft_state{current_term = Cu
 %%                   a heartbeat. (4.2.3)
 handle_rpc_impl(Type, Event, ?REQUEST_VOTE, Term, Sender, Payload, State,
                 #raft_state{application = App, table = Table, leader_heartbeat_ts = LeaderHeartbeatTs} = Data) when is_tuple(Payload), element(1, Payload) =:= normal ->
-    AllowedDelay = ?RAFT_ELECTION_TIMEOUT_MIN(App) div 2,
+    AllowedDelay = ?RAFT_ELECTION_TIMEOUT_MIN(App, Table) div 2,
     Delay = case LeaderHeartbeatTs of
         undefined -> infinity;
         _         -> erlang:monotonic_time(millisecond) - LeaderHeartbeatTs
@@ -1336,7 +1336,7 @@ leader(
     end,
     State2 = apply_single_node_cluster(State1),
     PendingCount = length(State2#raft_state.pending_high) + length(State2#raft_state.pending_low),
-    case ?RAFT_COMMIT_BATCH_INTERVAL(App) > 0 andalso PendingCount =< ?RAFT_COMMIT_BATCH_MAX_ENTRIES(App) of
+    case ?RAFT_COMMIT_BATCH_INTERVAL(App, Table) > 0 andalso PendingCount =< ?RAFT_COMMIT_BATCH_MAX_ENTRIES(App, Table) of
         true ->
             ?RAFT_COUNT(Table, 'commit.batch.delay'),
             {keep_state, State2, ?COMMIT_BATCH_TIMEOUT(State2)};
@@ -1474,8 +1474,8 @@ leader(
             FirstIndex = wa_raft_log:first_index(View),
             PeerSendIndex = max(PeerMatchIndex + 1, FirstIndex + 1),
             LastIndex = wa_raft_log:last_index(View),
-            MaxHandoverBatchSize = ?RAFT_HANDOVER_MAX_ENTRIES(App),
-            MaxHandoverBytes = ?RAFT_HANDOVER_MAX_BYTES(App),
+            MaxHandoverBatchSize = ?RAFT_HANDOVER_MAX_ENTRIES(App, Table),
+            MaxHandoverBytes = ?RAFT_HANDOVER_MAX_BYTES(App, Table),
 
             case LastIndex - PeerSendIndex =< MaxHandoverBatchSize of
                 true ->
@@ -1492,7 +1492,7 @@ leader(
                     case PrevLogIndex + length(LogEntries) of
                         LastIndex ->
                             Ref = make_ref(),
-                            Timeout = erlang:monotonic_time(millisecond) + ?RAFT_HANDOVER_TIMEOUT(App),
+                            Timeout = erlang:monotonic_time(millisecond) + ?RAFT_HANDOVER_TIMEOUT(App, Table),
                             State1 = State0#raft_state{handover = {Peer, Ref, Timeout}},
                             send_rpc(?IDENTITY_REQUIRES_MIGRATION(Name, Peer), ?HANDOVER(Ref, PrevLogIndex, PrevLogTerm, LogEntries), State1),
                             reply(Type, {ok, Peer}),
@@ -2137,6 +2137,7 @@ command(
     ?PROMOTE_COMMAND(TermOrOffset, Force),
     #raft_state{
         application = App,
+        table = Table,
         current_term = CurrentTerm,
         leader_heartbeat_ts = HeartbeatTs,
         leader_id = LeaderId
@@ -2144,7 +2145,7 @@ command(
 ) when State =/= stalled, State =/= witness, State =/= disabled ->
     Now = erlang:monotonic_time(millisecond),
     Eligible = ?RAFT_LEADER_ELIGIBLE(App),
-    HeartbeatGracePeriodMs = ?RAFT_PROMOTION_GRACE_PERIOD(App) * 1000,
+    HeartbeatGracePeriodMs = ?RAFT_PROMOTION_GRACE_PERIOD(App, Table) * 1000,
     Term = case TermOrOffset of
         current -> CurrentTerm;
         next -> CurrentTerm + 1;
@@ -2484,9 +2485,9 @@ maybe_update_config(_, _, _, #raft_state{} = State) ->
 %%------------------------------------------------------------------------------
 
 -spec random_election_timeout(#raft_state{}) -> non_neg_integer().
-random_election_timeout(#raft_state{application = App}) ->
-    Max = ?RAFT_ELECTION_TIMEOUT_MAX(App),
-    Min = ?RAFT_ELECTION_TIMEOUT_MIN(App),
+random_election_timeout(#raft_state{application = App, table = Table}) ->
+    Max = ?RAFT_ELECTION_TIMEOUT_MAX(App, Table),
+    Min = ?RAFT_ELECTION_TIMEOUT_MIN(App, Table),
     Timeout =
         case Max > Min of
             true -> Min + rand:uniform(Max - Min);
@@ -2659,8 +2660,8 @@ apply_log(
     case wa_raft_queue:apply_queue_full(Queues) of
         false ->
             % Apply a limited number of log entries (both count and total byte size limited)
-            LimitedIndex = min(CommitIndex, LastApplied + ?RAFT_MAX_CONSECUTIVE_APPLY_ENTRIES(App)),
-            LimitBytes = ?RAFT_MAX_CONSECUTIVE_APPLY_BYTES(App),
+            LimitedIndex = min(CommitIndex, LastApplied + ?RAFT_MAX_CONSECUTIVE_APPLY_ENTRIES(App, Table)),
+            LimitBytes = ?RAFT_MAX_CONSECUTIVE_APPLY_BYTES(App, Table),
             {ok, {_, #raft_state{log_view = View1, last_applied = NewLastApplied} = Data1}} = wa_raft_log:fold(View, LastApplied + 1, LimitedIndex, LimitBytes,
                 fun (Index, Size, Entry, {Index, AccData}) ->
                     wa_raft_queue:reserve_apply(Queues, Size),
@@ -2669,7 +2670,7 @@ apply_log(
 
             % Perform log trimming since we've now applied some log entries, only keeping
             % at maximum MaxRotateDelay log entries.
-            MaxRotateDelay = ?RAFT_MAX_RETAINED_ENTRIES(App),
+            MaxRotateDelay = ?RAFT_MAX_RETAINED_ENTRIES(App, Table),
             RotateIndex = max(LimitedIndex - MaxRotateDelay, min(NewLastApplied, TrimIndex)),
             RotateIndex =/= infinity orelse error(bad_state),
             {ok, View2} = wa_raft_log:rotate(View1, RotateIndex),
@@ -2993,8 +2994,8 @@ heartbeat(
                 ?RAFT_GATHER(Table, 'leader.heartbeat.interval_ms', erlang:monotonic_time(millisecond) - LastFollowerHeartbeatTs),
             State1;
         _ ->
-            MaxLogEntries = ?RAFT_HEARTBEAT_MAX_ENTRIES(App),
-            MaxHeartbeatSize = ?RAFT_HEARTBEAT_MAX_BYTES(App),
+            MaxLogEntries = ?RAFT_HEARTBEAT_MAX_ENTRIES(App, Table),
+            MaxHeartbeatSize = ?RAFT_HEARTBEAT_MAX_BYTES(App, Table),
             Witnesses = config_witnesses(config(State0)),
             Entries = case lists:member({Name, FollowerId}, Witnesses) of
                 true ->
@@ -3048,14 +3049,14 @@ stub_command({config, _} = ConfigCmd) -> ConfigCmd;
 stub_command(_) -> noop_omitted.
 
 -spec get_handover_eligibility_match_cutoff(State :: #raft_state{}) -> wa_raft_log:log_index().
-get_handover_eligibility_match_cutoff(#raft_state{application = App, log_view = View}) ->
-    wa_raft_log:last_index(View) - ?RAFT_HANDOVER_MAX_ENTRIES(App).
+get_handover_eligibility_match_cutoff(#raft_state{application = App, table = Table, log_view = View}) ->
+    wa_raft_log:last_index(View) - ?RAFT_HANDOVER_MAX_ENTRIES(App, Table).
 
 -spec get_handover_eligibility_apply_cutoff(State :: #raft_state{}) -> wa_raft_log:log_index().
-get_handover_eligibility_apply_cutoff(#raft_state{application = App, log_view = View}) ->
+get_handover_eligibility_apply_cutoff(#raft_state{application = App, table = Table, log_view = View}) ->
     LastIndex = wa_raft_log:last_index(View),
-    case ?RAFT_HANDOVER_MAX_UNAPPLIED_ENTRIES(App) of
-        undefined -> LastIndex - ?RAFT_HANDOVER_MAX_ENTRIES(App);
+    case ?RAFT_HANDOVER_MAX_UNAPPLIED_ENTRIES(App, Table) of
+        undefined -> LastIndex - ?RAFT_HANDOVER_MAX_ENTRIES(App, Table);
         Limit -> LastIndex - Limit
     end.
 
@@ -3325,7 +3326,7 @@ handle_heartbeat(
             Data2 = Data1#raft_state{leader_heartbeat_ts = erlang:monotonic_time(millisecond)},
             Data3 = case Accepted of
                 true ->
-                    LocalTrimIndex = case ?RAFT_LOG_ROTATION_BY_TRIM_INDEX(App) of
+                    LocalTrimIndex = case ?RAFT_LOG_ROTATION_BY_TRIM_INDEX(App, Table) of
                         true  -> TrimIndex;
                         false -> infinity
                     end,
@@ -3601,10 +3602,10 @@ maybe_heartbeat(#raft_state{table = Table} = State) ->
 -spec should_heartbeat(#raft_state{}) -> boolean().
 should_heartbeat(#raft_state{handover = Handover}) when Handover =/= undefined ->
     false;
-should_heartbeat(#raft_state{application = App, last_heartbeat_ts = LastHeartbeatTs}) ->
+should_heartbeat(#raft_state{application = App, table = Table, last_heartbeat_ts = LastHeartbeatTs}) ->
     Latest = lists:max(maps:values(LastHeartbeatTs)),
     Current = erlang:monotonic_time(millisecond),
-    Current - Latest > ?RAFT_HEARTBEAT_INTERVAL(App).
+    Current - Latest > ?RAFT_HEARTBEAT_INTERVAL(App, Table).
 
 -spec refresh_follower_liveness(State :: state(), Data :: #raft_state{}) -> ok.
 refresh_follower_liveness(State, #raft_state{table = Table, partition = Partition} = Data) ->
@@ -3631,7 +3632,7 @@ check_follower_liveness(
     } = Data
 ) ->
     NowTs = erlang:monotonic_time(millisecond),
-    GracePeriod = ?RAFT_LIVENESS_GRACE_PERIOD_MS(App),
+    GracePeriod = ?RAFT_LIVENESS_GRACE_PERIOD_MS(App, Table),
     Liveness = wa_raft_info:get_live(Table, Partition),
     Live = LeaderHeartbeatTs =/= undefined andalso LeaderHeartbeatTs + GracePeriod >= NowTs,
     case Live of
@@ -3672,7 +3673,7 @@ check_follower_lagging(
     % Witnesses are always considered stale and so do not re-check their staleness.
     State =/= witness andalso begin
         Stale = wa_raft_info:get_stale(Table, Partition),
-        case Lagging >= ?RAFT_STALE_GRACE_PERIOD_ENTRIES(App) of
+        case Lagging >= ?RAFT_STALE_GRACE_PERIOD_ENTRIES(App, Table) of
             Stale ->
                 ok;
             true ->
@@ -3707,7 +3708,7 @@ check_leader_liveness(
     % If the quorum of the most recent timestamps of follower's acknowledgement
     % of heartbeats is too old, then the leader is considered stale.
     QuorumAge = NowTs - QuorumTs,
-    MaxAge = ?RAFT_LEADER_STALE_INTERVAL(App),
+    MaxAge = ?RAFT_LEADER_STALE_INTERVAL(App, Table),
     ShouldBeStale = QuorumAge >= MaxAge,
     ShouldBeLive = not ShouldBeStale,
 
@@ -3767,8 +3768,8 @@ leader_should_send_snapshot(FirstIndex, FollowerLastIndex, _, _) when FirstIndex
     true;
 leader_should_send_snapshot(_, _, undefined, _) ->
     false;
-leader_should_send_snapshot(_, FollowerLastIndex, FollowerLastAppliedIndex, #raft_state{application = App}) ->
-    SnapshotCatchupThreshold = ?RAFT_SNAPSHOT_CATCHUP_THRESHOLD(App),
+leader_should_send_snapshot(_, FollowerLastIndex, FollowerLastAppliedIndex, #raft_state{application = App, table = Table}) ->
+    SnapshotCatchupThreshold = ?RAFT_SNAPSHOT_CATCHUP_THRESHOLD(App, Table),
     FollowerLastIndex - FollowerLastAppliedIndex > SnapshotCatchupThreshold.
 
 %% Try to start a snapshot transport to a follower if the snapshot transport

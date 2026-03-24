@@ -676,10 +676,11 @@ entries(LogOrView, First, Count) ->
 ) -> {ok, Entries :: [log_entry() | binary()]} | {error, term()}.
 entries(LogOrView, Start, CountLimit, SizeLimit) ->
     App = app(LogOrView),
+    Table = table(LogOrView),
     Provider = provider(LogOrView),
     End = Start + CountLimit - 1,
     try
-        case erlang:function_exported(Provider, fold_binary, 6) andalso ?RAFT_LOG_HEARTBEAT_BINARY_ENTRIES(App) of
+        case erlang:function_exported(Provider, fold_binary, 6) andalso ?RAFT_LOG_HEARTBEAT_BINARY_ENTRIES(App, Table) of
             true -> fold_binary(LogOrView, Start, End, SizeLimit, fun entries_method/3, {Start, []});
             false -> fold(LogOrView, Start, End, SizeLimit, fun entries_method/3, {Start, []})
         end
@@ -757,14 +758,14 @@ trim(#log_view{log = Log, first = First} = View, Index) ->
 %% Perform a batched trimming (rotate) of the underlying log according
 %% to application environment configuration values.
 -spec rotate(View :: view(), Index :: log_index()) -> {ok, NewView :: view()}.
-rotate(#log_view{log = #raft_log{application = App}} = View, Index) ->
+rotate(#log_view{log = #raft_log{application = App, table = Table}} = View, Index) ->
     % Current rotation configuration is based on two configuration values,
     % 'raft_max_log_records_per_file' which indicates after how many outstanding extra
     % log entries are in the log should we trim and 'raft_max_log_records' which
     % indicates how many additional log entries after the fully replicated index should
     % be considered not extraneous and be kept by rotation.
-    Interval = ?RAFT_LOG_ROTATION_INTERVAL(App),
-    Keep = ?RAFT_LOG_ROTATION_KEEP(App, Interval),
+    Interval = ?RAFT_LOG_ROTATION_INTERVAL(App, Table),
+    Keep = ?RAFT_LOG_ROTATION_KEEP(App, Table, Interval),
     rotate(View, Index, Interval, Keep).
 
 %% Perform a batched trimming (rotate) of the underlying log where
@@ -808,6 +809,10 @@ registered_name(Table, Partition) ->
 -spec app(LogOrView :: log() | view()) -> App :: atom().
 app(LogOrView) ->
     (log(LogOrView))#raft_log.application.
+
+-spec table(LogOrView :: log() | view()) -> Table :: wa_raft:table().
+table(LogOrView) ->
+    (log(LogOrView))#raft_log.table.
 
 -spec log(LogOrView :: log() | view()) -> Log :: log().
 log(#log_view{log = Log}) ->

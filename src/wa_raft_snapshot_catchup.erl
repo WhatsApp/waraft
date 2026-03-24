@@ -149,7 +149,7 @@ handle_cast(?CATCHUP(App, Name, Node, Table, Partition, Witness), State0) ->
                             "destination node ~0p is overloaded, abort new transport for ~0p:~0p and try again later",
                             [Node, Table, Partition]
                         ),
-                        NewOverloadBackoff = Now + ?RAFT_SNAPSHOT_CATCHUP_OVERLOADED_BACKOFF_MS(App),
+                        NewOverloadBackoff = Now + ?RAFT_SNAPSHOT_CATCHUP_OVERLOADED_BACKOFF_MS(App, Table),
                         NewOverloadBackoffs = OverloadBackoffs#{Node => NewOverloadBackoff},
                         {noreply, State1#state{overload_backoffs = NewOverloadBackoffs}};
                     {ok, ID} ->
@@ -223,7 +223,7 @@ allowed(Now, Name, Node, #state{transports = Transports, overload_backoffs = Ove
     {Allowed, State2}.
 
 -spec scan_transport(Key :: key(), Transport :: #transport{}, #state{}) -> #state{}.
-scan_transport(Key, #transport{app = App, id = ID} = Transport, State) ->
+scan_transport(Key, #transport{app = App, table = Table, id = ID} = Transport, State) ->
     Status = case wa_raft_transport:transport_info(ID) of
         {ok, #{status := S}} -> S;
         _                    -> undefined
@@ -234,9 +234,9 @@ scan_transport(Key, #transport{app = App, id = ID} = Transport, State) ->
         running ->
             State;
         completed ->
-            finish_transport(Key, Transport, ?RAFT_SNAPSHOT_CATCHUP_COMPLETED_BACKOFF_MS(App), State);
+            finish_transport(Key, Transport, ?RAFT_SNAPSHOT_CATCHUP_COMPLETED_BACKOFF_MS(App, Table), State);
         _Other ->
-            finish_transport(Key, Transport, ?RAFT_SNAPSHOT_CATCHUP_FAILED_BACKOFF_MS(App), State)
+            finish_transport(Key, Transport, ?RAFT_SNAPSHOT_CATCHUP_FAILED_BACKOFF_MS(App, Table), State)
     end.
 
 -spec finish_transport(Key :: key(), Transport :: #transport{}, Backoff :: pos_integer(), State :: #state{}) -> #state{}.

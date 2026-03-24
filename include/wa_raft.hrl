@@ -126,101 +126,117 @@
 -define(RAFT_DIST_TRANSPORT_MAX_INFLIGHT(), ?RAFT_CONFIG(dist_transport_max_inflight, 4)).
 
 %%-------------------------------------------------------------------
-%% Application-specific Configuration
+%% Configuration
 %%-------------------------------------------------------------------
 
 %% Get application-scoped config
 -define(RAFT_APP_CONFIG(App, Name, Default), (wa_raft_env:get_env(App, Name, Default))).
 
-%% Maximum number of pending applies for any single RAFT partition
--define(RAFT_MAX_PENDING_APPLIES, raft_max_pending_applies).
--define(RAFT_MAX_PENDING_APPLIES(App), ?RAFT_APP_CONFIG(App, {?RAFT_MAX_PENDING_APPLIES, raft_apply_queue_max_size}, 1000)).
-%% Maximum bytes of pending applies for any single RAFT partition
--define(RAFT_MAX_PENDING_APPLY_BYTES, raft_max_pending_apply_bytes).
--define(RAFT_MAX_PENDING_APPLY_BYTES(App), ?RAFT_APP_CONFIG(App, ?RAFT_MAX_PENDING_APPLY_BYTES, 32_000_000)).
-%% Maximum number of pending high priority commits for any single RAFT partition
--define(RAFT_MAX_PENDING_HIGH_PRIORITY_COMMITS, raft_max_pending_high_priority_commits).
--define(RAFT_MAX_PENDING_HIGH_PRIORITY_COMMITS(App), ?RAFT_APP_CONFIG(App, ?RAFT_MAX_PENDING_HIGH_PRIORITY_COMMITS, 1500)).
-%% Maximum number of pending low priority commits for any single RAFT partition
--define(RAFT_MAX_PENDING_LOW_PRIORITY_COMMITS, raft_max_pending_low_priority_commits).
--define(RAFT_MAX_PENDING_LOW_PRIORITY_COMMITS(App), ?RAFT_APP_CONFIG(App, ?RAFT_MAX_PENDING_LOW_PRIORITY_COMMITS, 250)).
-%% Maximum number of pending reads for any single RAFT partition
--define(RAFT_MAX_PENDING_READS, raft_max_pending_reads).
--define(RAFT_MAX_PENDING_READS(App), ?RAFT_APP_CONFIG(App, ?RAFT_MAX_PENDING_READS, 5000)).
+%% Get table-scoped config (supports {table_overrides, #{Table => Value}, AppDefault})
+-define(RAFT_TABLE_CONFIG(App, Table, Name, Default), (wa_raft_env:get_table_env(App, Table, Name, Default))).
+
+%%-------------------------------------------------------------------
+%% Application-scoped Configuration
+%%-------------------------------------------------------------------
 
 %% Whether or not this node is eligible to be leader.
 -define(RAFT_LEADER_ELIGIBLE, raft_leader_eligible).
 -define(RAFT_LEADER_ELIGIBLE(App), (?RAFT_APP_CONFIG(App, ?RAFT_LEADER_ELIGIBLE, true) =/= false)).
-%% Time in milliseconds during which a leader was unable to replicate heartbeats to a
-%% quorum of followers before considering the leader to be stale.
--define(RAFT_LEADER_STALE_INTERVAL, raft_max_heartbeat_age_msecs).
--define(RAFT_LEADER_STALE_INTERVAL(App), ?RAFT_APP_CONFIG(App, ?RAFT_LEADER_STALE_INTERVAL, 180 * 1000)).
 %% Relative "weight" at which this node will trigger elections and thereby be elected.
 -define(RAFT_ELECTION_WEIGHT, raft_election_weight).
 -define(RAFT_ELECTION_WEIGHT(App), ?RAFT_APP_CONFIG(App, ?RAFT_ELECTION_WEIGHT, ?RAFT_ELECTION_DEFAULT_WEIGHT)).
+
+%% Time in seconds to retain transport destination directories after use
+-define(RAFT_TRANSPORT_RETAIN_INTERVAL, transport_retain_min_secs).
+-define(RAFT_TRANSPORT_RETAIN_INTERVAL(App), ?RAFT_APP_CONFIG(App, ?RAFT_TRANSPORT_RETAIN_INTERVAL, 300)).
+
+%%-------------------------------------------------------------------
+%% Table-scoped Configuration
+%%-------------------------------------------------------------------
+
+%% Maximum number of pending applies for any single RAFT partition
+-define(RAFT_MAX_PENDING_APPLIES, raft_max_pending_applies).
+-define(RAFT_MAX_PENDING_APPLIES(App, Table), ?RAFT_TABLE_CONFIG(App, Table, {?RAFT_MAX_PENDING_APPLIES, raft_apply_queue_max_size}, 1000)).
+%% Maximum bytes of pending applies for any single RAFT partition
+-define(RAFT_MAX_PENDING_APPLY_BYTES, raft_max_pending_apply_bytes).
+-define(RAFT_MAX_PENDING_APPLY_BYTES(App, Table), ?RAFT_TABLE_CONFIG(App, Table, ?RAFT_MAX_PENDING_APPLY_BYTES, 32_000_000)).
+%% Maximum number of pending high priority commits for any single RAFT partition
+-define(RAFT_MAX_PENDING_HIGH_PRIORITY_COMMITS, raft_max_pending_high_priority_commits).
+-define(RAFT_MAX_PENDING_HIGH_PRIORITY_COMMITS(App, Table), ?RAFT_TABLE_CONFIG(App, Table, ?RAFT_MAX_PENDING_HIGH_PRIORITY_COMMITS, 1500)).
+%% Maximum number of pending low priority commits for any single RAFT partition
+-define(RAFT_MAX_PENDING_LOW_PRIORITY_COMMITS, raft_max_pending_low_priority_commits).
+-define(RAFT_MAX_PENDING_LOW_PRIORITY_COMMITS(App, Table), ?RAFT_TABLE_CONFIG(App, Table, ?RAFT_MAX_PENDING_LOW_PRIORITY_COMMITS, 250)).
+%% Maximum number of pending reads for any single RAFT partition
+-define(RAFT_MAX_PENDING_READS, raft_max_pending_reads).
+-define(RAFT_MAX_PENDING_READS(App, Table), ?RAFT_TABLE_CONFIG(App, Table, ?RAFT_MAX_PENDING_READS, 5000)).
+
+%% Time in milliseconds during which a leader was unable to replicate heartbeats to a
+%% quorum of followers before considering the leader to be stale.
+-define(RAFT_LEADER_STALE_INTERVAL, raft_max_heartbeat_age_msecs).
+-define(RAFT_LEADER_STALE_INTERVAL(App, Table), ?RAFT_TABLE_CONFIG(App, Table, ?RAFT_LEADER_STALE_INTERVAL, 180 * 1000)).
 %% Interval in milliseconds between heartbeats sent by RAFT leaders with no pending log entries
 -define(RAFT_HEARTBEAT_INTERVAL, raft_heartbeat_interval_ms).
--define(RAFT_HEARTBEAT_INTERVAL(App), ?RAFT_APP_CONFIG(App, ?RAFT_HEARTBEAT_INTERVAL, 120)).
+-define(RAFT_HEARTBEAT_INTERVAL(App, Table), ?RAFT_TABLE_CONFIG(App, Table, ?RAFT_HEARTBEAT_INTERVAL, 120)).
 %% Maximum number of log entries to include in a single heartbeat
 -define(RAFT_HEARTBEAT_MAX_ENTRIES, raft_max_log_entries_per_heartbeat).
--define(RAFT_HEARTBEAT_MAX_ENTRIES(App), ?RAFT_APP_CONFIG(App, ?RAFT_HEARTBEAT_MAX_ENTRIES, 15)).
+-define(RAFT_HEARTBEAT_MAX_ENTRIES(App, Table), ?RAFT_TABLE_CONFIG(App, Table, ?RAFT_HEARTBEAT_MAX_ENTRIES, 15)).
 %% Maximum bytes of log entries to include in a single heartbeat
 -define(RAFT_HEARTBEAT_MAX_BYTES, raft_max_heartbeat_size).
--define(RAFT_HEARTBEAT_MAX_BYTES(App), ?RAFT_APP_CONFIG(App, ?RAFT_HEARTBEAT_MAX_BYTES, 1 * 1024 * 1024)).
+-define(RAFT_HEARTBEAT_MAX_BYTES(App, Table), ?RAFT_TABLE_CONFIG(App, Table, ?RAFT_HEARTBEAT_MAX_BYTES, 1 * 1024 * 1024)).
 %% Time in milliseconds to wait to collect pending log entries into a single heartbeat before
 %% triggering a heartbeat due to having pending log entries
 -define(RAFT_COMMIT_BATCH_INTERVAL, raft_commit_batch_interval_ms).
--define(RAFT_COMMIT_BATCH_INTERVAL(App), ?RAFT_APP_CONFIG(App, ?RAFT_COMMIT_BATCH_INTERVAL, 2)).
+-define(RAFT_COMMIT_BATCH_INTERVAL(App, Table), ?RAFT_TABLE_CONFIG(App, Table, ?RAFT_COMMIT_BATCH_INTERVAL, 2)).
 %% Maximum number of pending log entries to collect before a heartbeat is forced. This should
 %% be at most equal to the maximum number of log entries permitted per heartbeat.
 -define(RAFT_COMMIT_BATCH_MAX_ENTRIES, raft_commit_batch_max).
--define(RAFT_COMMIT_BATCH_MAX_ENTRIES(App), ?RAFT_APP_CONFIG(App, ?RAFT_COMMIT_BATCH_MAX_ENTRIES, 15)).
+-define(RAFT_COMMIT_BATCH_MAX_ENTRIES(App, Table), ?RAFT_TABLE_CONFIG(App, Table, ?RAFT_COMMIT_BATCH_MAX_ENTRIES, 15)).
 %% Maximum number of log entries to speculatively retain in the log due to followers
 %% not yet reporting having replicated the log entry locally
 -define(RAFT_MAX_RETAINED_ENTRIES, raft_max_retained_entries).
--define(RAFT_MAX_RETAINED_ENTRIES(App), ?RAFT_APP_CONFIG(App, {?RAFT_MAX_RETAINED_ENTRIES, max_log_rotate_delay}, 1500000)).
+-define(RAFT_MAX_RETAINED_ENTRIES(App, Table), ?RAFT_TABLE_CONFIG(App, Table, {?RAFT_MAX_RETAINED_ENTRIES, max_log_rotate_delay}, 1500000)).
 
 %% Maximum number of log entries to queue for application by storage at once before
 %% continuing to process the incoming message queue on the RAFT server.
 -define(RAFT_MAX_CONSECUTIVE_APPLY_ENTRIES, raft_apply_log_batch_size).
--define(RAFT_MAX_CONSECUTIVE_APPLY_ENTRIES(App), ?RAFT_APP_CONFIG(App, ?RAFT_MAX_CONSECUTIVE_APPLY_ENTRIES, 200)).
+-define(RAFT_MAX_CONSECUTIVE_APPLY_ENTRIES(App, Table), ?RAFT_TABLE_CONFIG(App, Table, ?RAFT_MAX_CONSECUTIVE_APPLY_ENTRIES, 200)).
 %% Maximum bytes of log entries to queue for application by storage at once before
 %% continuing to process the incoming message queue on the RAFT server.
 -define(RAFT_MAX_CONSECUTIVE_APPLY_BYTES, raft_apply_batch_max_bytes).
--define(RAFT_MAX_CONSECUTIVE_APPLY_BYTES(App), ?RAFT_APP_CONFIG(App, ?RAFT_MAX_CONSECUTIVE_APPLY_BYTES, 200 * 4 * 1024)).
+-define(RAFT_MAX_CONSECUTIVE_APPLY_BYTES(App, Table), ?RAFT_TABLE_CONFIG(App, Table, ?RAFT_MAX_CONSECUTIVE_APPLY_BYTES, 200 * 4 * 1024)).
 
 %% Minimum time in milliseconds since the receiving the last valid leader heartbeat
 %% before triggering a new election due to term timeout. This time should be much
 %% greater than the maximum expected network delay.
 -define(RAFT_ELECTION_TIMEOUT_MIN, raft_election_timeout_ms).
--define(RAFT_ELECTION_TIMEOUT_MIN(App), ?RAFT_APP_CONFIG(App, ?RAFT_ELECTION_TIMEOUT_MIN, 5000)).
+-define(RAFT_ELECTION_TIMEOUT_MIN(App, Table), ?RAFT_TABLE_CONFIG(App, Table, ?RAFT_ELECTION_TIMEOUT_MIN, 5000)).
 %% Maximum time in milliseconds since the receiving the last valid leader heartbeat
 %% before triggering a new election due to term timeout. The difference between this
 %% time and the minimum election timeout should be much greater than the expected
 %% variance in network delay.
 -define(RAFT_ELECTION_TIMEOUT_MAX, raft_election_timeout_ms_max).
--define(RAFT_ELECTION_TIMEOUT_MAX(App), ?RAFT_APP_CONFIG(App, ?RAFT_ELECTION_TIMEOUT_MAX, 7500)).
+-define(RAFT_ELECTION_TIMEOUT_MAX(App, Table), ?RAFT_TABLE_CONFIG(App, Table, ?RAFT_ELECTION_TIMEOUT_MAX, 7500)).
 
 %% The maximum time in milliseconds during which a leader can continue to be considered live without
 %% receiving an updated heartbeat response quorum from replicas or during which a follower or witness
 %% can be considered live without receiving a heartbeat from a valid leader of the current term.
 -define(RAFT_LIVENESS_GRACE_PERIOD_MS, raft_liveness_grace_period_ms).
--define(RAFT_LIVENESS_GRACE_PERIOD_MS(App), ?RAFT_APP_CONFIG(App, ?RAFT_LIVENESS_GRACE_PERIOD_MS, 30_000)).
+-define(RAFT_LIVENESS_GRACE_PERIOD_MS(App, Table), ?RAFT_TABLE_CONFIG(App, Table, ?RAFT_LIVENESS_GRACE_PERIOD_MS, 30_000)).
 %% The maximum number of log entries that can be not yet applied to a follower or witnesse's log
 %% compared to the leader's commit index before the replica is considered stale.
 -define(RAFT_STALE_GRACE_PERIOD_ENTRIES, raft_stale_grace_period_entries).
--define(RAFT_STALE_GRACE_PERIOD_ENTRIES(App), ?RAFT_APP_CONFIG(App, ?RAFT_STALE_GRACE_PERIOD_ENTRIES, 5_000)).
+-define(RAFT_STALE_GRACE_PERIOD_ENTRIES(App, Table), ?RAFT_TABLE_CONFIG(App, Table, ?RAFT_STALE_GRACE_PERIOD_ENTRIES, 5_000)).
 
 %% Minium amount of time in seconds since the last successfully received
 %% heartbeat from a leader of a term for non-forced promotion to be allowed.
 -define(RAFT_PROMOTION_GRACE_PERIOD, raft_promotion_grace_period_secs).
--define(RAFT_PROMOTION_GRACE_PERIOD(App), ?RAFT_APP_CONFIG(App, ?RAFT_PROMOTION_GRACE_PERIOD, 60)).
+-define(RAFT_PROMOTION_GRACE_PERIOD(App, Table), ?RAFT_TABLE_CONFIG(App, Table, ?RAFT_PROMOTION_GRACE_PERIOD, 60)).
 
 %% Maximum number of log entries to include in a Handover RPC to pass
 %% leadership to another peer. A limit is enforced to prevent a handover
 %% trying to send huge numbers of logs to catchup a peer during handover.
 -define(RAFT_HANDOVER_MAX_ENTRIES, raft_max_handover_log_entries).
--define(RAFT_HANDOVER_MAX_ENTRIES(App), ?RAFT_APP_CONFIG(App, ?RAFT_HANDOVER_MAX_ENTRIES, 200)).
+-define(RAFT_HANDOVER_MAX_ENTRIES(App, Table), ?RAFT_TABLE_CONFIG(App, Table, ?RAFT_HANDOVER_MAX_ENTRIES, 200)).
 %% Maximum number of total log entries from the leader's current log that a
 %% peer has not yet confirmed to be applied. This limit helps prevent nodes who
 %% may have already received all the current log entries but are behind in
@@ -228,65 +244,61 @@
 %% handover before they are ready. This defaults to equal to the maximum number
 %% of missing log entries. (See `?RAFT_HANDOVER_MAX_ENTRIES`.)
 -define(RAFT_HANDOVER_MAX_UNAPPLIED_ENTRIES, raft_handover_max_unapplied_entries).
--define(RAFT_HANDOVER_MAX_UNAPPLIED_ENTRIES(App), ?RAFT_APP_CONFIG(App, ?RAFT_HANDOVER_MAX_UNAPPLIED_ENTRIES, undefined)).
+-define(RAFT_HANDOVER_MAX_UNAPPLIED_ENTRIES(App, Table), ?RAFT_TABLE_CONFIG(App, Table, ?RAFT_HANDOVER_MAX_UNAPPLIED_ENTRIES, undefined)).
 %% Maximum total byte size of log entries to include in a Handover RPC.
 -define(RAFT_HANDOVER_MAX_BYTES, raft_max_handover_log_size).
--define(RAFT_HANDOVER_MAX_BYTES(App), ?RAFT_APP_CONFIG(App, ?RAFT_HANDOVER_MAX_BYTES, 50 * 1024 * 1024)).
+-define(RAFT_HANDOVER_MAX_BYTES(App, Table), ?RAFT_TABLE_CONFIG(App, Table, ?RAFT_HANDOVER_MAX_BYTES, 50 * 1024 * 1024)).
 %% Time in milliseconds to wait before considering a previously triggered handover failed.
 -define(RAFT_HANDOVER_TIMEOUT, raft_handover_timeout_ms).
--define(RAFT_HANDOVER_TIMEOUT(App), ?RAFT_APP_CONFIG(App, ?RAFT_HANDOVER_TIMEOUT, 600)).
+-define(RAFT_HANDOVER_TIMEOUT(App, Table), ?RAFT_TABLE_CONFIG(App, Table, ?RAFT_HANDOVER_TIMEOUT, 600)).
 
 %% Minimum nubmer of log entries past the minimum kept by the RAFT server before triggering
 %% log rotation
 -define(RAFT_LOG_ROTATION_INTERVAL, raft_max_log_records_per_file).
--define(RAFT_LOG_ROTATION_INTERVAL(App), ?RAFT_APP_CONFIG(App, ?RAFT_LOG_ROTATION_INTERVAL, 200000)).
+-define(RAFT_LOG_ROTATION_INTERVAL(App, Table), ?RAFT_TABLE_CONFIG(App, Table, ?RAFT_LOG_ROTATION_INTERVAL, 200000)).
 %% Maximum number of log entries past the minimum kept by the RAFT server to retain in
 %% the log after rotation
 -define(RAFT_LOG_ROTATION_KEEP, raft_max_log_records).
--define(RAFT_LOG_ROTATION_KEEP(App, Interval), ?RAFT_APP_CONFIG(App, ?RAFT_LOG_ROTATION_KEEP, Interval * 10)).
+-define(RAFT_LOG_ROTATION_KEEP(App, Table, Interval), ?RAFT_TABLE_CONFIG(App, Table, ?RAFT_LOG_ROTATION_KEEP, Interval * 10)).
 %% Whether log rotation should be controlled by local log length or by
 %% leader-announced cluster trimming index
 -define(RAFT_LOG_ROTATION_BY_TRIM_INDEX, raft_rotate_by_trim_index).
--define(RAFT_LOG_ROTATION_BY_TRIM_INDEX(App), (?RAFT_APP_CONFIG(App, {?RAFT_LOG_ROTATION_BY_TRIM_INDEX, use_trim_index}, false) =:= true)).
+-define(RAFT_LOG_ROTATION_BY_TRIM_INDEX(App, Table), (?RAFT_TABLE_CONFIG(App, Table, {?RAFT_LOG_ROTATION_BY_TRIM_INDEX, use_trim_index}, false) =:= true)).
 
 %% Whether or not the log should return entries in external term format
 %% when log entries are fetched for heartbeats
 -define(RAFT_LOG_HEARTBEAT_BINARY_ENTRIES, raft_log_heartbeat_binary_entries).
--define(RAFT_LOG_HEARTBEAT_BINARY_ENTRIES(App),
-    (?RAFT_APP_CONFIG(App, ?RAFT_LOG_HEARTBEAT_BINARY_ENTRIES, false) =:= true)
+-define(RAFT_LOG_HEARTBEAT_BINARY_ENTRIES(App, Table),
+    (?RAFT_TABLE_CONFIG(App, Table, ?RAFT_LOG_HEARTBEAT_BINARY_ENTRIES, false) =:= true)
 ).
 
 %% The number of log entries that have yet to be applied on a follower after
 %% which leaders should send a storage snapshot in lieu of continuing regular
 %% replication using log entries in heartbeats.
 -define(RAFT_SNAPSHOT_CATCHUP_THRESHOLD, raft_snapshot_catchup_threshold).
--define(RAFT_SNAPSHOT_CATCHUP_THRESHOLD(App), ?RAFT_APP_CONFIG(App, ?RAFT_SNAPSHOT_CATCHUP_THRESHOLD, 100000)).
+-define(RAFT_SNAPSHOT_CATCHUP_THRESHOLD(App, Table), ?RAFT_TABLE_CONFIG(App, Table, ?RAFT_SNAPSHOT_CATCHUP_THRESHOLD, 100000)).
 %% Number of milliseconds to wait before attempting to send a new storage snapshot
 %% to a follower that previously rejected a snapshot due to being overloaded.
 -define(RAFT_SNAPSHOT_CATCHUP_OVERLOADED_BACKOFF_MS, raft_snapshot_catchup_overloaded_backoff_ms).
--define(RAFT_SNAPSHOT_CATCHUP_OVERLOADED_BACKOFF_MS(App), ?RAFT_APP_CONFIG(App, ?RAFT_SNAPSHOT_CATCHUP_OVERLOADED_BACKOFF_MS, 1000)).
+-define(RAFT_SNAPSHOT_CATCHUP_OVERLOADED_BACKOFF_MS(App, Table), ?RAFT_TABLE_CONFIG(App, Table, ?RAFT_SNAPSHOT_CATCHUP_OVERLOADED_BACKOFF_MS, 1000)).
 %% Number of milliseconds to wait before attempting to send a new storage snapshot
 %% to a follower that previously successfully received a storage snapshot.
 -define(RAFT_SNAPSHOT_CATCHUP_COMPLETED_BACKOFF_MS, raft_snapshot_catchup_completed_backoff_ms).
--define(RAFT_SNAPSHOT_CATCHUP_COMPLETED_BACKOFF_MS(App), ?RAFT_APP_CONFIG(App, ?RAFT_SNAPSHOT_CATCHUP_COMPLETED_BACKOFF_MS, 20 * 1000)).
+-define(RAFT_SNAPSHOT_CATCHUP_COMPLETED_BACKOFF_MS(App, Table), ?RAFT_TABLE_CONFIG(App, Table, ?RAFT_SNAPSHOT_CATCHUP_COMPLETED_BACKOFF_MS, 20 * 1000)).
 %% Number of milliseconds to wait before attempting to send a new storage snapshot
 %% to a follower that previously failed to receive a storage snapshot.
 -define(RAFT_SNAPSHOT_CATCHUP_FAILED_BACKOFF_MS, raft_snapshot_catchup_failed_backoff_ms).
--define(RAFT_SNAPSHOT_CATCHUP_FAILED_BACKOFF_MS(App), ?RAFT_APP_CONFIG(App, ?RAFT_SNAPSHOT_CATCHUP_FAILED_BACKOFF_MS, 10 * 1000)).
+-define(RAFT_SNAPSHOT_CATCHUP_FAILED_BACKOFF_MS(App, Table), ?RAFT_TABLE_CONFIG(App, Table, ?RAFT_SNAPSHOT_CATCHUP_FAILED_BACKOFF_MS, 10 * 1000)).
 
 %% Number of omitted log entries to skip actually applying to storage when
 %% operating as a witness.
 -define(RAFT_STORAGE_WITNESS_APPLY_INTERVAL, raft_storage_witness_apply_interval).
--define(RAFT_STORAGE_WITNESS_APPLY_INTERVAL(App), ?RAFT_APP_CONFIG(App, ?RAFT_STORAGE_WITNESS_APPLY_INTERVAL, 5000)).
+-define(RAFT_STORAGE_WITNESS_APPLY_INTERVAL(App, Table), ?RAFT_TABLE_CONFIG(App, Table, ?RAFT_STORAGE_WITNESS_APPLY_INTERVAL, 5000)).
 
 %% Whether or not the storage server should request more log entries
 %% when the apply queue is empty.
 -define(RAFT_STORAGE_NOTIFY_COMPLETE, raft_storage_notify_complete).
--define(RAFT_STORAGE_NOTIFY_COMPLETE(App), (?RAFT_APP_CONFIG(App, ?RAFT_STORAGE_NOTIFY_COMPLETE, true) =:= true)).
-
-%% Time in seconds to retain transport destination directories after use
--define(RAFT_TRANSPORT_RETAIN_INTERVAL, transport_retain_min_secs).
--define(RAFT_TRANSPORT_RETAIN_INTERVAL(App), ?RAFT_APP_CONFIG(App, ?RAFT_TRANSPORT_RETAIN_INTERVAL, 300)).
+-define(RAFT_STORAGE_NOTIFY_COMPLETE(App, Table), (?RAFT_TABLE_CONFIG(App, Table, ?RAFT_STORAGE_NOTIFY_COMPLETE, true) =:= true)).
 
 %%-------------------------------------------------------------------
 %% Records
