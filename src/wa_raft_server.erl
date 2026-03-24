@@ -1299,10 +1299,22 @@ leader(state_timeout, _, State0) ->
     end;
 
 %% [Commit]
-%%   Add a new commit request to the pending list. If the cluster consists only
-%%   of the local node, then immediately apply the commit. Otherwise, if a
-%%   handover is not in progress, then immediately append the pending list if
-%%   enough pending commit requests have accumulated.
+%%   If a handover is in progress, reject the commit immediately with a
+%%   notify_redirect error so the client can redirect to the new leader.
+%%   Otherwise, add the commit to the pending list and append if enough
+%%   have accumulated.
+leader(
+    cast,
+    ?COMMIT_COMMAND(From, _Op, Priority),
+    #raft_state{
+        table = Table,
+        queues = Queues,
+        handover = {Peer, _, _}
+    } = _State
+) ->
+    ?RAFT_COUNT(Table, 'commit.rejected.handover'),
+    wa_raft_queue:commit_cancelled(Queues, From, {error, {notify_redirect, Peer}}, Priority),
+    keep_state_and_data;
 leader(
     cast,
     ?COMMIT_COMMAND(From, Op, Priority),
@@ -1310,8 +1322,7 @@ leader(
         application = App,
         table = Table,
         pending_high = PendingHigh,
-        pending_low = PendingLow,
-        handover = Handover
+        pending_low = PendingLow
     } = State0
 ) ->
     % No size limit is imposed here as the pending queue cannot grow larger
@@ -1323,25 +1334,32 @@ leader(
         low ->
             State0#raft_state{pending_low = [{From, Op} | PendingLow]}
     end,
-    case Handover of
-        undefined ->
-            State2 = apply_single_node_cluster(State1),
-            PendingCount = length(State2#raft_state.pending_high) + length(State2#raft_state.pending_low),
-            case ?RAFT_COMMIT_BATCH_INTERVAL(App) > 0 andalso PendingCount =< ?RAFT_COMMIT_BATCH_MAX_ENTRIES(App) of
-                true ->
-                    ?RAFT_COUNT(Table, 'commit.batch.delay'),
-                    {keep_state, State2, ?COMMIT_BATCH_TIMEOUT(State2)};
-                false ->
-                    State3 = append_entries_to_followers(State2),
-                    {keep_state, State3, ?HEARTBEAT_TIMEOUT(State3)}
-            end;
-        _ ->
-            {keep_state, State1}
+    State2 = apply_single_node_cluster(State1),
+    PendingCount = length(State2#raft_state.pending_high) + length(State2#raft_state.pending_low),
+    case ?RAFT_COMMIT_BATCH_INTERVAL(App) > 0 andalso PendingCount =< ?RAFT_COMMIT_BATCH_MAX_ENTRIES(App) of
+        true ->
+            ?RAFT_COUNT(Table, 'commit.batch.delay'),
+            {keep_state, State2, ?COMMIT_BATCH_TIMEOUT(State2)};
+        false ->
+            State3 = append_entries_to_followers(State2),
+            {keep_state, State3, ?HEARTBEAT_TIMEOUT(State3)}
     end;
 
 %% [Strong Read]
-%%   For an incoming read request, record the effective index for which it must
-%%   be executed after.
+%%   If a handover is in progress, reject the read immediately with a
+%%   notify_redirect error so the client can redirect to the new leader.
+leader(
+    cast,
+    ?READ_COMMAND({From, _}),
+    #raft_state{
+        table = Table,
+        queues = Queues,
+        handover = {Peer, _, _}
+    } = _State
+) ->
+    ?RAFT_COUNT(Table, 'read.rejected.handover'),
+    wa_raft_queue:fulfill_incomplete_read(Queues, From, {error, {notify_redirect, Peer}}),
+    keep_state_and_data;
 leader(
     cast,
     ?READ_COMMAND({From, Command}),
