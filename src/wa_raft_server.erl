@@ -118,6 +118,7 @@
     handover/1,
     handover/2,
     handover_candidates/1,
+    is_peer_ready/2,
     disable/2,
     enable/1,
     bootstrap/4,
@@ -282,7 +283,8 @@
 -type command() :: commit_command() | read_command() | current_config_command() | status_command() |
                    trigger_election_command() | promote_command() | resign_command() | adjust_config_command() |
                    snapshot_available_command() | handover_candidates_command() | handover_command() |
-                   enable_command() | disable_command() | bootstrap_command() | notify_complete_command().
+                   enable_command() | disable_command() | bootstrap_command() | notify_complete_command() |
+                   is_peer_ready_command().
 
 -type commit_command()              :: ?COMMIT_COMMAND(gen_server:from(), wa_raft_acceptor:op(), wa_raft_acceptor:priority()).
 -type read_command()                :: ?READ_COMMAND(wa_raft_acceptor:read_op()).
@@ -299,6 +301,7 @@
 -type disable_command()             :: ?DISABLE_COMMAND(term()).
 -type bootstrap_command()           :: ?BOOTSTRAP_COMMAND(wa_raft_log:log_pos(), config(), dynamic()).
 -type notify_complete_command()     :: ?NOTIFY_COMPLETE_COMMAND().
+-type is_peer_ready_command()       :: ?IS_PEER_READY_COMMAND(peer()).
 
 -type internal_event() :: advance_term_event() | force_election_event().
 -type advance_term_event() :: ?ADVANCE_TERM(wa_raft_log:log_term()).
@@ -673,6 +676,10 @@ handover(Server, Peer) ->
 -spec handover_candidates(Server :: gen_statem:server_ref()) -> {ok, Candidates :: [node()]} | {error, Reason :: term()}.
 handover_candidates(Server) ->
     gen_statem:call(Server, ?HANDOVER_CANDIDATES_COMMAND, ?RAFT_RPC_CALL_TIMEOUT()).
+
+-spec is_peer_ready(Server :: gen_statem:server_ref(), Peer :: peer()) -> ok | {error, Reason :: term()}.
+is_peer_ready(Server, Peer) ->
+    gen_statem:call(Server, ?IS_PEER_READY_COMMAND(Peer), ?RAFT_RPC_CALL_TIMEOUT()).
 
 -spec disable(Server :: gen_statem:server_ref(), Reason :: term()) -> ok | {error, ErrorReason :: atom()}.
 disable(Server, Reason) ->
@@ -1430,6 +1437,19 @@ leader(Type, ?ADJUST_CONFIG_COMMAND(From, Action, Index), #raft_state{queues = Q
 %% [Handover Candidates] Return list of handover candidates (peers that are not lagging too much)
 leader({call, From}, ?HANDOVER_CANDIDATES_COMMAND, #raft_state{} = State) ->
     {keep_state_and_data, {reply, From, {ok, get_handover_candidates(State)}}};
+
+%% [Is Peer Ready] Check if participant is caught up
+leader({call, From}, ?IS_PEER_READY_COMMAND(Peer), #raft_state{} = State) ->
+    Config = config(State),
+    IsParticipant = lists:member(Peer, config_participants(Config)),
+    IsReady = is_eligible_for_handover(Peer, State),
+    Result =
+        if
+            not IsParticipant -> {error, not_a_participant};
+            not IsReady -> {error, not_ready};
+            true -> ok
+        end,
+    {keep_state_and_data, {reply, From, Result}};
 
 %% [Handover] With peer 'undefined' randomly select a valid candidate to handover to
 leader(Type, ?HANDOVER_COMMAND(undefined), #raft_state{} = State) ->
@@ -2246,6 +2266,10 @@ command(
 
 %% [Handover Candidates] Non-leader nodes cannot serve handovers.
 command(State, {call, From}, ?HANDOVER_CANDIDATES_COMMAND, #raft_state{}) when State =/= leader ->
+    {keep_state_and_data, {reply, From, {error, not_leader}}};
+
+%% [Is Peer Ready] Non-leader nodes cannot check peer readiness.
+command(State, {call, From}, ?IS_PEER_READY_COMMAND(_), #raft_state{}) when State =/= leader ->
     {keep_state_and_data, {reply, From, {error, not_leader}}};
 
 %% [Handover] Non-leader nodes cannot serve handovers.
