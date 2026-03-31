@@ -29,7 +29,7 @@
 %% Internal API
 -export([
     open/1,
-    cancel/1,
+    cancel/2,
     apply/5,
     apply_read/3
 ]).
@@ -326,7 +326,7 @@
 -define(READ_REQUEST(Command), {read, Command}).
 
 -define(OPEN_REQUEST, open).
--define(CANCEL_REQUEST, cancel).
+-define(CANCEL_REQUEST(Error), {cancel, Error}).
 -define(FULFILL_REQUEST(Key, Result), {fulfill, Key, Result}).
 -define(APPLY_REQUEST(From, Record, Size, Priority), {apply, From, Record, Size, Priority}).
 -define(APPLY_READ_REQUEST(From, Command), {apply_read, From, Command}).
@@ -354,7 +354,7 @@
 -type read_request() :: ?READ_REQUEST(Command :: wa_raft_acceptor:command()).
 
 -type open_request() :: ?OPEN_REQUEST.
--type cancel_request() :: ?CANCEL_REQUEST.
+-type cancel_request() :: ?CANCEL_REQUEST(Error :: wa_raft_acceptor:read_error()).
 -type fulfill_request() :: ?FULFILL_REQUEST(Key :: wa_raft_acceptor:key(), Result :: wa_raft_acceptor:commit_result()).
 -type apply_request() :: ?APPLY_REQUEST(From :: gen_server:from() | undefined, Record :: wa_raft_log:log_record(), Size :: non_neg_integer(), Priority :: wa_raft_acceptor:priority()).
 -type apply_read_request() :: ?APPLY_READ_REQUEST(From :: gen_server:from(), Comman :: wa_raft_acceptor:command()).
@@ -416,9 +416,10 @@ read(Storage, Command) ->
 open(Storage) ->
     gen_server:call(Storage, ?OPEN_REQUEST, ?RAFT_RPC_CALL_TIMEOUT()).
 
--spec cancel(Storage :: gen_server:server_ref()) -> ok.
-cancel(Storage) ->
-    gen_server:cast(Storage, ?CANCEL_REQUEST).
+%% Only cancels reads.
+-spec cancel(Storage :: gen_server:server_ref(), Error :: wa_raft_acceptor:read_error()) -> ok.
+cancel(Storage, Error) ->
+    gen_server:cast(Storage, ?CANCEL_REQUEST(Error)).
 
 -spec apply(
     Storage :: gen_server:server_ref(),
@@ -629,9 +630,9 @@ handle_call(Request, From, #state{name = Name} = State) ->
 -spec handle_cast(Request :: cast(), State :: #state{}) ->
     {noreply, NewState :: #state{}}.
 
-handle_cast(?CANCEL_REQUEST, #state{name = Name, queues = Queues} = State) ->
-    ?RAFT_LOG_NOTICE("Storage[~0p] cancels all pending reads.", [Name]),
-    wa_raft_queue:fulfill_all_reads(Queues, {error, not_leader}),
+handle_cast(?CANCEL_REQUEST(Error), #state{name = Name, queues = Queues} = State) ->
+    ?RAFT_LOG_NOTICE("Storage[~0p] cancels all pending reads with error ~0p.", [Name, Error]),
+    wa_raft_queue:fulfill_all_reads(Queues, Error),
     {noreply, State};
 
 handle_cast(?APPLY_REQUEST(From, {LogIndex, {LogTerm, {_, Label, Command}}}, Size, Priority), #state{name = Name, queues = Queues} = State0) ->

@@ -1280,7 +1280,16 @@ leader(_, ?REMOTE(_, ?HANDOVER_FAILED(_)), #raft_state{}) ->
     keep_state_and_data;
 
 %% [Timeout] Suspend periodic heartbeat to followers while handover is active
-leader(state_timeout = Type, Event, #raft_state{handover = {Peer, _, Timeout}} = State) ->
+leader(
+    state_timeout = Type,
+    Event,
+    #raft_state{
+        pending_high = PendingHigh,
+        pending_low = PendingLow,
+        pending_read = PendingRead,
+        handover = {Peer, _, Timeout}
+    } = State
+) ->
     NowMillis = erlang:monotonic_time(millisecond),
     case NowMillis > Timeout of
         true ->
@@ -1288,7 +1297,10 @@ leader(state_timeout = Type, Event, #raft_state{handover = {Peer, _, Timeout}} =
             {keep_state, State#raft_state{handover = undefined}, {next_event, Type, Event}};
         false ->
             check_leader_liveness(State),
-            {keep_state_and_data, ?HEARTBEAT_TIMEOUT(State)}
+            case PendingHigh =:= [] andalso PendingLow =:= [] andalso PendingRead =:= false of
+                true -> {keep_state_and_data, ?HEARTBEAT_TIMEOUT(State)};
+                false -> {keep_state_and_data, ?COMMIT_BATCH_TIMEOUT(State)}
+            end
     end;
 
 %% [Timeout] Periodic heartbeat to followers
@@ -1306,22 +1318,6 @@ leader(state_timeout, _, State0) ->
     end;
 
 %% [Commit]
-%%   If a handover is in progress, reject the commit immediately with a
-%%   notify_redirect error so the client can redirect to the new leader.
-%%   Otherwise, add the commit to the pending list and append if enough
-%%   have accumulated.
-leader(
-    cast,
-    ?COMMIT_COMMAND(From, _Op, Priority),
-    #raft_state{
-        table = Table,
-        queues = Queues,
-        handover = {Peer, _, _}
-    } = _State
-) ->
-    ?RAFT_COUNT(Table, 'commit.rejected.handover'),
-    wa_raft_queue:commit_cancelled(Queues, From, {error, {notify_redirect, Peer}}, Priority),
-    keep_state_and_data;
 leader(
     cast,
     ?COMMIT_COMMAND(From, Op, Priority),
@@ -1329,21 +1325,32 @@ leader(
         application = App,
         table = Table,
         pending_high = PendingHigh,
-        pending_low = PendingLow
+        pending_low = PendingLow,
+        handover = Handover
     } = State0
 ) ->
     % No size limit is imposed here as the pending queue cannot grow larger
     % than the limit on the number of pending commits.
     ?RAFT_COUNT(Table, {'commit', Priority}),
-    State1 = case Priority of
-        high ->
-            State0#raft_state{pending_high = [{From, Op} | PendingHigh]};
-        low ->
-            State0#raft_state{pending_low = [{From, Op} | PendingLow]}
-    end,
+    State1 =
+        case Priority of
+            high -> State0#raft_state{pending_high = [{From, Op} | PendingHigh]};
+            low -> State0#raft_state{pending_low = [{From, Op} | PendingLow]}
+        end,
     State2 = apply_single_node_cluster(State1),
-    PendingCount = length(State2#raft_state.pending_high) + length(State2#raft_state.pending_low),
-    case ?RAFT_COMMIT_BATCH_INTERVAL(App, Table) > 0 andalso PendingCount =< ?RAFT_COMMIT_BATCH_MAX_ENTRIES(App, Table) of
+    Result =
+        case Handover of
+            undefined ->
+                % If no handover is in progress, check the pending queue length if batching is enabled.
+                ?RAFT_COMMIT_BATCH_INTERVAL(App, Table) > 0 andalso begin
+                    PendingCount = length(State2#raft_state.pending_high) + length(State2#raft_state.pending_low),
+                    PendingCount =< ?RAFT_COMMIT_BATCH_MAX_ENTRIES(App, Table)
+                end;
+            _ ->
+                % Otherwise, then the leader is not currently replicating and we should continue to accumulate requests.
+                false
+        end,
+    case Result of
         true ->
             ?RAFT_COUNT(Table, 'commit.batch.delay'),
             {keep_state, State2, ?COMMIT_BATCH_TIMEOUT(State2)};
@@ -1353,20 +1360,6 @@ leader(
     end;
 
 %% [Strong Read]
-%%   If a handover is in progress, reject the read immediately with a
-%%   notify_redirect error so the client can redirect to the new leader.
-leader(
-    cast,
-    ?READ_COMMAND({From, _}),
-    #raft_state{
-        table = Table,
-        queues = Queues,
-        handover = {Peer, _, _}
-    } = _State
-) ->
-    ?RAFT_COUNT(Table, 'read.rejected.handover'),
-    wa_raft_queue:fulfill_incomplete_read(Queues, From, {error, {notify_redirect, Peer}}),
-    keep_state_and_data;
 leader(
     cast,
     ?READ_COMMAND({From, Command}),
@@ -1378,6 +1371,7 @@ leader(
         last_applied = LastApplied,
         pending_high = PendingHigh,
         pending_low = PendingLow,
+        pending_read = PendingRead,
         first_current_term_log_index = FirstLogIndex
     } = State0
 ) ->
@@ -1392,7 +1386,12 @@ leader(
             % Regardless of whether or not the read index is an existing log entry, indicate that
             % a read is pending as the leader must establish a new quorum to be able to serve the
             % read request.
-            {keep_state, State0#raft_state{pending_read = true}}
+            State1 = State0#raft_state{pending_read = true},
+            % Set short timeout if nothing else is pending, otherwise do not reset timeout.
+            case PendingHigh =:= [] andalso PendingLow =:= [] andalso not PendingRead of
+                true -> {keep_state, State1, ?COMMIT_BATCH_TIMEOUT(State1)};
+                false ->  {keep_state, State1}
+            end
     end;
 
 %% [Resign] Leader resigns by switching to follower state.
@@ -2774,8 +2773,8 @@ set_leader(
     ?SERVER_LOG_NOTICE(State, Data, "changes leader to ~0p.", [Node]),
     wa_raft_info:set_current_term_and_leader(Table, Partition, CurrentTerm, Node),
     NewData = Data#raft_state{leader_id = Node, pending_read = false},
-    wa_raft_storage:cancel(Storage),
-    cancel_pending({error, not_leader}, NewData).
+    wa_raft_storage:cancel(Storage, {error, {notify_redirect, Node}}),
+    cancel_pending({error, {notify_redirect, Node}}, NewData).
 
 -spec clear_leader(state(), #raft_state{}) -> #raft_state{}.
 clear_leader(_, #raft_state{leader_id = undefined} = Data) ->
@@ -3450,7 +3449,7 @@ append_entries(
                 [PrevLogIndex, Last, ConflictIndex]),
             case wa_raft_log:truncate(View0, ConflictIndex) of
                 {ok, View1} ->
-                    NewQueued = cancel_queued(Queues, ConflictIndex, Last, {error, not_leader}, Queued),
+                    NewQueued = cancel_queued(Queues, ConflictIndex, Last, {error, {notify_redirect, LeaderId}}, Queued),
                     case ConflictIndex =:= PrevLogIndex of
                         true ->
                             % If the conflict precedes the heartbeat's log
