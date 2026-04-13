@@ -152,9 +152,11 @@
 
 -ifdef(TEST).
 -export([
-    compute_quorum/3,
     config/1,
-    max_index_to_apply/3,
+    compute_quorum/1,
+    compute_member_quorum/3,
+    find_majority/2,
+    leader_advance_commit_index/1,
     leader_adjust_config/2
 ]).
 -endif.
@@ -1117,7 +1119,6 @@ stalled(Type, Event, #raft_state{} = State) ->
 
 leader(enter, PreviousStateName, #raft_state{table = Table, self = Self, log_view = View0} = State0) ->
     ?RAFT_COUNT(Table, 'leader.enter'),
-    ?RAFT_COUNT(Table, 'leader.elected'),
     ?SERVER_LOG_NOTICE(State0, "becomes leader from state ~0p.", [PreviousStateName]),
 
     % Setup leader state and announce leadership
@@ -1208,8 +1209,8 @@ leader(
         match_indices = NewMatchIndices,
         last_applied_indices = NewLastAppliedIndices
     },
-    State3 = maybe_advance(State2),
-    State4 = apply_log_leader(State3),
+    State3 = leader_advance_commit_index(State2),
+    State4 = leader_apply_log(State3),
     ?RAFT_GATHER(Table, 'leader.apply.func', erlang:monotonic_time(microsecond) - StartTUsec),
     {keep_state, maybe_heartbeat(State4), ?HEARTBEAT_TIMEOUT(State4)};
 
@@ -1248,7 +1249,7 @@ leader(
         next_indices = NewNextIndices,
         last_applied_indices = NewLastAppliedIndices
     },
-    State2 = apply_log_leader(State1),
+    State2 = leader_apply_log(State1),
     {keep_state, maybe_heartbeat(State2), ?HEARTBEAT_TIMEOUT(State2)};
 
 %% [RequestVote RPC] Ignore any vote requests as leadership is aleady established (5.1, 5.2)
@@ -1596,7 +1597,7 @@ follower(_, ?REMOTE(_, ?APPEND_ENTRIES_RESPONSE(_, _, _, _)), #raft_state{}) ->
 
 %% [RequestVote RPC] Handle incoming vote requests (5.2)
 follower(_, ?REMOTE(Candidate, ?REQUEST_VOTE(_, CandidateIndex, CandidateTerm)), #raft_state{} = State) ->
-    request_vote_impl(?FUNCTION_NAME, Candidate, CandidateIndex, CandidateTerm, State);
+    handle_request_vote(?FUNCTION_NAME, Candidate, CandidateIndex, CandidateTerm, State);
 
 %% [Handover][Handover RPC] The leader is requesting this follower to take over leadership in a new term
 follower(
@@ -1774,38 +1775,58 @@ candidate(Type, ?REMOTE(Sender, ?APPEND_ENTRIES(_, _, _, _, _)) = Event, #raft_s
 candidate(_, ?REMOTE(_, ?REQUEST_VOTE(_, _, _)), #raft_state{}) ->
     keep_state_and_data;
 
-%% [Vote RPC] Candidate receives an affirmative vote (5.2)
+%% [Vote RPC] Candidate receives a vote (5.2)
 candidate(
     cast,
-    ?REMOTE(?IDENTITY_REQUIRES_MIGRATION(_, NodeId), ?VOTE(true)),
+    ?REMOTE(?IDENTITY_REQUIRES_MIGRATION(_, Node), ?VOTE(Vote)),
     #raft_state{
         table = Table,
         log_view = View,
-        state_start_ts = StateStartTs,
-        heartbeat_response_ts = HeartbeatResponse0,
-        votes = Votes0
-    } = State0
+        state_start_ts = StateStart,
+        heartbeat_response_ts = HeartbeatResponse,
+        votes = Votes
+    } = Data
 ) ->
-    HeartbeatResponse1 = HeartbeatResponse0#{NodeId => erlang:monotonic_time(millisecond)},
-    Votes1 = Votes0#{NodeId => true},
-    State1 = State0#raft_state{heartbeat_response_ts = HeartbeatResponse1, votes = Votes1},
-    case compute_quorum(Votes1, false, config(State1)) of
-        true ->
-            Duration = erlang:monotonic_time(millisecond) - StateStartTs,
+    Now = erlang:monotonic_time(millisecond),
+    NewHeartbeatResponse = HeartbeatResponse#{Node => Now},
+    NewVotes = Votes#{Node => Vote},
+    NewData = Data#raft_state{heartbeat_response_ts = NewHeartbeatResponse, votes = NewVotes},
+    case find_member_majority(NewVotes, config(NewData)) of
+        {found, Outcome} ->
+            % If a majority is found, then the election is over, either accepted or rejected.
+            Duration = Now - StateStart,
             LastIndex = wa_raft_log:last_index(View),
             {ok, LastTerm} = wa_raft_log:term(View, LastIndex),
-            EstablishedQuorum = [Peer || Peer := true <- Votes1],
-            ?SERVER_LOG_NOTICE(State1, "is becoming leader after ~0p ms with log at ~0p:~0p and votes from ~0p.",
-                [Duration, LastIndex, LastTerm, EstablishedQuorum]),
-            ?RAFT_GATHER(Table, 'candidate.election.duration', Duration),
-            {next_state, leader, State1};
-        false ->
-            {keep_state, State1}
+            case Outcome of
+                true ->
+                    % If the bid for leadership is accepted, then transition to leader.
+                    Support = [Peer || Peer := true <- NewVotes],
+                    ?SERVER_LOG_NOTICE(
+                        NewData,
+                        "is becoming leader after ~0p ms with log at ~0p:~0p and votes from ~0p.",
+                        [Duration, LastIndex, LastTerm, Support]
+                    ),
+                    ?RAFT_COUNT(Table, 'candidate.elected'),
+                    ?RAFT_GATHER(Table, 'candidate.election.duration', Duration),
+                    {next_state, leader, NewData};
+                false ->
+                    % If the bid for leadership is rejected, then transition to follower.
+                    % This will reset the election timeout which will, in effect, make this
+                    % peer less likely to be the first candidate of the next term.
+                    Opposition = [Peer || Peer := false <- NewVotes],
+                    ?SERVER_LOG_NOTICE(
+                        NewData,
+                        "has failed to be elected after ~0p ms with log at ~0p:~0p and opposition from ~0p.",
+                        [Duration, LastIndex, LastTerm, Opposition]
+                    ),
+                    ?RAFT_COUNT(Table, 'candidate.rejected'),
+                    ?RAFT_GATHER(Table, 'candidate.election.duration', Duration),
+                    {next_state, follower_or_witness_state(NewData), NewData}
+            end;
+        none ->
+            % If no majority is found, the continue waiting.
+            {keep_state, NewData}
     end;
-
-%% [Vote RPC] Candidates should ignore negative votes (5.2)
-candidate(cast, ?REMOTE(_, ?VOTE(_)), #raft_state{}) ->
-    keep_state_and_data;
 
 %% [Handover][Handover RPC] Switch to follower because current term now has a leader (5.2, 5.3)
 candidate(Type, ?REMOTE(_, ?HANDOVER(_, _, _, _)) = Event, #raft_state{} = State) ->
@@ -1820,10 +1841,14 @@ candidate(_, ?REMOTE(_, ?HANDOVER_FAILED(_)), #raft_state{}) ->
 %% Candidate doesn't get enough votes after a period of time, restart election or fallback
 %% to follower if the local replica is no longer eligible.
 candidate(state_timeout, _, #raft_state{votes = Votes} = State) ->
-    ?SERVER_LOG_NOTICE(State, "election timed out with votes ~0p.", [Votes]),
+    ?SERVER_LOG_NOTICE(
+        State,
+        "election timed out with votes from ~0p and opposition from ~0p.",
+        [[Node || Node := true <- Votes], [Node || Node := false <- Votes]]
+    ),
     case candidate_eligible(State) of
         true -> {repeat_state, State};
-        false -> {next_state, follower, State}
+        false -> {next_state, follower_or_witness_state(State), State}
     end;
 
 %% [Command] Defer to common handling for generic RAFT server commands
@@ -1992,7 +2017,7 @@ witness({call, From}, ?PROMOTE_COMMAND(_, _), #raft_state{}) ->
 
 %% [RequestVote RPC] Handle incoming vote requests (5.2)
 witness(_, ?REMOTE(Candidate, ?REQUEST_VOTE(_, CandidateIndex, CandidateTerm)), #raft_state{} = State) ->
-    request_vote_impl(?FUNCTION_NAME, Candidate, CandidateIndex, CandidateTerm, State);
+    handle_request_vote(?FUNCTION_NAME, Candidate, CandidateIndex, CandidateTerm, State);
 
 %% [Vote RPC] Witnesses should not act upon any incoming votes as they cannot become leader
 witness(_, ?REMOTE(_, ?VOTE(_)), #raft_state{}) ->
@@ -2066,7 +2091,7 @@ command(
     case wa_raft_queue:apply_queue_size(Queues) of
         0 ->
             NewState = case State of
-                leader -> apply_log_leader(Data);
+                leader -> leader_apply_log(Data);
                 _ -> apply_log(State, infinity, Data)
             end,
             {keep_state, NewState};
@@ -2356,6 +2381,10 @@ config_membership(#{membership := Membership}) when Membership =/= [] ->
 config_membership(_) ->
     error(membership_not_set).
 
+-spec config_membership_size(Config :: config()) -> Size :: non_neg_integer().
+config_membership_size(Config) ->
+    length(config_membership(Config)).
+
 -spec config_witnesses(Config :: config()) -> Witnesses :: [peer()].
 config_witnesses(#{witness := Witnesses}) ->
     Witnesses.
@@ -2504,6 +2533,82 @@ maybe_update_config(Index, _, {config, Config}, #raft_state{table = Table, parti
 maybe_update_config(_, _, _, #raft_state{} = State) ->
     State.
 
+%% Convert a mapping of peers to values to a list of values for all members of the
+%% cluster, only including those whose value exists in the mapping.
+-spec to_member_list(
+    Mapping :: #{node() => Value},
+    Config :: config()
+) -> Existing :: [Value].
+to_member_list(Mapping, Config) ->
+    [Value || {_, Node} <:- config_membership(Config), {ok, Value} <- [maps:find(Node, Mapping)]].
+
+%% Convert a mapping of peers to values to a list of values for all members of the
+%% cluster, using the provided default value for any members that are not
+%% represented in the mapping.
+-spec to_member_list(
+    Mapping :: #{node() => Value},
+    Default :: Value,
+    Config :: config()
+) -> Normalized :: [Value].
+to_member_list(Mapping, Default, Config) ->
+    [maps:get(Node, Mapping, Default) || {_, Node} <:- config_membership(Config)].
+
+%%------------------------------------------------------------------------------
+%% RAFT Server - State Machine Implementation - Quorum and Majority
+%%------------------------------------------------------------------------------
+
+%% Compute the quorum value of the list formed by converting the given mapping
+%% of peers to values to a list of values for all members of the cluster, using
+%% the provided default value for any members that are not represented in the
+%% mapping.
+-spec compute_member_quorum(
+    Mapping :: #{node() => Value},
+    Default :: Value,
+    Config :: config()
+ ) -> Quorum :: Value.
+compute_member_quorum(Mapping, Default, Config) ->
+    compute_quorum(to_member_list(Mapping, Default, Config)).
+
+%% Compute the quorum value of the given list.
+%% For the purposes of this RAFT implementation, the quorum value of a list of
+%% values is the minimum value that is greater than or equal to at least a
+%% majority of the values in the list.
+-spec compute_quorum(Values :: [Value]) -> Quorum :: Value.
+compute_quorum([_|_] = Values) ->
+    % The N-th element of a sorted list must be greater than or equal to itself
+    % and all preceding values. If N is the majority count, then the element
+    % must be the quorum value.
+    Index = (length(Values) + 1) div 2,
+    lists:nth(Index, lists:sort(Values)).
+
+-spec find_member_majority(
+    Mapping :: #{node() => Value},
+    Config :: config()
+) -> {found, Majority :: Value} | none.
+find_member_majority(Mapping, Config) ->
+    find_majority(to_member_list(Mapping, Config), config_membership_size(Config)).
+
+%% Find, if it exists, the majority value of the given list fragment. The full
+%% list is assumed to have the given size. Only elements of the given list
+%% fragment contribute towards a majority. A value is the majority of a list
+%% if more than half of the elements of the list are the value.
+-spec find_majority(Values :: [Value], Total :: non_neg_integer()) -> {found, Majority :: Value} | none.
+find_majority(Values, Total) ->
+    find_majority_impl(Values, #{}, Total div 2 + 1).
+
+-spec find_majority_impl(
+    Values :: [Value],
+    Counts :: #{Value => non_neg_integer()},
+    Threshold :: non_neg_integer()
+) -> {found, Majority :: Value} | none.
+find_majority_impl([], _, _) ->
+    none;
+find_majority_impl([Value | Values], Counts, Threshold) ->
+    case maps:get(Value, Counts, 0) + 1 of
+        Threshold -> {found, Value};
+        Count -> find_majority_impl(Values, Counts#{Value => Count}, Threshold)
+    end.
+
 %%------------------------------------------------------------------------------
 %% RAFT Server - State Machine Implementation - Private Functions
 %%------------------------------------------------------------------------------
@@ -2573,15 +2678,16 @@ apply_single_node_cluster(#raft_state{self = Self} = Data0) ->
         true ->
             Data1 = commit_pending(Data0, high),
             Data2 = commit_pending(Data1, low),
-            Data3 = maybe_advance(Data2),
-            apply_log_leader(Data3);
+            Data3 = leader_advance_commit_index(Data2),
+            leader_apply_log(Data3);
         false ->
             Data0
     end.
 
-%% Leader - check quorum and advance commit index if possible
--spec maybe_advance(Data :: #raft_state{}) -> #raft_state{}.
-maybe_advance(
+%% Check if the leader should update the recorded commit index due to an
+%% advancement in the log quorum. (5.4.2)
+-spec leader_advance_commit_index(Data :: #raft_state{}) -> #raft_state{}.
+leader_advance_commit_index(
     #raft_state{
         table = Table,
         log_view = View,
@@ -2590,15 +2696,19 @@ maybe_advance(
         first_current_term_log_index = TermStartIndex
     } = Data
 ) ->
-    LogLast = wa_raft_log:last_index(View),
-    case max_index_to_apply(MatchIndices, LogLast, config(Data)) of
-        % Raft paper section 5.4.3 - Only log entries from the leader's current term are committed
-        % by counting replicas; once an entry from the current term has been committed in this way,
-        % then all prior entries are committed indirectly because of the View Matching Property
+    LastIndex = wa_raft_log:last_index(View),
+    AllMatchIndices = MatchIndices#{node() => LastIndex},
+    case compute_member_quorum(AllMatchIndices, 0, config(Data)) of
+        % Only log entries from the leader's current term can be committed
+        % solely by counting replicas (5.4.3).
         QuorumIndex when QuorumIndex < TermStartIndex ->
             ?RAFT_COUNT(Table, 'apply.delay.old'),
-            ?SERVER_LOG_WARNING(leader, Data, "cannot establish quorum at ~0p before start of term at ~0p.",
-                [QuorumIndex, TermStartIndex]),
+            ?SERVER_LOG_WARNING(
+                leader,
+                Data,
+                "unable to establish quorum at ~0p before the start of the current term at ~0p.",
+                [QuorumIndex, TermStartIndex]
+            ),
             Data;
         QuorumIndex when QuorumIndex > CommitIndex ->
             Data#raft_state{commit_index = QuorumIndex};
@@ -2606,55 +2716,8 @@ maybe_advance(
             Data
     end.
 
-% Return the max index to potentially apply on the leader. This is the latest log index that
-% has achieved replication on at least a quorum of nodes in the current RAFT cluster.
-% NOTE: We do not need to enforce that the leader should not commit entries from previous
-%       terms here (5.4.2) because we only update the CommitIndex broadcast by the leader
-%       when we actually apply the log entry on the leader. (See `apply_log` for information
-%       about how this rule is enforced there.)
--spec max_index_to_apply(
-    MatchIndices :: #{node() => wa_raft_log:log_index()},
-    LastIndex :: wa_raft_log:log_index(),
-    Config :: config()
-) -> wa_raft_log:log_index().
-max_index_to_apply(MatchIndices, LastIndex, Config) ->
-    compute_quorum(MatchIndices#{node() => LastIndex}, 0, Config).
-
-%% Create a new list with exactly one element for each member in the membership
-%% defined in the provided configuration taking the value mapped to each member in
-%% the provided map or a provided default if a pairing is not available.
--spec to_member_list(
-    Mapping :: #{node() => Value},
-    Default :: Value,
-    Config :: config()
-) -> Normalized :: [Value].
-to_member_list(Mapping, Default, Config) ->
-    [maps:get(Node, Mapping, Default) || {_, Node} <- config_membership(Config)].
-
-%% Compute the quorum maximum value for the current membership given a config for
-%% the values represented by the given a mapping of peers (see note on config about
-%% RAFT RPC ids) to values assuming a default value for peers who are not represented
-%% in the mapping.
--spec compute_quorum(
-    Mapping :: #{node() => Value},
-    Default :: Value,
-    Config :: config()
- ) -> Quorum :: Value.
-compute_quorum(Mapping, Default, Config) ->
-    compute_quorum(to_member_list(Mapping, Default, Config)).
-
-%% Given a set of values $V$, compute the greatest $Q$ s.t. there exists
-%% at least a quorum of values $v_i \in V$ for which $v_i \ge Q$.
--spec compute_quorum(Values :: [Value]) -> Quorum :: Value.
-compute_quorum([_|_] = Values) ->
-    %% When taking element $k$ from a sorted list $|V| = n$, we know that all elements
-    %% of the sorted list $v_k ... v_n$ will be at least $v_k$. With $k = ceil(|V| / 2)$,
-    %% we can compute the quorum.
-    Index = (length(Values) + 1) div 2,
-    lists:nth(Index, lists:sort(Values)).
-
--spec apply_log_leader(Data :: #raft_state{}) -> #raft_state{}.
-apply_log_leader(
+-spec leader_apply_log(Data :: #raft_state{}) -> #raft_state{}.
+leader_apply_log(
     #raft_state{
         last_applied = LastApplied,
         match_indices = MatchIndices
@@ -3365,7 +3428,7 @@ handle_heartbeat(
                 State ->
                     {keep_state, Data3, ?ELECTION_TIMEOUT(Data3)};
                 NewState ->
-                    {next_state, NewState, Data3, ?ELECTION_TIMEOUT(Data3)}
+                    {next_state, NewState, Data3}
             end;
         {fatal, Reason} ->
             Data1 = Data0#raft_state{disable_reason = Reason},
@@ -3515,7 +3578,7 @@ cancel_queued(Queues, Start, End, Reason, Queued) ->
 %%------------------------------------------------------------------------------
 
 %% [RequestVote RPC]
--spec request_vote_impl(
+-spec handle_request_vote(
     State :: state(),
     Candidate :: #raft_identity{},
     CandidateIndex :: wa_raft_log:log_index(),
@@ -3524,7 +3587,7 @@ cancel_queued(Queues, Start, End, Reason, Queued) ->
 ) -> gen_statem:event_handler_result(state(), #raft_state{}).
 %% A replica with an available vote in the current term should allocate its vote
 %% if the candidate's log is at least as up-to-date as the local log. (5.4.1)
-request_vote_impl(
+handle_request_vote(
     State,
     ?IDENTITY_REQUIRES_MIGRATION(_, CandidateId) = Candidate,
     CandidateIndex,
@@ -3538,8 +3601,12 @@ request_vote_impl(
     {ok, Term} = wa_raft_log:term(View, Index),
     case {CandidateTerm, CandidateIndex} >= {Term, Index} of
         true ->
-            ?SERVER_LOG_NOTICE(State, Data, "decides to vote for candidate ~0p with up-to-date log at ~0p:~0p versus local log at ~0p:~0p.",
-                [Candidate, CandidateIndex, CandidateTerm, Index, Term]),
+            ?SERVER_LOG_NOTICE(
+                State,
+                Data,
+                "decides to vote for candidate ~0p with up-to-date log at ~0p:~0p versus local log at ~0p:~0p.",
+                [Candidate, CandidateIndex, CandidateTerm, Index, Term]
+            ),
             case VotedFor of
                 undefined ->
                     % If this vote request causes the current replica to allocate its vote, then
@@ -3554,15 +3621,23 @@ request_vote_impl(
                     keep_state_and_data
             end;
         false ->
-            ?SERVER_LOG_NOTICE(State, Data, "refuses to vote for candidate ~0p with outdated log at ~0p:~0p versus local log at ~0p:~0p.",
-                [Candidate, CandidateIndex, CandidateTerm, Index, Term]),
+            ?SERVER_LOG_NOTICE(
+                State,
+                Data,
+                "refuses to vote for candidate ~0p with outdated log at ~0p:~0p versus local log at ~0p:~0p.",
+                [Candidate, CandidateIndex, CandidateTerm, Index, Term]
+            ),
             keep_state_and_data
     end;
 %% A replica that was already allocated its vote to a specific candidate in the
 %% current term should ignore vote requests from other candidates. (5.4.1)
-request_vote_impl(State, Candidate, _, _,  #raft_state{voted_for = VotedFor} = Data) ->
-    ?SERVER_LOG_NOTICE(State, Data, "refusing to vote for candidate ~0p after previously voting for candidate ~0p in the current term.",
-        [Candidate, VotedFor]),
+handle_request_vote(State, Candidate, _, _,  #raft_state{voted_for = VotedFor} = Data) ->
+    ?SERVER_LOG_NOTICE(
+        State,
+        Data,
+        "refusing to vote for candidate ~0p after previously voting for candidate ~0p in the current term.",
+        [Candidate, VotedFor]
+    ),
     keep_state_and_data.
 
 %%------------------------------------------------------------------------------
@@ -3727,7 +3802,7 @@ check_leader_liveness(
     } = State
 ) ->
     NowTs = erlang:monotonic_time(millisecond),
-    QuorumTs = compute_quorum(HeartbeatResponse#{node() => NowTs}, 0, config(State)),
+    QuorumTs = compute_member_quorum(HeartbeatResponse#{node() => NowTs}, 0, config(State)),
 
     % If the quorum of the most recent timestamps of follower's acknowledgement
     % of heartbeats is too old, then the leader is considered stale.

@@ -458,7 +458,7 @@
     voted_for :: undefined | node(),
     %% The affirmative votes for leadership this RAFT replica has received from
     %% the cluster in the current term
-    votes = #{} :: #{node() => true},
+    votes = #{} :: #{node() => boolean()},
     %% The leader of the current RAFT term if known
     leader_id :: undefined | node(),
 
