@@ -12,92 +12,96 @@
 
 %% Public API
 -export([
+    get_current_term_and_leader/2,
     get_current_term/2,
     get_leader/2,
-    get_current_term_and_leader/2,
-    get_membership/2,
-    get_live/2,
-    get_stale/2,
+    get_status/2,
     get_state/2,
+    get_live/2,
+    get_lagging/2,
+    get_stale/2,
     get_message_queue_length/1
 ]).
 
 %% Internal API
 -export([
-    init_tables/0,
-    delete_state/2,
-    set_current_term_and_leader/4,
-    set_membership/3,
-    set_live/3,
-    set_stale/3,
-    set_state/3,
-    set_message_queue_length/1,
-    set_message_queue_length/2
+    init_tables/0
 ]).
 
-%% Local RAFT server's current FSM state
--define(RAFT_SERVER_STATE_KEY(Table, Partition), {state, Table, Partition}).
+%% Internal API
+-export([
+    set_current_term_and_leader/4,
+    set_status/6,
+    set_message_queue_length/2,
+    refresh_message_queue_length/1,
+    clear/3
+]).
+
+%% Local RAFT server's current status flags (state, liveness, staleness and read readiness)
+-define(STATUS_KEY(Table, Partition), {status, Table, Partition}).
 %% Local RAFT server's most recently known term and leader
--define(RAFT_CURRENT_TERM_AND_LEADER_KEY(Table, Partition), {term, Table, Partition}).
-%% Local RAFT server's current live flag - indicates if the server thinks it is part of a live cluster
--define(RAFT_LIVE_KEY(Table, Partition), {live, Table, Partition}).
-%% Local RAFT server's current stale flag - indicates if the server thinks its data is stale
--define(RAFT_STALE_KEY(Table, Partition), {stale, Table, Partition}).
+-define(CURRENT_TERM_AND_LEADER_KEY(Table, Partition), {term, Table, Partition}).
 %% Local RAFT server's message queue length
--define(RAFT_MSG_QUEUE_LENGTH_KEY(Name), {msg_queue_length, Name}).
-%% Local RAFT server's most recently known membership
--define(RAFT_MEMBERSHIP_KEY(Table, Partition), {membership, Table, Partition}).
+-define(MESSAGE_QUEUE_LENGTH_KEY(Name), {message_queue_length, Name}).
 
 %%-------------------------------------------------------------------
 %% RAFT Info - Public API
 %%-------------------------------------------------------------------
 
--spec get(term(), Default) -> Default.
-get(Key, Default) ->
-    try
-        ets:lookup_element(?MODULE, Key, 2, Default)
-    catch
-        error:badarg ->
-            Default
-    end.
-
--spec get_leader(wa_raft:table(), wa_raft:partition()) -> node() | undefined.
-get_leader(Table, Partition) ->
-    {_, Leader} = get(?RAFT_CURRENT_TERM_AND_LEADER_KEY(Table, Partition), {undefined, undefined}),
-    Leader.
-
--spec get_current_term(wa_raft:table(), wa_raft:partition()) -> wa_raft_log:log_term() | undefined.
-get_current_term(Table, Partition) ->
-    {Term, _} = get(?RAFT_CURRENT_TERM_AND_LEADER_KEY(Table, Partition), {undefined, undefined}),
-    Term.
-
 %% The RAFT server always sets both the known term and leader together, so that
 %% the atomic read performed by this method will not return a known leader for
 %% a different term.
--spec get_current_term_and_leader(wa_raft:table(), wa_raft:partition()) ->
-    {wa_raft_log:log_term() | undefined, node() | undefined}.
+-spec get_current_term_and_leader(Table :: wa_raft:table(), Partition :: wa_raft:partition()) -> Info | undefined when
+    Info :: {Term :: wa_raft_log:log_term(), Leader :: node() | undefined}.
 get_current_term_and_leader(Table, Partition) ->
-    get(?RAFT_CURRENT_TERM_AND_LEADER_KEY(Table, Partition), {undefined, undefined}).
+    case ets:lookup(?MODULE, ?CURRENT_TERM_AND_LEADER_KEY(Table, Partition)) of
+        [] -> undefined;
+        [{_, Term, Leader}] -> {Term, Leader}
+    end.
 
--spec get_state(wa_raft:table(), wa_raft:partition()) -> wa_raft_server:state() | undefined.
+-spec get_current_term(Table :: wa_raft:table(), Partition :: wa_raft:partition()) ->
+    wa_raft_log:log_term() | undefined.
+get_current_term(Table, Partition) ->
+    ets:lookup_element(?MODULE, ?CURRENT_TERM_AND_LEADER_KEY(Table, Partition), 2, undefined).
+
+-spec get_leader(Table :: wa_raft:table(), Partition :: wa_raft:partition()) -> node() | undefined.
+get_leader(Table, Partition) ->
+    ets:lookup_element(?MODULE, ?CURRENT_TERM_AND_LEADER_KEY(Table, Partition), 3, undefined).
+
+-spec get_status(Table :: wa_raft:table(), Partition :: wa_raft:partition()) -> Status | undefined when
+    Status ::
+        {
+            State :: wa_raft_server:state(),
+            Live :: boolean(),
+            Lagging :: boolean(),
+            Stale :: boolean()
+        }.
+get_status(Table, Partition) ->
+    case ets:lookup(?MODULE, ?STATUS_KEY(Table, Partition)) of
+        [] -> undefined;
+        [{_, State, Live, Lagging, Stale}] -> {State, Live, Lagging, Stale}
+    end.
+
+-spec get_state(Table :: wa_raft:table(), Partition :: wa_raft:partition()) ->
+    wa_raft_server:state() | undefined.
 get_state(Table, Partition) ->
-    get(?RAFT_SERVER_STATE_KEY(Table, Partition), undefined).
+    ets:lookup_element(?MODULE, ?STATUS_KEY(Table, Partition), 2, undefined).
 
--spec get_live(wa_raft:table(), wa_raft:partition()) -> boolean().
+-spec get_live(Table :: wa_raft:table(), Partition :: wa_raft:partition()) -> boolean().
 get_live(Table, Partition) ->
-    get(?RAFT_LIVE_KEY(Table, Partition), false).
+    ets:lookup_element(?MODULE, ?STATUS_KEY(Table, Partition), 3, false).
 
--spec get_stale(wa_raft:table(), wa_raft:partition()) -> boolean().
+-spec get_lagging(Table :: wa_raft:table(), Partition :: wa_raft:partition()) -> boolean().
+get_lagging(Table, Partition) ->
+    ets:lookup_element(?MODULE, ?STATUS_KEY(Table, Partition), 4, true).
+
+-spec get_stale(Table :: wa_raft:table(), Partition :: wa_raft:partition()) -> boolean().
 get_stale(Table, Partition) ->
-    get(?RAFT_STALE_KEY(Table, Partition), true).
+    ets:lookup_element(?MODULE, ?STATUS_KEY(Table, Partition), 5, true).
 
--spec get_message_queue_length(atom()) -> undefined | non_neg_integer().
+-spec get_message_queue_length(Name :: atom()) -> non_neg_integer() | undefined.
 get_message_queue_length(Name) ->
-    get(?RAFT_MSG_QUEUE_LENGTH_KEY(Name), undefined).
-
--spec get_membership(wa_raft:table(), wa_raft:partition()) -> wa_raft_server:membership() | undefined.
-get_membership(Table, Partition) ->
-    get(?RAFT_MEMBERSHIP_KEY(Table, Partition), undefined).
+    ets:lookup_element(?MODULE, ?MESSAGE_QUEUE_LENGTH_KEY(Name), 2, undefined).
 
 %%-------------------------------------------------------------------
 %% RAFT Info - Internal API
@@ -108,43 +112,52 @@ init_tables() ->
     ets:new(?MODULE, [set, public, named_table, {write_concurrency, true}, {read_concurrency, true}]),
     ok.
 
--spec set(term(), term()) -> true.
-set(Key, Value) ->
-    ets:update_element(?MODULE, Key, {2, Value}) orelse ets:insert(?MODULE, {Key, Value}).
-
--spec delete(term()) -> true.
-delete(Key) ->
-    ets:delete(?MODULE, Key).
-
--spec set_current_term_and_leader(wa_raft:table(), wa_raft:partition(), wa_raft_log:log_term(), node()) -> true.
+-spec set_current_term_and_leader(
+    Table :: wa_raft:table(),
+    Partition :: wa_raft:partition(),
+    Term :: wa_raft_log:log_term(),
+    Leader :: undefined | node()
+) -> boolean().
 set_current_term_and_leader(Table, Partition, Term, Leader) ->
-    set(?RAFT_CURRENT_TERM_AND_LEADER_KEY(Table, Partition), {Term, Leader}).
+    ets:update_element(
+        ?MODULE,
+        ?CURRENT_TERM_AND_LEADER_KEY(Table, Partition),
+        [{2, Term}, {3, Leader}],
+        {?CURRENT_TERM_AND_LEADER_KEY(Table, Partition), Term, Leader}
+    ).
 
--spec set_state(wa_raft:table(), wa_raft:partition(), wa_raft_server:state()) -> true.
-set_state(Table, Partition, State) ->
-    set(?RAFT_SERVER_STATE_KEY(Table, Partition), State).
+-spec set_status(
+    Table :: wa_raft:table(),
+    Partition :: wa_raft:partition(),
+    State :: wa_raft_server:state(),
+    Live :: boolean(),
+    Lagging :: boolean(),
+    Stale :: boolean()
+) -> boolean().
+set_status(Table, Partition, State, Live, Lagging, Stale) ->
+    ets:update_element(
+        ?MODULE,
+        ?STATUS_KEY(Table, Partition),
+        [{2, State}, {3, Live}, {4, Lagging}, {5, Stale}],
+        {?STATUS_KEY(Table, Partition), State, Live, Lagging, Stale}
+    ).
 
--spec delete_state(wa_raft:table(), wa_raft:partition()) -> true.
-delete_state(Table, Partition) ->
-    delete(?RAFT_SERVER_STATE_KEY(Table, Partition)).
+-spec set_message_queue_length(Name :: atom(), Length :: non_neg_integer()) -> boolean().
+set_message_queue_length(Name, Length) ->
+    ets:update_element(
+        ?MODULE,
+        ?MESSAGE_QUEUE_LENGTH_KEY(Name),
+        {2, Length},
+        {?MESSAGE_QUEUE_LENGTH_KEY(Name), Length}
+    ).
 
--spec set_live(wa_raft:table(), wa_raft:partition(), boolean()) -> true.
-set_live(Table, Partition, Live) ->
-    set(?RAFT_LIVE_KEY(Table, Partition), Live).
-
--spec set_stale(wa_raft:table(), wa_raft:partition(), boolean()) -> true.
-set_stale(Table, Partition, Stale) ->
-    set(?RAFT_STALE_KEY(Table, Partition), Stale).
-
--spec set_membership(wa_raft:table(), wa_raft:partition(), wa_raft_server:membership()) -> true.
-set_membership(Table, Partition, Membership) ->
-    set(?RAFT_MEMBERSHIP_KEY(Table, Partition), Membership).
-
--spec set_message_queue_length(Name :: atom()) -> true.
-set_message_queue_length(Name) ->
+-spec refresh_message_queue_length(Name :: atom()) -> boolean().
+refresh_message_queue_length(Name) ->
     {message_queue_len, Length} = process_info(self(), message_queue_len),
     set_message_queue_length(Name, Length).
 
--spec set_message_queue_length(Name :: atom(), Length :: non_neg_integer()) -> true.
-set_message_queue_length(Name, Length) ->
-    set(?RAFT_MSG_QUEUE_LENGTH_KEY(Name), Length).
+-spec clear(Table :: wa_raft:table(), Partition :: wa_raft:partition(), Name :: atom()) -> true.
+clear(Table, Partition, Name) ->
+    ets:delete(?MODULE, ?STATUS_KEY(Table, Partition)),
+    ets:delete(?MODULE, ?MESSAGE_QUEUE_LENGTH_KEY(Name)),
+    true.

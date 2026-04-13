@@ -450,6 +450,8 @@
     %% The timestamp (milliseconds monotonic clock) of the most recently
     %% received (follower) or sent (leader) heartbeat.
     leader_heartbeat_ts :: undefined | integer(),
+    %% The most recently seen commit index from a leader heartbeat
+    leader_commit_index :: undefined | non_neg_integer(),
 
     %% The largest RAFT term that has been observed in the cluster or reached
     %% by this RAFT replica
