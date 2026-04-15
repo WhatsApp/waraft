@@ -899,8 +899,13 @@ handle_rpc_impl(Type, Event, ?REQUEST_VOTE, Term, Sender, Payload, State,
             % Log this at debug level because we may end up with alot of these when we have
             % removed a server from the cluster but not yet shut it down.
             ?RAFT_COUNT(Table, 'server.request_vote.drop'),
-            ?SERVER_LOG_DEBUG(State, Data, "dropping normal vote request from ~p because leader was still active ~p ms ago (allowed ~p ms).",
-                [Sender, Delay, AllowedDelay]),
+            ?SERVER_LOG_DEBUG(
+                State,
+                Data,
+                "rejecting normal vote request from ~p because leader was still active ~p ms ago (allowed ~p ms).",
+                [Sender, Delay, AllowedDelay]
+            ),
+            send_rpc(Sender, ?VOTE(false), Data),
             keep_state_and_data
     end;
 %% [General Rules] Advance to the newer term and reset state when seeing a newer term in an incoming RPC
@@ -1254,11 +1259,12 @@ leader(
     State2 = leader_apply_log(State1),
     {keep_state, maybe_heartbeat(State2), ?HEARTBEAT_TIMEOUT(State2)};
 
-%% [RequestVote RPC] Ignore any vote requests as leadership is aleady established (5.1, 5.2)
-leader(_, ?REMOTE(_, ?REQUEST_VOTE(_, _, _)), #raft_state{}) ->
+%% [RequestVote RPC] Reject any vote requests as leadership is already established (5.1, 5.2)
+leader(_, ?REMOTE(Sender, ?REQUEST_VOTE(_, _, _)), #raft_state{} = Data) ->
+    send_rpc(Sender, ?VOTE(false), Data),
     keep_state_and_data;
 
-%% [Vote RPC] We are already leader, so we don't need to consider any more votes (5.1)
+%% [Vote RPC] Votes are only useful to candidates
 leader(_, ?REMOTE(_, ?VOTE(_)), #raft_state{}) ->
     keep_state_and_data;
 
@@ -1601,6 +1607,10 @@ follower(_, ?REMOTE(_, ?APPEND_ENTRIES_RESPONSE(_, _, _, _)), #raft_state{}) ->
 follower(_, ?REMOTE(Candidate, ?REQUEST_VOTE(_, CandidateIndex, CandidateTerm)), #raft_state{} = State) ->
     handle_request_vote(?FUNCTION_NAME, Candidate, CandidateIndex, CandidateTerm, State);
 
+%% [Vote RPC] Votes are only useful to candidates
+follower(_, ?REMOTE(_, ?VOTE(_)), #raft_state{}) ->
+    keep_state_and_data;
+
 %% [Handover][Handover RPC] The leader is requesting this follower to take over leadership in a new term
 follower(
     _,
@@ -1773,8 +1783,9 @@ candidate(Type, ?REMOTE(Sender, ?APPEND_ENTRIES(_, _, _, _, _)) = Event, #raft_s
     ?SERVER_LOG_NOTICE(State, "switching to follower after receiving heartbeat from ~0p.", [Sender]),
     {next_state, follower_or_witness_state(State), State, {next_event, Type, Event}};
 
-%% [RequestVote RPC] Candidates should ignore incoming vote requests as they always vote for themselves (5.2)
-candidate(_, ?REMOTE(_, ?REQUEST_VOTE(_, _, _)), #raft_state{}) ->
+%% [RequestVote RPC] Candidates should reject incoming vote requests as they always vote for themselves (5.2)
+candidate(_, ?REMOTE(Sender, ?REQUEST_VOTE(_, _, _)), #raft_state{} = Data) ->
+    send_rpc(Sender, ?VOTE(false), Data),
     keep_state_and_data;
 
 %% [Vote RPC] Candidate receives a vote (5.2)
@@ -1917,9 +1928,14 @@ disabled(Type, Event, #raft_state{} = State) when is_tuple(Event), element(1, Ev
 disabled(_, ?REMOTE(_, ?APPEND_ENTRIES(_, _, _, _, _)), #raft_state{}) ->
     keep_state_and_data;
 
-%% [RequestVote RPC] Disabled servers should not act upon any vote requests as they should behave
+%% [RequestVote RPC] Disabled servers should reject any vote requests as they should behave
 %%                   as if dead to the cluster
-disabled(_, ?REMOTE(_, ?REQUEST_VOTE(_, _, _)), #raft_state{}) ->
+disabled(_, ?REMOTE(Sender, ?REQUEST_VOTE(_, _, _)), #raft_state{} = Data) ->
+    send_rpc(Sender, ?VOTE(false), Data),
+    keep_state_and_data;
+
+%% [Vote RPC] Votes are only useful to candidates
+disabled(_, ?REMOTE(_, ?VOTE(_)), #raft_state{}) ->
     keep_state_and_data;
 
 disabled({call, From}, ?TRIGGER_ELECTION_COMMAND(_), #raft_state{}) ->
@@ -2021,7 +2037,7 @@ witness({call, From}, ?PROMOTE_COMMAND(_, _), #raft_state{}) ->
 witness(_, ?REMOTE(Candidate, ?REQUEST_VOTE(_, CandidateIndex, CandidateTerm)), #raft_state{} = State) ->
     handle_request_vote(?FUNCTION_NAME, Candidate, CandidateIndex, CandidateTerm, State);
 
-%% [Vote RPC] Witnesses should not act upon any incoming votes as they cannot become leader
+%% [Vote RPC] Votes are only useful to candidates
 witness(_, ?REMOTE(_, ?VOTE(_)), #raft_state{}) ->
     keep_state_and_data;
 
@@ -3603,6 +3619,7 @@ handle_request_vote(
                 "refuses to vote for candidate ~0p with outdated log at ~0p:~0p versus local log at ~0p:~0p.",
                 [Candidate, CandidateIndex, CandidateTerm, Index, Term]
             ),
+            send_rpc(Candidate, ?VOTE(false), Data),
             keep_state_and_data
     end;
 %% A replica that was already allocated its vote to a specific candidate in the
@@ -3614,6 +3631,7 @@ handle_request_vote(State, Candidate, _, _,  #raft_state{voted_for = VotedFor} =
         "refusing to vote for candidate ~0p after previously voting for candidate ~0p in the current term.",
         [Candidate, VotedFor]
     ),
+    send_rpc(Candidate, ?VOTE(false), Data),
     keep_state_and_data.
 
 %%------------------------------------------------------------------------------
