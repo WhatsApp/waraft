@@ -314,7 +314,7 @@ delete_transport_info(ID) ->
             lists:foreach(fun (FileID) -> delete_file_info(ID, FileID) end, lists:seq(1, TotalFiles)),
             ets:delete(?TRANSPORT_TABLE, ID),
             Queue = maps:get(queue, Info, undefined),
-            Queue =/= undefined andalso catch ets:delete(Queue),
+            Queue =/= undefined andalso (try ets:delete(Queue) catch _:_ -> ok end),
             ok;
         not_found ->
             not_found
@@ -482,7 +482,7 @@ handle_call({transport, ID, Peer, Module, Meta, Files}, From, #state{counters = 
                 TotalFiles = length(Files),
 
                 % Force the receiving directory to always exist
-                catch filelib:ensure_dir([RootDir, $/]),
+                try filelib:ensure_dir([RootDir, $/]) catch _:_ -> ok end,
 
                 % Setup overall transport info
                 set_transport_info(ID, #{
