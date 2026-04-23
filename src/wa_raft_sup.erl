@@ -95,6 +95,13 @@ child_spec(Application, RaftArgs, Options) ->
 -spec start_link(Application :: atom(), Specs :: [wa_raft:args()], Options :: options()) -> supervisor:startlink_ret().
 start_link(Application, RaftArgs, Options) ->
     ok = persistent_term:put(?OPTIONS_KEY(Application), normalize_spec(Application, Options)),
+    %% WARNING: Starting partitions during start_link is problematic. If a
+    %% partition start fails below, this function crashes after the supervisor
+    %% process is already alive and registered. The parent supervisor then
+    %% never learns about this supervisor and won't include it in the proper
+    %% shutdown order. Callers that need reliable shutdown ordering should
+    %% start this supervisor without partitions (empty RaftArgs) and defer
+    %% partition startup to a separate phase.
     case supervisor:start_link({local, default_name(Application)}, ?MODULE, Application) of
         {ok, Pid} = Result ->
             [
