@@ -29,9 +29,9 @@
 %% Internal API
 -export([
     open/1,
-    cancel/1,
     apply/5,
-    apply_read/3
+    apply_read/3,
+    cancel_reads/2
 ]).
 
 %% Internal API
@@ -326,10 +326,10 @@
 -define(READ_REQUEST(Command), {read, Command}).
 
 -define(OPEN_REQUEST, open).
--define(CANCEL_REQUEST, cancel).
 -define(FULFILL_REQUEST(Key, Result), {fulfill, Key, Result}).
 -define(APPLY_REQUEST(From, Record, Size, Priority), {apply, From, Record, Size, Priority}).
 -define(APPLY_READ_REQUEST(From, Command), {apply_read, From, Command}).
+-define(CANCEL_READS_REQUEST(Result), {cancel_reads, Result}).
 
 -define(CREATE_SNAPSHOT_REQUEST(), create_snapshot).
 -define(CREATE_SNAPSHOT_REQUEST(Name), {create_snapshot, Name}).
@@ -344,7 +344,7 @@
 -type call() :: status_request() | position_request() | label_request() | config_request() | read_request() |
                 open_request() | create_snapshot_request() | create_witness_snapshot_request() |
                 open_snapshot_request() | make_empty_snapshot_request().
--type cast() :: cancel_request() | fulfill_request() | apply_request() | apply_read_request() | delete_snapshot_request().
+-type cast() :: fulfill_request() | apply_request() | apply_read_request() | cancel_reads_request() | delete_snapshot_request().
 
 -type status_request() :: ?STATUS_REQUEST.
 -type position_request() :: ?POSITION_REQUEST.
@@ -354,10 +354,10 @@
 -type read_request() :: ?READ_REQUEST(Command :: wa_raft_acceptor:command()).
 
 -type open_request() :: ?OPEN_REQUEST.
--type cancel_request() :: ?CANCEL_REQUEST.
 -type fulfill_request() :: ?FULFILL_REQUEST(Key :: wa_raft_acceptor:key(), Result :: wa_raft_acceptor:commit_result()).
 -type apply_request() :: ?APPLY_REQUEST(From :: gen_server:from() | undefined, Record :: wa_raft_log:log_record(), Size :: non_neg_integer(), Priority :: wa_raft_acceptor:priority()).
 -type apply_read_request() :: ?APPLY_READ_REQUEST(From :: gen_server:from(), Comman :: wa_raft_acceptor:command()).
+-type cancel_reads_request() :: ?CANCEL_READS_REQUEST(Result :: wa_raft_acceptor:read_error()).
 
 -type create_snapshot_request() :: ?CREATE_SNAPSHOT_REQUEST() | ?CREATE_SNAPSHOT_REQUEST(Name :: string()) | ?CREATE_SNAPSHOT_REQUEST(Name :: string(), Options :: snapshot_options()).
 -type create_witness_snapshot_request() :: ?CREATE_WITNESS_SNAPSHOT_REQUEST() | ?CREATE_WITNESS_SNAPSHOT_REQUEST(Name :: string()).
@@ -416,10 +416,6 @@ read(Storage, Command) ->
 open(Storage) ->
     gen_server:call(Storage, ?OPEN_REQUEST, ?RAFT_RPC_CALL_TIMEOUT()).
 
--spec cancel(Storage :: gen_server:server_ref()) -> ok.
-cancel(Storage) ->
-    gen_server:cast(Storage, ?CANCEL_REQUEST).
-
 -spec apply(
     Storage :: gen_server:server_ref(),
     From :: gen_server:from() | undefined,
@@ -433,6 +429,10 @@ apply(Storage, From, Record, Size, Priority) ->
 -spec apply_read(Storage :: gen_server:server_ref(), From :: gen_server:from(), Command :: wa_raft_acceptor:command()) -> ok.
 apply_read(Storage, From, Command) ->
     gen_server:cast(Storage, ?APPLY_READ_REQUEST(From, Command)).
+
+-spec cancel_reads(Storage :: gen_server:server_ref(), Result :: wa_raft_acceptor:read_error()) -> ok.
+cancel_reads(Storage, Result) ->
+    gen_server:cast(Storage, ?CANCEL_READS_REQUEST(Result)).
 
 -spec open_snapshot(Storage :: gen_server:server_ref(), Path :: file:filename(), Position :: wa_raft_log:log_pos()) -> ok | {error, Reason :: term()}.
 open_snapshot(Storage, Path, Position) ->
@@ -629,11 +629,6 @@ handle_call(Request, From, #state{name = Name} = State) ->
 -spec handle_cast(Request :: cast(), State :: #state{}) ->
     {noreply, NewState :: #state{}}.
 
-handle_cast(?CANCEL_REQUEST, #state{name = Name, queues = Queues} = State) ->
-    ?RAFT_LOG_NOTICE("Storage[~0p] cancels all pending reads.", [Name]),
-    wa_raft_queue:fulfill_all_reads(Queues, {error, not_leader}),
-    {noreply, State};
-
 handle_cast(?APPLY_REQUEST(From, {LogIndex, {LogTerm, {_, Label, Command}}}, Size, Priority), #state{name = Name, queues = Queues} = State0) ->
     wa_raft_queue:fulfill_apply(Queues, Size),
     LogPosition = #raft_log_pos{index = LogIndex, term = LogTerm},
@@ -642,6 +637,11 @@ handle_cast(?APPLY_REQUEST(From, {LogIndex, {LogTerm, {_, Label, Command}}}, Siz
 
 handle_cast(?APPLY_READ_REQUEST(From, Command), #state{module = Module, handle = Handle, position = Position} = State) ->
     gen_server:reply(From, Module:storage_read(Command, Position, Handle)),
+    {noreply, State};
+
+handle_cast(?CANCEL_READS_REQUEST(Result), #state{name = Name, queues = Queues} = State) ->
+    ?RAFT_LOG_NOTICE("Storage[~0p] cancels all pending reads.", [Name]),
+    wa_raft_queue:fulfill_all_reads(Queues, Result),
     {noreply, State};
 
 handle_cast(?DELETE_SNAPSHOT_REQUEST(SnapshotName), #state{name = Name, path = Path} = State) ->

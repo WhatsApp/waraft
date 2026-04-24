@@ -56,6 +56,8 @@
 ]).
 
 -export_type([
+    common_error_type/0,
+    common_error/0,
     call_error_type/0,
     call_error/0,
     call_result/0,
@@ -93,24 +95,23 @@
 -type call_error() :: {error, call_error_type()}.
 -type call_result() :: Result :: dynamic() | Error :: call_error().
 
+-type common_error_type() :: not_supported | not_leader | commit_stalled | {notify_redirect, Peer :: node()}.
+-type common_error() :: {error, common_error_type()}.
+
 -type read_request() :: ?READ_REQUEST(Command :: command()).
--type read_error_type() :: not_leader | read_queue_full | apply_queue_full | {notify_redirect, Peer :: node()}.
+
+-type read_error_type() :: read_queue_full | apply_queue_full | common_error_type().
 -type read_error() :: {error, read_error_type()}.
 -type read_result() :: Result :: dynamic() | Error :: read_error() | call_error().
 
 -type commit_op() :: default_op() | adjust_config_op().
 -type default_op() :: ?OP_DEFAULT(Op :: op()).
 -type adjust_config_op() :: ?OP_ADJUST_CONFIG(Action :: wa_raft_server:config_action(), Index :: wa_raft_log:log_index() | undefined).
+
 -type commit_request() :: ?COMMIT_REQUEST(Op :: commit_op(), Priority :: priority()).
 -type commit_async_request() :: ?COMMIT_ASYNC_REQUEST(From :: gen_server:from(), Op :: commit_op(), Priority :: priority()).
--type commit_error_type() ::
-    not_supported |
-    not_leader |
-    commit_queue_full |
-    apply_queue_full |
-    {notify_redirect, Peer :: node()} |
-    commit_stalled |
-    cancelled.
+
+-type commit_error_type() :: commit_queue_full | apply_queue_full | cancelled | common_error_type().
 -type commit_error() :: {error, commit_error_type()}.
 -type commit_result() :: Result :: dynamic() | Error :: commit_error() | call_error().
 
