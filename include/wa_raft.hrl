@@ -462,7 +462,7 @@
     %% the cluster in the current term
     votes = #{} :: #{node() => boolean()},
     %% The leader of the current RAFT term if known
-    leader_id :: undefined | node(),
+    leader :: undefined | #raft_identity{},
 
     %% The timestamp (milliseconds monotonic clock) that the current state of
     %% this RAFT replica was reached

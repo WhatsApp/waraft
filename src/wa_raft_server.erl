@@ -255,7 +255,8 @@
     | {voted_for, node()}
     | {commit_index, wa_raft_log:log_index()}
     | {last_applied, wa_raft_log:log_index()}
-    | {leader_id, node()}
+    | {leader_name, atom() | undefined}
+    | {leader_id, node() | undefined}
     | {pending_high, non_neg_integer()}
     | {pending_low, non_neg_integer()}
     | {pending_read, boolean()}
@@ -933,10 +934,10 @@ handle_rpc_impl(Type, _, Key, _, Sender, Payload, State, #raft_state{table = Tab
 ) -> gen_statem:event_handler_result(state(), #raft_state{}).
 
 %% [AppendEntries RPC] If we haven't discovered leader for this term, record it
-handle_procedure(Type, ?REMOTE(Sender, ?APPEND_ENTRIES(_, _, _, _, _)) = Procedure, State, #raft_state{leader_id = undefined} = Data) ->
+handle_procedure(Type, ?REMOTE(Sender, ?APPEND_ENTRIES(_, _, _, _, _)) = Procedure, State, #raft_state{leader = undefined} = Data) ->
     {keep_state, set_leader(State, Sender, Data), {next_event, Type, Procedure}};
 %% [Handover][Handover RPC] If we haven't discovered leader for this term, record it
-handle_procedure(Type, ?REMOTE(Sender, ?HANDOVER(_, _, _, _)) = Procedure, State, #raft_state{leader_id = undefined} = Data) ->
+handle_procedure(Type, ?REMOTE(Sender, ?HANDOVER(_, _, _, _)) = Procedure, State, #raft_state{leader = undefined} = Data) ->
     {keep_state, set_leader(State, Sender, Data), {next_event, Type, Procedure}};
 handle_procedure(Type, Procedure, _, #raft_state{}) ->
     {keep_state_and_data, {next_event, Type, Procedure}}.
@@ -1615,13 +1616,13 @@ follower(_, ?REMOTE(_, ?VOTE(_)), #raft_state{}) ->
 follower(
     _,
     ?REMOTE(
-        ?IDENTITY_REQUIRES_MIGRATION(_, LeaderId) = Sender,
+        Sender,
         ?HANDOVER(Ref, PrevLogIndex, PrevLogTerm, LogEntries)
     ),
     #raft_state{
         application = App,
         table = Table,
-        leader_id = LeaderId
+        leader = Sender
     } = State0
 ) ->
     ?RAFT_COUNT(Table, 'follower.handover'),
@@ -1659,7 +1660,7 @@ follower(_, ?REMOTE(_, ?HANDOVER_FAILED(_)), #raft_state{}) ->
 %% follower doesn't receive any heartbeat. starting a new election
 follower(state_timeout, _, #raft_state{
         table = Table,
-        leader_id = LeaderId,
+        leader = Leader,
         log_view = View,
         leader_heartbeat_ts = HeartbeatTs
     } = State
@@ -1671,8 +1672,11 @@ follower(state_timeout, _, #raft_state{
     ?RAFT_COUNT(Table, 'follower.timeout'),
     case candidate_eligible(State) of
         true ->
-            ?SERVER_LOG_NOTICE(State, "times out and starts election at ~0p after waiting for leader ~0p for ~0p ms.",
-                [wa_raft_log:last_index(View), WaitingMs, LeaderId]),
+            ?SERVER_LOG_NOTICE(
+                State,
+                "times out and starts election at ~0p after waiting for leader ~0p for ~0p ms.",
+                [wa_raft_log:last_index(View), identity_to_server(Leader), WaitingMs]
+            ),
             {next_state, candidate, State};
         false ->
             ?SERVER_LOG_NOTICE(State, "is not timing out due to being ineligible or having zero election weight.", []),
@@ -2074,12 +2078,14 @@ command(
     State,
     cast,
     ?COMMIT_COMMAND(From, _Op, Priority),
-    #raft_state{
-        queues = Queues,
-        leader_id = LeaderId
-    } = Data
+    #raft_state{queues = Queues, leader = Leader} = Data
 ) when State =/= leader ->
-    ?SERVER_LOG_WARNING(State, Data, "commit fails as leader is currently ~0p.", [LeaderId]),
+    ?SERVER_LOG_WARNING(
+        State,
+        Data,
+        "commit fails as leader is currently ~0p.",
+        [identity_to_server(Leader)]
+    ),
     wa_raft_queue:commit_cancelled(Queues, From, {error, not_leader}, Priority),
     keep_state_and_data;
 
@@ -2088,12 +2094,14 @@ command(
     State,
     cast,
     ?READ_COMMAND({From, _}),
-    #raft_state{
-        queues = Queues,
-        leader_id = LeaderId
-    } = Data
+    #raft_state{queues = Queues, leader = Leader} = Data
 ) when State =/= leader ->
-    ?SERVER_LOG_WARNING(State, Data, "strong read fails. Leader is ~p.", [LeaderId]),
+    ?SERVER_LOG_WARNING(
+        State,
+        Data,
+        "strong read fails as leader is currently ~0p.",
+        [identity_to_server(Leader)]
+    ),
     wa_raft_queue:fulfill_incomplete_read(Queues, From, {error, not_leader}),
     keep_state_and_data;
 
@@ -2102,9 +2110,7 @@ command(
     State,
     cast,
     ?NOTIFY_COMPLETE_COMMAND(),
-    #raft_state{
-        queues = Queues
-    } = Data
+    #raft_state{queues = Queues} = Data
 ) when State =:= leader; State =:= follower; State =:= witness ->
     case wa_raft_queue:apply_queue_size(Queues) of
         0 ->
@@ -2126,6 +2132,11 @@ command(_, Type, ?CURRENT_CONFIG_COMMAND, #raft_state{} = Data) ->
 
 %% [Status] Get status of node.
 command(State, {call, From}, ?STATUS_COMMAND, #raft_state{} = Data) ->
+    {LeaderName, LeaderId} =
+        case Data#raft_state.leader of
+            undefined -> {undefined, undefined};
+            #raft_identity{name = Name, node = Node} -> {Name, Node}
+        end,
     Status = [
         {state, State},
         {id, Data#raft_state.self#raft_identity.node},
@@ -2136,7 +2147,8 @@ command(State, {call, From}, ?STATUS_COMMAND, #raft_state{} = Data) ->
         {voted_for, Data#raft_state.voted_for},
         {commit_index, Data#raft_state.commit_index},
         {last_applied, Data#raft_state.last_applied},
-        {leader_id, Data#raft_state.leader_id},
+        {leader_name, LeaderName},
+        {leader_id, LeaderId},
         {pending_high, length(Data#raft_state.pending_high)},
         {pending_low, length(Data#raft_state.pending_low)},
         {pending_read, Data#raft_state.pending_read},
@@ -2176,13 +2188,13 @@ command(
             case ?RAFT_LEADER_ELIGIBLE(App) of
                 true ->
                     ?SERVER_LOG_NOTICE(State, Data, "switching to candidate after promotion request.", []),
-                    NewState = case Term > CurrentTerm of
+                    NewData = case Term > CurrentTerm of
                         true -> advance_term(State, Term, undefined, Data);
                         false -> Data
                     end,
                     case State of
-                        candidate -> {repeat_state, NewState, {reply, From, ok}};
-                        _         -> {next_state, candidate, NewState, {reply, From, ok}}
+                        candidate -> {repeat_state, NewData, {reply, From, ok}};
+                        _         -> {next_state, candidate, NewData, {reply, From, ok}}
                     end;
                 false ->
                     ?SERVER_LOG_WARNING(State, Data, "cannot be promoted as candidate while ineligible.", []),
@@ -2203,7 +2215,7 @@ command(
         table = Table,
         current_term = CurrentTerm,
         leader_heartbeat_ts = HeartbeatTs,
-        leader_id = LeaderId
+        leader = Leader
     } = Data
 ) when State =/= stalled, State =/= witness, State =/= disabled ->
     Now = erlang:monotonic_time(millisecond),
@@ -2219,21 +2231,46 @@ command(
     Allowed = if
         % Prevent promotions to older or invalid terms
         not is_integer(Term) orelse Term < CurrentTerm ->
-            ?SERVER_LOG_WARNING(State, Data, "cannot attempt promotion to current, older, or invalid term ~0p.", [Term]),
+            ?SERVER_LOG_WARNING(
+                State,
+                Data,
+                "cannot attempt promotion to current, older, or invalid term ~0p.",
+                [Term]
+            ),
             invalid_term;
-        Term =:= CurrentTerm andalso LeaderId =/= undefined ->
-            ?SERVER_LOG_WARNING(State, Data, "refusing to promote to leader of current term already led by ~0p.", [LeaderId]),
+        Term =:= CurrentTerm andalso Leader =/= undefined ->
+            ?SERVER_LOG_WARNING(
+                State,
+                Data,
+                "refusing to promote to leader of current term already led by ~0p.",
+                [identity_to_server(Leader)]
+            ),
             invalid_term;
         % Prevent promotions that will immediately result in a resignation.
         not Eligible ->
-            ?SERVER_LOG_WARNING(State, Data, "cannot promote to leader as the node is ineligible.", []),
+            ?SERVER_LOG_WARNING(
+                State,
+                Data,
+                "cannot promote to leader as the node is ineligible.",
+                []
+            ),
             ineligible;
         State =:= witness ->
-            ?SERVER_LOG_WARNING(State, Data, "cannot promote a witness node.", []),
+            ?SERVER_LOG_WARNING(
+                State,
+                Data,
+                "cannot promote a witness node.",
+                []
+            ),
             invalid_state;
         % Prevent promotions to any operational state when there is no cluster membership configuration.
         Membership =:= [] ->
-            ?SERVER_LOG_WARNING(State, Data, "cannot promote to leader with no existing membership.", []),
+            ?SERVER_LOG_WARNING(
+                State,
+                Data,
+                "cannot promote to leader with no existing membership.",
+                []
+            ),
             invalid_configuration;
         Force ->
             true;
@@ -2242,19 +2279,24 @@ command(
         Now - HeartbeatTs >= HeartbeatGracePeriodMs ->
             true;
         true ->
-            ?SERVER_LOG_WARNING(State, Data, "rejecting request to promote to leader as a valid heartbeat was recently received.", []),
+            ?SERVER_LOG_WARNING(
+                State,
+                Data,
+                "rejecting request to promote to leader as a valid heartbeat was recently received.",
+                []
+            ),
             rejected
     end,
     case Allowed of
         true ->
             ?SERVER_LOG_NOTICE(State, Data, "is promoting to leader of term ~0p.", [Term]),
-            NewState = case Term > CurrentTerm of
+            NewData = case Term > CurrentTerm of
                 true -> advance_term(State, Term, node(), Data);
                 false -> Data
             end,
             case State of
-                leader -> {repeat_state, NewState, {reply, From, ok}};
-                _      -> {next_state, leader, NewState, {reply, From, ok}}
+                leader -> {repeat_state, NewData, {reply, From, ok}};
+                _      -> {next_state, leader, NewData, {reply, From, ok}}
             end;
         Reason ->
             {keep_state_and_data, {reply, From, {error, Reason}}}
@@ -2331,12 +2373,12 @@ command(
     ?DISABLE_COMMAND(Reason),
     #raft_state{
         self = ?IDENTITY_REQUIRES_MIGRATION(_, NodeId),
-        leader_id = LeaderId
+        leader = Leader
     } = Data0
 ) ->
     ?SERVER_LOG_NOTICE(State, Data0, "disabling due to ~0p.", [Reason]),
     Data1 = Data0#raft_state{disable_reason = Reason},
-    Data2 = case NodeId =:= LeaderId of
+    Data2 = case Leader =/= undefined andalso Leader#raft_identity.node =:= NodeId of
         true  -> clear_leader(State, Data1);
         false -> Data1
     end,
@@ -2838,11 +2880,11 @@ send_op_to_storage(Index, Record, Size, #raft_state{storage = Storage, queued = 
 %%------------------------------------------------------------------------------
 
 -spec set_leader(State :: state(), Leader :: #raft_identity{}, Data :: #raft_state{}) -> #raft_state{}.
-set_leader(_, ?IDENTITY_REQUIRES_MIGRATION(_, Node), #raft_state{leader_id = Node} = Data) ->
+set_leader(_, Leader, #raft_state{leader = Leader} = Data) ->
     Data;
 set_leader(
     State,
-    ?IDENTITY_REQUIRES_MIGRATION(_, Node),
+    #raft_identity{node = Node} = Leader,
     #raft_state{
         table = Table,
         partition = Partition,
@@ -2850,19 +2892,19 @@ set_leader(
         current_term = CurrentTerm
     } = Data
 ) ->
-    ?SERVER_LOG_NOTICE(State, Data, "changes leader to ~0p.", [Node]),
+    ?SERVER_LOG_NOTICE(State, Data, "changes leader to ~0p.", [identity_to_server(Leader)]),
     wa_raft_info:set_current_term_and_leader(Table, Partition, CurrentTerm, Node),
-    NewData = Data#raft_state{leader_id = Node, pending_read = false},
+    NewData = Data#raft_state{leader = Leader, pending_read = false},
     wa_raft_storage:cancel(Storage),
     cancel_pending({error, not_leader}, NewData).
 
 -spec clear_leader(state(), #raft_state{}) -> #raft_state{}.
-clear_leader(_, #raft_state{leader_id = undefined} = Data) ->
+clear_leader(_, #raft_state{leader = undefined} = Data) ->
     Data;
 clear_leader(State, #raft_state{table = Table, partition = Partition, current_term = CurrentTerm} = Data) ->
-    ?SERVER_LOG_NOTICE(State, Data, "clears leader record.", []),
+    ?SERVER_LOG_NOTICE(State, Data, "clears leader.", []),
     wa_raft_info:set_current_term_and_leader(Table, Partition, CurrentTerm, undefined),
-    Data#raft_state{leader_id = undefined}.
+    Data#raft_state{leader = undefined}.
 
 %% Setup the RAFT state upon entry into a new RAFT server state.
 -spec enter_state(State :: state(), Data :: #raft_state{}) -> #raft_state{}.
@@ -3455,7 +3497,7 @@ append_entries(
         queues = Queues,
         commit_index = CommitIndex,
         current_term = CurrentTerm,
-        leader_id = LeaderId,
+        leader = Leader,
         queued = Queued
     } = Data
 ) ->
@@ -3492,10 +3534,16 @@ append_entries(
                 true -> ConflictEntry
             end,
             ?RAFT_COUNT(Table, {'heartbeat.error.corruption.excessive_truncation', State}),
-            ?SERVER_LOG_WARNING(State, Data, "refuses heartbeat at ~0p to ~0p that requires truncation past ~0p (term ~0p vs ~0p) when log entries up to ~0p are already committed.",
-                [PrevLogIndex, PrevLogIndex + EntryCount, ConflictIndex, ConflictTerm, LocalTerm, CommitIndex]),
-            Fatal = io_lib:format("A heartbeat at ~0p to ~0p from ~0p in term ~0p required truncating past ~0p (term ~0p vs ~0p) when log entries up to ~0p were already committed.",
-                [PrevLogIndex, PrevLogIndex + EntryCount, LeaderId, CurrentTerm, ConflictIndex, ConflictTerm, LocalTerm, CommitIndex]),
+            ?SERVER_LOG_WARNING(
+                State,
+                Data,
+                "refuses heartbeat at ~0p to ~0p that requires truncation past ~0p (term ~0p vs ~0p) when log entries up to ~0p are already committed.",
+                [PrevLogIndex, PrevLogIndex + EntryCount, ConflictIndex, ConflictTerm, LocalTerm, CommitIndex]
+            ),
+            Fatal = io_lib:format(
+                "A heartbeat at ~0p to ~0p from ~0p in term ~0p required truncating past ~0p (term ~0p vs ~0p) when log entries up to ~0p were already committed.",
+                [PrevLogIndex, PrevLogIndex + EntryCount, identity_to_server(Leader), CurrentTerm, ConflictIndex, ConflictTerm, LocalTerm, CommitIndex]
+            ),
             {fatal, lists:flatten(Fatal)};
         {conflict, ConflictIndex, NewEntries} when ConflictIndex >= PrevLogIndex ->
             % A truncation is required as there is a conflict between the local
@@ -3901,3 +3949,9 @@ candidate_or_witness_state_transition(#raft_state{current_term = CurrentTerm} = 
         true -> {next_state, witness, State};
         false -> {next_state, candidate, State, {next_event, internal, ?FORCE_ELECTION(CurrentTerm)}}
     end.
+
+-spec identity_to_server(Identity :: #raft_identity{} | undefined) -> {Name :: atom(), Node :: node()} | undefined.
+identity_to_server(undefined) ->
+    undefined;
+identity_to_server(#raft_identity{name = Name, node = Node}) ->
+    {Name, Node}.
