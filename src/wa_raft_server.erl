@@ -175,6 +175,14 @@
 ]).
 
 %%------------------------------------------------------------------------------
+%% RAFT Server - Internal Types
+%%------------------------------------------------------------------------------
+
+-export_type([
+    election_type/0
+]).
+
+%%------------------------------------------------------------------------------
 
 -include_lib("wa_raft/include/wa_raft.hrl").
 -include_lib("wa_raft/include/wa_raft_logger.hrl").
@@ -274,6 +282,12 @@
     | {config_index, wa_raft_log:log_index()}.
 
 %%------------------------------------------------------------------------------
+%% RAFT Server - Internal Types
+%%------------------------------------------------------------------------------
+
+-type election_type() :: normal | force | allowed.
+
+%%------------------------------------------------------------------------------
 %% RAFT Server - Private Types
 %%------------------------------------------------------------------------------
 
@@ -306,9 +320,8 @@
 -type notify_complete_command()     :: ?NOTIFY_COMPLETE_COMMAND().
 -type is_peer_ready_command()       :: ?IS_PEER_READY_COMMAND(peer()).
 
--type internal_event() :: advance_term_event() | force_election_event().
+-type internal_event() :: advance_term_event().
 -type advance_term_event() :: ?ADVANCE_TERM(wa_raft_log:log_term()).
--type force_election_event() :: ?FORCE_ELECTION(wa_raft_log:log_term()).
 
 -type timeout_type() :: election | heartbeat.
 
@@ -830,8 +843,6 @@ terminate(Reason, State, #raft_state{name = Name, table = Table, partition = Par
 -type handover_failed()         :: ?HANDOVER_FAILED        (reference()).
 -type notify_term()             :: ?NOTIFY_TERM            ().
 
--type election_type() :: normal | force | allowed.
-
 -spec protocol() -> #{atom() => procedure()}.
 protocol() ->
     #{
@@ -906,6 +917,8 @@ handle_rpc_impl(Type, Event, ?REQUEST_VOTE, Term, Sender, Payload, State,
                 "rejecting normal vote request from ~p because leader was still active ~p ms ago (allowed ~p ms).",
                 [Sender, Delay, AllowedDelay]
             ),
+            % TODO: This needs to reply with the same term as the request, but only after switching to
+            % single-round forced election.
             send_rpc(Sender, ?VOTE(false), Data),
             keep_state_and_data
     end;
@@ -1629,7 +1642,6 @@ follower(
     #raft_state{
         application = App,
         table = Table,
-        current_term = CurrentTerm,
         leader = Sender
     } = State0
 ) ->
@@ -1642,7 +1654,7 @@ follower(
                     case is_self_witness(State1) of
                         false ->
                             ?SERVER_LOG_NOTICE(State1, "immediately starting new election due to append success during handover RPC.", []),
-                            {next_state, candidate, State1, {next_event, internal, ?FORCE_ELECTION(CurrentTerm)}};
+                            {next_state, candidate, State1#raft_state{next_election_type = force}};
                         true ->
                             ?SERVER_LOG_NOTICE(State1, "failing handover as a witness after handover append.", []),
                             send_rpc(Sender, ?HANDOVER_FAILED(Ref), State1),
@@ -1734,6 +1746,7 @@ candidate(
         table = Table,
         self = Self,
         current_term = CurrentTerm,
+        next_election_type = ElectionType,
         log_view = View
     } = State0
 ) ->
@@ -1745,19 +1758,19 @@ candidate(
     % Entering the candidate state means that we are starting a new election, thus
     % advance the term and set VotedFor to the current node. (Candidates always
     % implicitly vote for themselves.)
-    State1 = enter_state(?FUNCTION_NAME, State0),
+    State1 = enter_state(?FUNCTION_NAME, State0#raft_state{next_election_type = normal}),
     State2 = advance_term(?FUNCTION_NAME, CurrentTerm + 1, node(), State1),
 
     % Determine the log index and term at which the election will occur.
     LastLogIndex = wa_raft_log:last_index(View),
     {ok, LastLogTerm} = wa_raft_log:term(View, LastLogIndex),
 
-    ?SERVER_LOG_NOTICE(State2, "advances to new term and starts election at ~0p:~0p.",
-        [LastLogIndex, LastLogTerm]),
+    ?SERVER_LOG_NOTICE(State2, "advances to new term and starts ~0p election at ~0p:~0p.",
+        [ElectionType, LastLogIndex, LastLogTerm]),
 
     % Broadcast vote requests and also send a vote-for-self.
     % (Candidates always implicitly vote for themselves.)
-    send_rpc_to_all_members(?REQUEST_VOTE(normal, LastLogIndex, LastLogTerm), State2),
+    send_rpc_to_all_members(?REQUEST_VOTE(ElectionType, LastLogIndex, LastLogTerm), State2),
     send_rpc(Self, ?VOTE(true), State2),
 
     {keep_state, State2, ?ELECTION_TIMEOUT(State2)};
@@ -1775,22 +1788,6 @@ candidate(
     ?SERVER_LOG_NOTICE(State, "advancing to new term ~0p.", [NewTerm]),
     State1 = advance_term(?FUNCTION_NAME, NewTerm, undefined, State),
     {next_state, follower_or_witness(State1), State1};
-
-%% [ForceElection] Resend vote requests with the 'force' type to force an election even if an active leader is available.
-candidate(
-    internal,
-    ?FORCE_ELECTION(Term),
-    #raft_state{
-        log_view = View,
-        current_term = CurrentTerm
-    } = State
-) when Term + 1 =:= CurrentTerm ->
-    ?SERVER_LOG_NOTICE(State, "accepts request to force election issued by the immediately prior term ~0p.", [Term]),
-    % No changes to the log are expected during an election so we can just reload these values from the log view.
-    LastLogIndex = wa_raft_log:last_index(View),
-    {ok, LastLogTerm} = wa_raft_log:term(View, LastLogIndex),
-    send_rpc_to_all_members(?REQUEST_VOTE(force, LastLogIndex, LastLogTerm), State),
-    keep_state_and_data;
 
 %% [Protocol] Parse any RPCs in network formats
 candidate(Type, Event, #raft_state{} = State) when is_tuple(Event), element(1, Event) =:= rpc ->

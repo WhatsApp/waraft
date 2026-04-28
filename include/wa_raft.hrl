@@ -468,6 +468,8 @@
     %% The affirmative votes for leadership this RAFT replica has received from
     %% the cluster in the current term
     votes = #{} :: #{node() => boolean()},
+    %% The type of the next election
+    next_election_type = normal :: wa_raft_server:election_type(),
     %% The leader of the current RAFT term if known
     leader :: undefined | #raft_identity{},
 

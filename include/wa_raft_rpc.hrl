@@ -61,7 +61,6 @@
 %%-------------------------------------------------------------------
 
 -define(ADVANCE_TERM(Term), {advance_term, Term}).
--define(FORCE_ELECTION(Term), {force_election, Term}).
 
 %%-------------------------------------------------------------------
 %% RAFT Server API
