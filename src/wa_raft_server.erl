@@ -789,7 +789,7 @@ init(
         _ -> disabled
     end,
 
-    wa_raft_info:set_current_term_and_leader(Table, Partition, State2#raft_state.current_term, undefined),
+    wa_raft_info:set_current_term_info(Table, Partition, State2#raft_state.current_term, undefined, undefined),
     wa_raft_info:set_status(Table, Partition, InitialState, false, true, true),
 
     {ok, InitialState, State2}.
@@ -935,10 +935,16 @@ handle_rpc_impl(Type, _, Key, _, Sender, Payload, State, #raft_state{table = Tab
 
 %% [AppendEntries RPC] If we haven't discovered leader for this term, record it
 handle_procedure(Type, ?REMOTE(Sender, ?APPEND_ENTRIES(_, _, _, _, _)) = Procedure, State, #raft_state{leader = undefined} = Data) ->
-    {keep_state, set_leader(State, Sender, Data), {next_event, Type, Procedure}};
+    ?SERVER_LOG_NOTICE(State, Data, "leader is now ~0p.", [identity_to_server(Sender)]),
+    NewData = Data#raft_state{leader = Sender},
+    update_current_term_info(State, NewData),
+    {keep_state, NewData, {next_event, Type, Procedure}};
 %% [Handover][Handover RPC] If we haven't discovered leader for this term, record it
 handle_procedure(Type, ?REMOTE(Sender, ?HANDOVER(_, _, _, _)) = Procedure, State, #raft_state{leader = undefined} = Data) ->
-    {keep_state, set_leader(State, Sender, Data), {next_event, Type, Procedure}};
+    ?SERVER_LOG_NOTICE(State, Data, "leader is now ~0p.", [identity_to_server(Sender)]),
+    NewData = Data#raft_state{leader = Sender},
+    update_current_term_info(State, NewData),
+    {keep_state, NewData, {next_event, Type, Procedure}};
 handle_procedure(Type, Procedure, _, #raft_state{}) ->
     {keep_state_and_data, {next_event, Type, Procedure}}.
 
@@ -1127,7 +1133,7 @@ stalled(Type, Event, #raft_state{} = State) ->
         Data :: #raft_state{}
     ) -> gen_statem:event_handler_result(state(), #raft_state{}).
 
-leader(enter, LastState, #raft_state{table = Table, log_view = View0} = State0) ->
+leader(enter, LastState, #raft_state{table = Table, log_view = View} = State0) ->
     ?RAFT_COUNT(Table, 'leader.enter'),
     ?FUNCTION_NAME =/= LastState andalso
         ?SERVER_LOG_NOTICE(State0, "becomes leader from state ~0p.", [LastState]),
@@ -1136,8 +1142,8 @@ leader(enter, LastState, #raft_state{table = Table, log_view = View0} = State0) 
     State1 = enter_state(?FUNCTION_NAME, State0),
 
     % Attempt to refresh the label state as necessary for new log entries
-    LastLogIndex = wa_raft_log:last_index(View0),
-    State2 = case wa_raft_log:get(View0, LastLogIndex) of
+    LastLogIndex = wa_raft_log:last_index(View),
+    State2 = case wa_raft_log:get(View, LastLogIndex) of
         {ok, {_, {_, LastLabel, _}}} ->
             State1#raft_state{last_label = LastLabel};
         {ok, {_, undefined}} ->
@@ -1149,18 +1155,28 @@ leader(enter, LastState, #raft_state{table = Table, log_view = View0} = State0) 
             State1#raft_state{last_label = undefined}
     end,
 
-    % At the start of a new term, the leader should append a new log
-    % entry that will start the process of establishing the first
-    % quorum in the new term by starting replication and clearing out
-    % any log mismatches on follower replicas.
-    {LogEntry, State3} = make_log_entry({make_ref(), noop}, State2),
-    {ok, View1} = wa_raft_log:append(View0, [LogEntry]),
-    TermStartIndex = wa_raft_log:last_index(View1),
-    State4 = State3#raft_state{log_view = View1, first_current_term_log_index = TermStartIndex},
+    % At the start of a new term, the leader should append at least one log
+    % entry to start the process of establishing the first quorum in the new
+    % term.
+    State3 = State2#raft_state{first_current_term_log_index = LastLogIndex + 1},
+    State4 = case has_pending_commits(State3) of
+        true ->
+            % If there are pending commits, then use those for the initial
+            % heartbeat. There is potential risk that the log may reject
+            % these initial commits; leaving the leader with no log entry
+            % in the current term; however, this should be a rare occurrence.
+            State3;
+        false ->
+            % Otherwise, we should explicitly add a `noop` so that there is
+            % something to establish quorum on.
+            {LogEntry, NewState3} = make_log_entry({make_ref(), noop}, State3),
+            {ok, NewView} = wa_raft_log:append(View, [LogEntry]),
+            NewState3#raft_state{log_view = NewView}
+    end,
 
     % Perform initial heartbeat and log entry resolution
     State5 = append_entries_to_followers(State4),
-    State6 = apply_single_node_cluster(State5), % apply immediately for single node cluster
+    State6 = apply_single_node_cluster(State5),
     {keep_state, State6, ?HEARTBEAT_TIMEOUT(State6)};
 
 %% [Internal] Advance to newer term when requested
@@ -1336,24 +1352,14 @@ leader(
 leader(
     cast,
     ?COMMIT_COMMAND(From, Op, Priority),
-    #raft_state{
-        application = App,
-        table = Table,
-        pending_high = PendingHigh,
-        pending_low = PendingLow
-    } = State0
+    #raft_state{application = App, table = Table} = State0
 ) ->
     % No size limit is imposed here as the pending queue cannot grow larger
     % than the limit on the number of pending commits.
     ?RAFT_COUNT(Table, {'commit', Priority}),
-    State1 = case Priority of
-        high ->
-            State0#raft_state{pending_high = [{From, Op} | PendingHigh]};
-        low ->
-            State0#raft_state{pending_low = [{From, Op} | PendingLow]}
-    end,
+    State1 = add_pending(From, Op, Priority, State0),
     State2 = apply_single_node_cluster(State1),
-    PendingCount = length(State2#raft_state.pending_high) + length(State2#raft_state.pending_low),
+    PendingCount = pending_count(State2),
     case ?RAFT_COMMIT_BATCH_INTERVAL(App, Table) > 0 andalso PendingCount =< ?RAFT_COMMIT_BATCH_MAX_ENTRIES(App, Table) of
         true ->
             ?RAFT_COUNT(Table, 'commit.batch.delay'),
@@ -1874,6 +1880,35 @@ candidate(state_timeout, _, #raft_state{votes = Votes} = State) ->
     case candidate_eligible(State) of
         true -> {repeat_state, State};
         false -> {next_state, follower_or_witness(State), State}
+    end;
+
+%% [Commit] Candidates may optimistically buffer any incoming commits pending election.
+candidate(
+    cast = Event,
+    ?COMMIT_COMMAND(From, Op, Priority) = Command,
+    #raft_state{application = App, table = Table} = State
+) ->
+    case ?RAFT_CANDIDATE_BUFFER_REQUESTS(App, Table) of
+        true -> {keep_state, add_pending(From, Op, Priority, State)};
+        false -> command(?FUNCTION_NAME, Event, Command, State)
+    end;
+
+%% [Strong Read] Candidates may optimistically submit reads to storage pending election.
+%% The ReadIndex is set to one past the last log index which is the index that the
+%% new term will start at if the candidate wins. This is safe because an election
+%% failure will cancel all reads via cancel_pending/2.
+candidate(
+    cast = Event,
+    ?READ_COMMAND({From, ReadOp}) = Command,
+    #raft_state{application = App, table = Table, queues = Queues, log_view = View} = State
+) ->
+    case ?RAFT_CANDIDATE_BUFFER_REQUESTS(App, Table) of
+        true ->
+            ReadIndex = wa_raft_log:last_index(View) + 1,
+            ok = wa_raft_queue:submit_read(Queues, ReadIndex, From, ReadOp),
+            {keep_state, State#raft_state{pending_read = true}};
+        false ->
+            command(?FUNCTION_NAME, Event, Command, State)
     end;
 
 %% [Command] Defer to common handling for generic RAFT server commands
@@ -2888,44 +2923,25 @@ follower_or_witness(Data) ->
         true -> witness
     end.
 
--spec set_leader(State :: state(), Leader :: #raft_identity{}, Data :: #raft_state{}) -> #raft_state{}.
-set_leader(_, Leader, #raft_state{leader = Leader} = Data) ->
-    Data;
-set_leader(
-    State,
-    #raft_identity{node = Node} = Leader,
-    #raft_state{table = Table, partition = Partition, current_term = CurrentTerm} = Data
-) ->
-    ?SERVER_LOG_NOTICE(State, Data, "changes leader to ~0p.", [identity_to_server(Leader)]),
-    wa_raft_info:set_current_term_and_leader(Table, Partition, CurrentTerm, Node),
-    Data#raft_state{leader = Leader}.
-
--spec clear_leader(state(), #raft_state{}) -> #raft_state{}.
-clear_leader(_, #raft_state{leader = undefined} = Data) ->
-    Data;
-clear_leader(State, #raft_state{table = Table, partition = Partition, current_term = CurrentTerm} = Data) ->
-    ?SERVER_LOG_NOTICE(State, Data, "clears leader.", []),
-    wa_raft_info:set_current_term_and_leader(Table, Partition, CurrentTerm, undefined),
-    Data#raft_state{leader = undefined}.
-
 %% Setup the RAFT state upon entry into a new RAFT server state.
 -spec enter_state(State :: state(), Data :: #raft_state{}) -> #raft_state{}.
 enter_state(State, Data0) ->
     Now = erlang:monotonic_time(millisecond),
     Data1 = Data0#raft_state{state_start_ts = Now},
-    Data2 = update_leader_upon_entry(State, Data1),
+    Data2 = set_leader_upon_entry(State, Data1),
     Data3 = cancel_pending_upon_entry(State, Data2),
+    update_current_term_info(State, Data3),
     update_status(State, Data3),
     Data3.
 
 %% If we are entering leader, then ensure that we are set as the current leader.
 %% If we are entering any other state, then ensure that we don't have ourselves recorded as such.
--spec update_leader_upon_entry(State :: state(), Data :: #raft_state{}) -> #raft_state{}.
-update_leader_upon_entry(leader = State, #raft_state{self = Self} = Data) ->
-    set_leader(State, Self, Data);
-update_leader_upon_entry(State, #raft_state{self = Self, leader = Self} = Data) ->
-    clear_leader(State, Data);
-update_leader_upon_entry(_, #raft_state{} = Data) ->
+-spec set_leader_upon_entry(State :: state(), Data :: #raft_state{}) -> #raft_state{}.
+set_leader_upon_entry(leader, #raft_state{self = Self} = Data) ->
+    Data#raft_state{leader = Self};
+set_leader_upon_entry(_, #raft_state{self = Self, leader = Self} = Data) ->
+    Data#raft_state{leader = undefined};
+set_leader_upon_entry(_, #raft_state{} = Data) ->
     Data.
 
 %% If we are entering leader, then keep any pending commits buffered from candidacy.
@@ -2949,12 +2965,13 @@ advance_term(
     VotedFor,
     #raft_state{
         current_term = CurrentTerm
-    } = Data0
+    } = Data
 ) when NewTerm > CurrentTerm ->
-    Data1 = Data0#raft_state{
+    NewData = Data#raft_state{
         current_term = NewTerm,
         voted_for = VotedFor,
         votes = #{},
+        leader = undefined,
         next_indices = #{},
         match_indices = #{},
         last_applied_indices = #{},
@@ -2962,9 +2979,9 @@ advance_term(
         heartbeat_response_ts = #{},
         handover = undefined
     },
-    Data2 = clear_leader(State, Data1),
-    ok = wa_raft_durable_state:store(Data2),
-    Data2.
+    update_current_term_info(State, NewData),
+    ok = wa_raft_durable_state:store(NewData),
+    NewData.
 
 %%------------------------------------------------------------------------------
 %% RAFT Server - State Machine Implementation - Elections
@@ -2994,6 +3011,27 @@ append_entries_to_followers(Data0) ->
     Data2 = commit_pending(Data1, low),
     Data3 = lists:foldl(fun heartbeat/2, Data2, config_participant_identities(config(Data2))),
     Data3.
+
+-spec has_pending_commits(Data :: #raft_state{}) -> boolean().
+has_pending_commits(#raft_state{pending_high = [], pending_low = []}) ->
+    false;
+has_pending_commits(#raft_state{}) ->
+    true.
+
+-spec pending_count(Data :: #raft_state{}) -> non_neg_integer().
+pending_count(#raft_state{pending_high = PendingHigh, pending_low = PendingLow}) ->
+    length(PendingHigh) + length(PendingLow).
+
+-spec add_pending(
+    From :: gen_server:from(),
+    Op :: wa_raft_acceptor:op(),
+    Priority :: wa_raft_acceptor:priority(),
+    Data :: #raft_state{}
+) -> #raft_state{}.
+add_pending(From, Op, high, #raft_state{pending_high = PendingHigh} = Data) ->
+    Data#raft_state{pending_high = [{From, Op} | PendingHigh]};
+add_pending(From, Op, low, #raft_state{pending_low = PendingLow} = Data) ->
+    Data#raft_state{pending_low = [{From, Op} | PendingLow]}.
 
 -spec commit_pending(Data :: #raft_state{}, Priority :: wa_raft_acceptor:priority()) -> #raft_state{}.
 commit_pending(#raft_state{pending_high = [], pending_low = [], pending_read = false} = Data, _Priority) ->
@@ -3802,6 +3840,32 @@ should_heartbeat(#raft_state{application = App, table = Table, last_heartbeat_ts
     Latest = lists:max(maps:values(LastHeartbeatTs)),
     Current = erlang:monotonic_time(millisecond),
     Current - Latest > ?RAFT_HEARTBEAT_INTERVAL(App, Table).
+
+%% Update the server's current term info in `wa_raft_info`.
+-spec update_current_term_info(
+    State :: state(),
+    Data :: #raft_state{}
+) -> ok.
+update_current_term_info(
+    State,
+    #raft_state{
+        table = Table,
+        partition = Partition,
+        self = #raft_identity{node = Node},
+        current_term = CurrentTerm,
+        leader = Leader
+    }
+) ->
+    LeaderNode = case Leader of
+        undefined -> undefined;
+        #raft_identity{node = N} -> N
+    end,
+    CandidateNode = case State of
+        candidate -> Node;
+        _ -> undefined
+    end,
+    wa_raft_info:set_current_term_info(Table, Partition, CurrentTerm, LeaderNode, CandidateNode),
+    ok.
 
 %% Update the server's current status in `wa_raft_info`.
 %% For stalled, disabled:

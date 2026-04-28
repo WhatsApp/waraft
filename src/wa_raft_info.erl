@@ -12,6 +12,7 @@
 
 %% Public API
 -export([
+    get_current_term_info/2,
     get_current_term_and_leader/2,
     get_current_term/2,
     get_leader/2,
@@ -30,7 +31,7 @@
 
 %% Internal API
 -export([
-    set_current_term_and_leader/4,
+    set_current_term_info/5,
     set_status/6,
     set_message_queue_length/2,
     refresh_message_queue_length/1,
@@ -40,7 +41,7 @@
 %% Local RAFT server's current status flags (state, liveness, staleness and read readiness)
 -define(STATUS_KEY(Table, Partition), {status, Table, Partition}).
 %% Local RAFT server's most recently known term and leader
--define(CURRENT_TERM_AND_LEADER_KEY(Table, Partition), {term, Table, Partition}).
+-define(CURRENT_TERM_INFO_KEY(Table, Partition), {current_term_info, Table, Partition}).
 %% Local RAFT server's message queue length
 -define(MESSAGE_QUEUE_LENGTH_KEY(Name), {message_queue_length, Name}).
 
@@ -48,25 +49,33 @@
 %% RAFT Info - Public API
 %%-------------------------------------------------------------------
 
+-spec get_current_term_info(Table :: wa_raft:table(), Partition :: wa_raft:partition()) -> Info | undefined when
+    Info :: {Term :: wa_raft_log:log_term(), Leader :: node() | undefined, Candidate :: node() | undefined}.
+get_current_term_info(Table, Partition) ->
+    case ets:lookup(?MODULE, ?CURRENT_TERM_INFO_KEY(Table, Partition)) of
+        [] -> undefined;
+        [{_, Term, Leader, Candidate}] -> {Term, Leader, Candidate}
+    end.
+
 %% The RAFT server always sets both the known term and leader together, so that
 %% the atomic read performed by this method will not return a known leader for
 %% a different term.
 -spec get_current_term_and_leader(Table :: wa_raft:table(), Partition :: wa_raft:partition()) -> Info | undefined when
     Info :: {Term :: wa_raft_log:log_term(), Leader :: node() | undefined}.
 get_current_term_and_leader(Table, Partition) ->
-    case ets:lookup(?MODULE, ?CURRENT_TERM_AND_LEADER_KEY(Table, Partition)) of
+    case ets:lookup(?MODULE, ?CURRENT_TERM_INFO_KEY(Table, Partition)) of
         [] -> undefined;
-        [{_, Term, Leader}] -> {Term, Leader}
+        [{_, Term, Leader, _}] -> {Term, Leader}
     end.
 
 -spec get_current_term(Table :: wa_raft:table(), Partition :: wa_raft:partition()) ->
     wa_raft_log:log_term() | undefined.
 get_current_term(Table, Partition) ->
-    ets:lookup_element(?MODULE, ?CURRENT_TERM_AND_LEADER_KEY(Table, Partition), 2, undefined).
+    ets:lookup_element(?MODULE, ?CURRENT_TERM_INFO_KEY(Table, Partition), 2, undefined).
 
 -spec get_leader(Table :: wa_raft:table(), Partition :: wa_raft:partition()) -> node() | undefined.
 get_leader(Table, Partition) ->
-    ets:lookup_element(?MODULE, ?CURRENT_TERM_AND_LEADER_KEY(Table, Partition), 3, undefined).
+    ets:lookup_element(?MODULE, ?CURRENT_TERM_INFO_KEY(Table, Partition), 3, undefined).
 
 -spec get_status(Table :: wa_raft:table(), Partition :: wa_raft:partition()) -> Status | undefined when
     Status ::
@@ -112,18 +121,19 @@ init_tables() ->
     ets:new(?MODULE, [set, public, named_table, {write_concurrency, true}, {read_concurrency, true}]),
     ok.
 
--spec set_current_term_and_leader(
+-spec set_current_term_info(
     Table :: wa_raft:table(),
     Partition :: wa_raft:partition(),
     Term :: wa_raft_log:log_term(),
-    Leader :: undefined | node()
+    Leader :: node() | undefined,
+    Candidate :: node() | undefined
 ) -> boolean().
-set_current_term_and_leader(Table, Partition, Term, Leader) ->
+set_current_term_info(Table, Partition, Term, Leader, Candidate) ->
     ets:update_element(
         ?MODULE,
-        ?CURRENT_TERM_AND_LEADER_KEY(Table, Partition),
-        [{2, Term}, {3, Leader}],
-        {?CURRENT_TERM_AND_LEADER_KEY(Table, Partition), Term, Leader}
+        ?CURRENT_TERM_INFO_KEY(Table, Partition),
+        [{2, Term}, {3, Leader}, {4, Candidate}],
+        {?CURRENT_TERM_INFO_KEY(Table, Partition), Term, Leader, Candidate}
     ).
 
 -spec set_status(

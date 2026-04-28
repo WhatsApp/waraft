@@ -217,6 +217,13 @@
 -define(RAFT_ELECTION_TIMEOUT_MAX, raft_election_timeout_ms_max).
 -define(RAFT_ELECTION_TIMEOUT_MAX(App, Table), ?RAFT_TABLE_CONFIG(App, Table, ?RAFT_ELECTION_TIMEOUT_MAX, 7500)).
 
+%% Whether or not a candidate is allowed to buffer incoming commits and reads while
+%% waiting on an election result. No limit is placed on the number of requests held
+%% by the candidate during the election; however, requests will not be retained
+%% between elections.
+-define(RAFT_CANDIDATE_BUFFER_REQUESTS, raft_candidate_buffer_requests).
+-define(RAFT_CANDIDATE_BUFFER_REQUESTS(App, Table), (?RAFT_TABLE_CONFIG(App, Table, ?RAFT_CANDIDATE_BUFFER_REQUESTS, false) =:= true)).
+
 %% The maximum time in milliseconds during which a leader can continue to be considered live without
 %% receiving an updated heartbeat response quorum from replicas or during which a follower or witness
 %% can be considered live without receiving a heartbeat from a valid leader of the current term.
