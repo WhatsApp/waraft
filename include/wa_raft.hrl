@@ -146,6 +146,10 @@
 -define(RAFT_ELECTION_WEIGHT, raft_election_weight).
 -define(RAFT_ELECTION_WEIGHT(App), ?RAFT_APP_CONFIG(App, ?RAFT_ELECTION_WEIGHT, ?RAFT_ELECTION_DEFAULT_WEIGHT)).
 
+%% Whether or not to enable RAFT pre-vote for spurious election control.
+-define(RAFT_ELECTION_PRE_VOTE, raft_election_pre_vote).
+-define(RAFT_ELECTION_PRE_VOTE(App), (?RAFT_APP_CONFIG(App, ?RAFT_ELECTION_PRE_VOTE, false) =:= true)).
+
 %% Time in seconds to retain transport destination directories after use
 -define(RAFT_TRANSPORT_RETAIN_INTERVAL, transport_retain_min_secs).
 -define(RAFT_TRANSPORT_RETAIN_INTERVAL(App), ?RAFT_APP_CONFIG(App, ?RAFT_TRANSPORT_RETAIN_INTERVAL, 300)).
@@ -468,6 +472,10 @@
     %% The affirmative votes for leadership this RAFT replica has received from
     %% the cluster in the current term
     votes = #{} :: #{node() => boolean()},
+    %% The reference identifying the current round of pre-votes.
+    pre_vote_ref :: undefined | reference(),
+    %% The status of the pre-votes for the current round of pre-votes.
+    pre_votes = #{} :: #{node() => boolean()},
     %% The type of the next election
     next_election_type = normal :: wa_raft_server:election_type(),
     %% The leader of the current RAFT term if known

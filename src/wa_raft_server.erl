@@ -1771,11 +1771,9 @@ candidate(
     enter,
     LastState,
     #raft_state{
+        application = App,
         table = Table,
-        self = Self,
-        current_term = CurrentTerm,
-        next_election_type = ElectionType,
-        log_view = View
+        next_election_type = ElectionType
     } = State0
 ) ->
     ?RAFT_COUNT(Table, 'leader.election_started'),
@@ -1783,25 +1781,28 @@ candidate(
     ?FUNCTION_NAME =/= LastState andalso
         ?SERVER_LOG_NOTICE(State0, "becomes candidate from state ~0p.", [LastState]),
 
-    % Entering the candidate state means that we are starting a new election, thus
-    % advance the term and set VotedFor to the current node. (Candidates always
-    % implicitly vote for themselves.)
     State1 = enter_state(?FUNCTION_NAME, State0#raft_state{next_election_type = normal}),
-    State2 = advance_term(?FUNCTION_NAME, CurrentTerm + 1, node(), State1),
 
-    % Determine the log index and term at which the election will occur.
-    LastLogIndex = wa_raft_log:last_index(View),
-    {ok, LastLogTerm} = wa_raft_log:term(View, LastLogIndex),
+    case ElectionType =:= normal andalso ?RAFT_ELECTION_PRE_VOTE(App) of
+        true ->
+            ?SERVER_LOG_NOTICE(State1, "advances to new term and starts pre-vote.", []),
 
-    ?SERVER_LOG_NOTICE(State2, "advances to new term and starts ~0p election at ~0p:~0p.",
-        [ElectionType, LastLogIndex, LastLogTerm]),
+            % When pre-vote is enabled, a round of pre-votes must first be issued
+            % before the term can be advanced.
+            Ref = make_ref(),
+            State2 = State1#raft_state{
+                pre_vote_ref = Ref,
+                pre_votes = #{node() => true}
+            },
 
-    % Broadcast vote requests and also send a vote-for-self.
-    % (Candidates always implicitly vote for themselves.)
-    send_rpc_to_all_members(?REQUEST_VOTE(ElectionType, LastLogIndex, LastLogTerm), State2),
-    send_rpc(Self, ?VOTE(true), State2),
+            % Request a pre-vote from all peers.
+            send_rpc_to_all_members(?REQUEST_PRE_VOTE(Ref), State2),
 
-    {keep_state, State2, ?ELECTION_TIMEOUT(State2)};
+            {keep_state, State2, ?ELECTION_TIMEOUT(State2)};
+        false ->
+            % Otherwise, immediately start the election.
+            candidate_start_election(ElectionType, State1)
+    end;
 
 %% [Internal] Advance to newer term when requested
 candidate(
@@ -1831,8 +1832,53 @@ candidate(_, ?REMOTE(Candidate, ?REQUEST_PRE_VOTE(Ref)), #raft_state{} = Data) -
     handle_request_pre_vote(Candidate, Ref, Data);
 
 %% [PreVote RPC] Check if a full pre-vote quorum is established and if so, proceed with election (9.6)
+candidate(
+    _,
+    ?REMOTE(?IDENTITY_REQUIRES_MIGRATION(_, PeerId), ?PRE_VOTE(Ref, Vote, PeerLastIndex, PeerLastTerm)),
+    #raft_state{
+        table = Table,
+        state_start_ts = StateStart,
+        log_view = View,
+        pre_vote_ref = Ref,
+        pre_votes = PreVotes
+    } = Data
+) ->
+    Now = erlang:monotonic_time(millisecond),
+    LastIndex = wa_raft_log:last_index(View),
+    {ok, LastTerm} = wa_raft_log:term(View, LastIndex),
+    Result = Vote andalso {LastTerm, LastIndex} >= {PeerLastTerm, PeerLastIndex},
+    NewPreVotes = PreVotes#{PeerId => Result},
+    NewData = Data#raft_state{pre_votes = NewPreVotes},
+    case find_member_majority(NewPreVotes, config(NewData)) of
+        {found, Outcome} ->
+            % If a majority is found, then the pre-vote round is over, either accepted or rejected.
+            Duration = Now - StateStart,
+            case Outcome of
+                true ->
+                    Support = [Peer || Peer := true <- NewPreVotes],
+                    ?SERVER_LOG_NOTICE(
+                        NewData,
+                        "is proceeding to election after ~0p ms with pre-votes from ~0p.",
+                        [Duration, Support]
+                    ),
+                    ?RAFT_COUNT(Table, 'candidate.pre_vote.passed'),
+                    candidate_start_election(normal, NewData);
+                false ->
+                    Opposition = [Peer || Peer := false <- NewPreVotes],
+                    ?SERVER_LOG_NOTICE(
+                        NewData,
+                        "has failed pre-vote after ~0p ms with opposition from ~0p.",
+                        [Duration, Opposition]
+                    ),
+                    ?RAFT_COUNT(Table, 'candidate.pre_vote.failed'),
+                    {next_state, follower_or_witness(NewData), NewData}
+            end;
+        none ->
+            {keep_state, NewData}
+    end;
+
+%% [PreVote RPC] Ignore pre-votes from other rounds
 candidate(_, ?REMOTE(_, ?PRE_VOTE(_, _, _, _)), #raft_state{}) ->
-    % not yet implemented
     keep_state_and_data;
 
 %% [RequestVote RPC] Candidates should reject incoming vote requests as they always vote for themselves (5.2)
@@ -1902,7 +1948,21 @@ candidate(Type, ?REMOTE(_, ?HANDOVER(_, _, _, _)) = Event, #raft_state{} = State
 candidate(_, ?REMOTE(_, ?HANDOVER_FAILED(_)), #raft_state{}) ->
     keep_state_and_data;
 
-%% [Candidate] Handle Election Timeout (5.2)
+%% [Candidate] Handle Election Timeout during pre-vote phase (9.6)
+%% Candidate doesn't get enough pre-votes after a period of time, restart or fallback
+%% to follower if the local replica is no longer eligible.
+candidate(state_timeout, _, #raft_state{pre_vote_ref = PreVoteRef, pre_votes = PreVotes} = State) when PreVoteRef =/= undefined ->
+    ?SERVER_LOG_NOTICE(
+        State,
+        "pre-vote timed out with support from ~0p and opposition from ~0p.",
+        [[Node || Node := true <- PreVotes], [Node || Node := false <- PreVotes]]
+    ),
+    case candidate_eligible(State) of
+        true -> {repeat_state, State};
+        false -> {next_state, follower_or_witness(State), State}
+    end;
+
+%% [Candidate] Handle Election Timeout during normal election (5.2)
 %% Candidate doesn't get enough votes after a period of time, restart election or fallback
 %% to follower if the local replica is no longer eligible.
 candidate(state_timeout, _, #raft_state{votes = Votes} = State) ->
@@ -3023,6 +3083,8 @@ advance_term(
         current_term = NewTerm,
         voted_for = VotedFor,
         votes = #{},
+        pre_vote_ref = undefined,
+        pre_votes = #{},
         leader = undefined,
         next_indices = #{},
         match_indices = #{},
@@ -3052,6 +3114,39 @@ leader_eligible(#raft_state{application = App} = Data) ->
 -spec candidate_eligible(Data :: #raft_state{}) -> boolean().
 candidate_eligible(#raft_state{application = App} = Data) ->
     leader_eligible(Data) andalso ?RAFT_ELECTION_WEIGHT(App) =/= 0.
+
+-spec candidate_start_election(
+    ElectionType :: election_type(),
+    Data :: #raft_state{}
+) -> gen_statem:state_enter_result(state(), #raft_state{}).
+candidate_start_election(
+    ElectionType,
+    #raft_state{
+        self = Self,
+        log_view = View,
+        current_term = CurrentTerm
+    } = Data
+) ->
+    % Advance the term and record that we will vote for ourselves.
+    NewData = advance_term(candidate, CurrentTerm + 1, node(), Data),
+
+    % Determine the log index and term at which the election will occur.
+    LastLogIndex = wa_raft_log:last_index(View),
+    {ok, LastLogTerm} = wa_raft_log:term(View, LastLogIndex),
+
+    ?SERVER_LOG_NOTICE(
+        candidate,
+        NewData,
+        "advances to new term and starts ~0p election at ~0p:~0p.",
+        [ElectionType, LastLogIndex, LastLogTerm]
+    ),
+
+    % Request a vote from all peers and also vote for ourselves.
+    % Candidates always vote for themselves at the start of an election.
+    send_rpc_to_all_members(?REQUEST_VOTE(ElectionType, LastLogIndex, LastLogTerm), NewData),
+    send_rpc(Self, ?VOTE(true), NewData),
+
+    {keep_state, NewData, ?ELECTION_TIMEOUT(NewData)}.
 
 %%------------------------------------------------------------------------------
 %% RAFT Server - State Machine Implementation - Leader Methods
