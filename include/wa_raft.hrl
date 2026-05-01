@@ -174,6 +174,11 @@
 -define(RAFT_MAX_PENDING_READS, raft_max_pending_reads).
 -define(RAFT_MAX_PENDING_READS(App, Table), ?RAFT_TABLE_CONFIG(App, Table, ?RAFT_MAX_PENDING_READS, 5000)).
 
+%% Whether or not the leader should step down if it has not received heartbeat
+%% responses from a quorum of followers within the liveness grace period.
+-define(RAFT_LEADER_CHECK_QUORUM, raft_leader_check_quorum).
+-define(RAFT_LEADER_CHECK_QUORUM(App, Table), (?RAFT_TABLE_CONFIG(App, Table, ?RAFT_LEADER_CHECK_QUORUM, false) =/= false)).
+
 %% Time in milliseconds during which a leader was unable to replicate heartbeats to a
 %% quorum of followers before considering the leader to be stale.
 -define(RAFT_LEADER_STALE_INTERVAL, raft_max_heartbeat_age_msecs).
@@ -459,8 +464,9 @@
     %% [Leader] The label of the last log entry in the current log
     last_label :: undefined | term(),
     %% The timestamp (milliseconds monotonic clock) of the most recently
-    %% received (follower) or sent (leader) heartbeat.
-    leader_heartbeat_ts :: undefined | integer(),
+    %% received heartbeat from the leader (follower/candidate/witness) or
+    %% the quorum timestamp computed from heartbeat responses (leader).
+    last_quorum_ts :: undefined | integer(),
     %% The most recently seen commit index from a leader heartbeat
     leader_commit_index :: undefined | non_neg_integer(),
 
@@ -511,11 +517,11 @@
 
     %% [Leader] The timestamp (milliseconds monotonic clock) of the last time
     %%          each peer was sent a heartbeat
-    last_heartbeat_ts = #{} :: #{node() => integer()},
+    heartbeat_send_ts = #{} :: #{node() => integer()},
     %% [Leader] The timestamp (milliseconds monotonic clock) of the last time
     %%          each peer responded to this RAFT replica with a heartbeat
-    %%          response
-    heartbeat_response_ts = #{} :: #{node() => integer()},
+    %%          reply
+    heartbeat_reply_ts = #{} :: #{node() => integer()},
     %% [Leader] The log index of the first log entry appended to the log that
     %%          has a log term matching the current term
     first_current_term_log_index = 0 :: wa_raft_log:log_index(),

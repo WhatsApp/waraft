@@ -153,10 +153,7 @@
 -ifdef(TEST).
 -export([
     config/1,
-    compute_quorum/1,
-    compute_member_quorum/3,
-    find_majority/2,
-    leader_advance_commit_index/1,
+    compute_member_quorum/2,
     leader_adjust_config/2
 ]).
 -endif.
@@ -1034,7 +1031,7 @@ stalled(Type, Event, #raft_state{} = State) when is_tuple(Event), element(1, Eve
 
 %% [AppendEntries RPC] Stalled nodes always discard heartbeats
 stalled(_, ?REMOTE(Sender, ?APPEND_ENTRIES(PrevLogIndex, _, _, _, _)), #raft_state{} = State) ->
-    NewState = State#raft_state{leader_heartbeat_ts = erlang:monotonic_time(millisecond)},
+    NewState = State#raft_state{last_quorum_ts = erlang:monotonic_time(millisecond)},
     send_rpc(Sender, ?APPEND_ENTRIES_RESPONSE(PrevLogIndex, false, 0, 0), NewState),
     {keep_state, NewState};
 
@@ -1201,8 +1198,9 @@ leader(enter, LastState, #raft_state{table = Table, log_view = View} = State0) -
 
     % Perform initial heartbeat and log entry resolution
     State5 = append_entries_to_followers(State4),
-    State6 = apply_single_node_cluster(State5),
-    {keep_state, State6, ?HEARTBEAT_TIMEOUT(State6)};
+    State6 = update_quorum_ts(State5),
+    State7 = apply_single_node_cluster(State6),
+    {keep_state, State7, ?HEARTBEAT_TIMEOUT(State7)};
 
 %% [Internal] Advance to newer term when requested
 leader(
@@ -1237,15 +1235,13 @@ leader(
         next_indices = NextIndices,
         match_indices = MatchIndices,
         last_applied_indices = LastAppliedIndices,
-        heartbeat_response_ts = HeartbeatResponse0,
         first_current_term_log_index = TermStartIndex
     } = State0
 ) ->
-    StartTUsec = erlang:monotonic_time(microsecond),
+    StartT = erlang:monotonic_time(microsecond),
     ?SERVER_LOG_DEBUG(State0, "at commit index ~0p completed append to ~0p whose log now matches up to ~0p.",
         [CommitIndex, Sender, FollowerMatchIndex]),
-    HeartbeatResponse1 = HeartbeatResponse0#{FollowerId => erlang:monotonic_time(millisecond)},
-    State1 = State0#raft_state{heartbeat_response_ts = HeartbeatResponse1},
+    State1 = update_heartbeat_reply_ts(FollowerId, State0),
 
     NextIndex = maps:get(FollowerId, NextIndices, TermStartIndex),
     NewMatchIndices = MatchIndices#{FollowerId => FollowerMatchIndex},
@@ -1262,7 +1258,7 @@ leader(
     },
     State3 = leader_advance_commit_index(State2),
     State4 = leader_apply_log(State3),
-    ?RAFT_GATHER(Table, 'leader.apply.func', erlang:monotonic_time(microsecond) - StartTUsec),
+    ?RAFT_GATHER(Table, 'leader.apply.func', erlang:monotonic_time(microsecond) - StartT),
     {keep_state, maybe_heartbeat(State4), ?HEARTBEAT_TIMEOUT(State4)};
 
 %% and failures.
@@ -1282,9 +1278,10 @@ leader(
     ?RAFT_COUNT(Table, 'leader.append.failure'),
     ?SERVER_LOG_DEBUG(State0, "at commit index ~0p failed append to ~0p whose log now ends at ~0p.",
         [CommitIndex, Sender, FollowerEndIndex]),
+    State1 = update_heartbeat_reply_ts(FollowerId, State0),
 
     % Check to see if we should request a snapshot due to this failure
-    leader_maybe_request_snapshot(FollowerId, FollowerEndIndex, FollowerLastAppliedIndex, State0),
+    leader_maybe_request_snapshot(FollowerId, FollowerEndIndex, FollowerLastAppliedIndex, State1),
 
     % We must trust the follower's last log index here because the follower may have
     % applied a snapshot since the last successful heartbeat. In such case, we need
@@ -1296,12 +1293,12 @@ leader(
         _ -> LastAppliedIndices#{FollowerId => FollowerLastAppliedIndex}
     end,
 
-    State1 = State0#raft_state{
+    State2 = State1#raft_state{
         next_indices = NewNextIndices,
         last_applied_indices = NewLastAppliedIndices
     },
-    State2 = leader_apply_log(State1),
-    {keep_state, maybe_heartbeat(State2), ?HEARTBEAT_TIMEOUT(State2)};
+    State3 = leader_apply_log(State2),
+    {keep_state, maybe_heartbeat(State3), ?HEARTBEAT_TIMEOUT(State3)};
 
 %% [RequestPreVote RPC] Respond to pre-vote
 leader(_, ?REMOTE(Candidate, ?REQUEST_PRE_VOTE(Ref)), #raft_state{} = Data) ->
@@ -1353,15 +1350,16 @@ leader(state_timeout = Type, Event, #raft_state{handover = {Peer, _, Timeout}} =
     end;
 
 %% [Timeout] Periodic heartbeat to followers
-leader(state_timeout, _, State0) ->
+leader(state_timeout, _, #raft_state{table = Table} = State0) ->
     case leader_eligible(State0) of
-        true ->
+        eligible ->
             State1 = append_entries_to_followers(State0),
             State2 = apply_single_node_cluster(State1),
             update_status(?FUNCTION_NAME, State2),
             {keep_state, State2, ?HEARTBEAT_TIMEOUT(State2)};
-        false ->
-            ?SERVER_LOG_NOTICE(State0, "resigns from leadership because this node is ineligible.", []),
+        Reason ->
+            ?RAFT_COUNT(Table, {'leader.resign', Reason}),
+            ?SERVER_LOG_NOTICE(State0, "resigns from leadership because this node is ~0p.", [Reason]),
             {next_state, follower_or_witness(State0), State0}
     end;
 
@@ -1715,16 +1713,16 @@ follower(state_timeout, _, #raft_state{
         table = Table,
         leader = Leader,
         log_view = View,
-        leader_heartbeat_ts = HeartbeatTs
+        last_quorum_ts = LastQuorumTs
     } = State
 ) ->
-    WaitingMs = case HeartbeatTs of
-        undefined -> undefined;
-        _         -> erlang:monotonic_time(millisecond) - HeartbeatTs
-    end,
     ?RAFT_COUNT(Table, 'follower.timeout'),
     case candidate_eligible(State) of
         true ->
+            WaitingMs = case LastQuorumTs of
+                undefined -> undefined;
+                _         -> erlang:monotonic_time(millisecond) - LastQuorumTs
+            end,
             ?SERVER_LOG_NOTICE(
                 State,
                 "times out and starts election at ~0p after waiting for leader ~0p for ~0p ms.",
@@ -1894,17 +1892,16 @@ candidate(
         table = Table,
         log_view = View,
         state_start_ts = StateStart,
-        heartbeat_response_ts = HeartbeatResponse,
         votes = Votes
-    } = Data
+    } = Data0
 ) ->
-    Now = erlang:monotonic_time(millisecond),
-    NewHeartbeatResponse = HeartbeatResponse#{Node => Now},
     NewVotes = Votes#{Node => Vote},
-    NewData = Data#raft_state{heartbeat_response_ts = NewHeartbeatResponse, votes = NewVotes},
-    case find_member_majority(NewVotes, config(NewData)) of
+    Data1 = Data0#raft_state{votes = NewVotes},
+    Data2 = update_heartbeat_reply_ts(Node, Data1),
+    case find_member_majority(NewVotes, config(Data2)) of
         {found, Outcome} ->
             % If a majority is found, then the election is over, either accepted or rejected.
+            Now = erlang:monotonic_time(millisecond),
             Duration = Now - StateStart,
             LastIndex = wa_raft_log:last_index(View),
             {ok, LastTerm} = wa_raft_log:term(View, LastIndex),
@@ -1913,30 +1910,30 @@ candidate(
                     % If the bid for leadership is accepted, then transition to leader.
                     Support = [Peer || Peer := true <- NewVotes],
                     ?SERVER_LOG_NOTICE(
-                        NewData,
+                        Data2,
                         "is becoming leader after ~0p ms with log at ~0p:~0p and votes from ~0p.",
                         [Duration, LastIndex, LastTerm, Support]
                     ),
                     ?RAFT_COUNT(Table, 'candidate.elected'),
                     ?RAFT_GATHER(Table, 'candidate.election.duration', Duration),
-                    {next_state, leader, NewData};
+                    {next_state, leader, Data2};
                 false ->
                     % If the bid for leadership is rejected, then transition to follower.
                     % This will reset the election timeout which will, in effect, make this
                     % peer less likely to be the first candidate of the next term.
                     Opposition = [Peer || Peer := false <- NewVotes],
                     ?SERVER_LOG_NOTICE(
-                        NewData,
+                        Data2,
                         "has failed to be elected after ~0p ms with log at ~0p:~0p and opposition from ~0p.",
                         [Duration, LastIndex, LastTerm, Opposition]
                     ),
                     ?RAFT_COUNT(Table, 'candidate.rejected'),
                     ?RAFT_GATHER(Table, 'candidate.election.duration', Duration),
-                    {next_state, follower_or_witness(NewData), NewData}
+                    {next_state, follower_or_witness(Data2), Data2}
             end;
         none ->
             % If no majority is found, the continue waiting.
-            {keep_state, NewData}
+            {keep_state, Data2}
     end;
 
 %% [Handover][Handover RPC] Switch to follower because current term now has a leader (5.2, 5.3)
@@ -2377,7 +2374,7 @@ command(
         application = App,
         table = Table,
         current_term = CurrentTerm,
-        leader_heartbeat_ts = HeartbeatTs,
+        last_quorum_ts = LastQuorumTs,
         leader = Leader
     } = Data
 ) when State =/= stalled, State =/= witness, State =/= disabled ->
@@ -2437,9 +2434,9 @@ command(
             invalid_configuration;
         Force ->
             true;
-        HeartbeatTs =:= undefined ->
+        LastQuorumTs =:= undefined ->
             true;
-        Now - HeartbeatTs >= HeartbeatGracePeriodMs ->
+        Now - LastQuorumTs >= HeartbeatGracePeriodMs ->
             true;
         true ->
             ?SERVER_LOG_WARNING(
@@ -2572,6 +2569,10 @@ is_single_member(#raft_identity{name = Name, node = Node}, Config) ->
     is_single_member({Name, Node}, Config);
 is_single_member(Peer, #{membership := Membership, witness := Witnesses}) ->
     Membership =:= [Peer] andalso not lists:member(Peer, Witnesses).
+
+-spec config_has_membership(Config :: config()) -> boolean().
+config_has_membership(#{membership := Membership}) ->
+    Membership =/= [].
 
 %% Get the non-empty participants list from the provided config. Falls back to the
 %% membership list if the participants list is missing or empty. Raises an error if
@@ -2765,35 +2766,39 @@ to_member_list(Mapping, Default, Config) ->
 %%------------------------------------------------------------------------------
 
 %% Compute the quorum value of the list formed by converting the given mapping
-%% of peers to values to a list of values for all members of the cluster, using
-%% the provided default value for any members that are not represented in the
-%% mapping.
+%% of peers to values to a list of values for all members of the cluster. Members
+%% that are not present in the mapping do not contribute to the quorum.
 -spec compute_member_quorum(
     Mapping :: #{node() => Value},
-    Default :: Value,
     Config :: config()
- ) -> Quorum :: Value.
-compute_member_quorum(Mapping, Default, Config) ->
-    compute_quorum(to_member_list(Mapping, Default, Config)).
+ ) -> {quorum, Quorum :: Value} | none.
+compute_member_quorum(Mapping, Config) ->
+    case config_has_membership(Config) of
+        true -> compute_quorum(to_member_list(Mapping, Config), config_membership_size(Config));
+        false -> none
+    end.
 
-%% Compute the quorum value of the given list.
-%% For the purposes of this RAFT implementation, the quorum value of a list of
-%% values is the minimum value that is greater than or equal to at least a
-%% majority of the values in the list.
--spec compute_quorum(Values :: [Value]) -> Quorum :: Value.
-compute_quorum([_|_] = Values) ->
-    % The N-th element of a sorted list must be greater than or equal to itself
-    % and all preceding values. If N is the majority count, then the element
-    % must be the quorum value.
-    Index = (length(Values) + 1) div 2,
-    lists:nth(Index, lists:sort(Values)).
+%% Returns the largest value that at least a majority of the Total nodes
+%% have reached or exceeded, or 'none' if a majority of values are unknown.
+-spec compute_quorum(Values :: [Value], Total :: non_neg_integer()) -> {quorum, Quorum :: Value} | none.
+compute_quorum(Values, Total) when length(Values) * 2 =< Total ->
+    % Quorum requires a majority of values to be known.
+    none;
+compute_quorum(Values, Total) ->
+    % Sort ascending and pick the element at index (length - Total div 2).
+    % This element has at least (Total div 2 + 1) values >= it (a majority),
+    % making it the largest value that a majority of nodes have reached or exceeded.
+    {quorum, lists:nth(length(Values) - Total div 2, lists:sort(Values))}.
 
 -spec find_member_majority(
     Mapping :: #{node() => Value},
     Config :: config()
 ) -> {found, Majority :: Value} | none.
 find_member_majority(Mapping, Config) ->
-    find_majority(to_member_list(Mapping, Config), config_membership_size(Config)).
+    case config_has_membership(Config) of
+        true -> find_majority(to_member_list(Mapping, Config), config_membership_size(Config));
+        false -> none
+    end.
 
 %% Find, if it exists, the majority value of the given list fragment. The full
 %% list is assumed to have the given size. Only elements of the given list
@@ -2886,7 +2891,9 @@ apply_single_node_cluster(#raft_state{self = Self} = Data0) ->
             Data1 = commit_pending(Data0, high),
             Data2 = commit_pending(Data1, low),
             Data3 = leader_advance_commit_index(Data2),
-            leader_apply_log(Data3);
+            Data4 = leader_apply_log(Data3),
+            Data5 = update_quorum_ts(Data4),
+            Data5;
         false ->
             Data0
     end.
@@ -2905,10 +2912,10 @@ leader_advance_commit_index(
 ) ->
     LastIndex = wa_raft_log:last_index(View),
     AllMatchIndices = MatchIndices#{node() => LastIndex},
-    case compute_member_quorum(AllMatchIndices, 0, config(Data)) of
+    case compute_member_quorum(AllMatchIndices, config(Data)) of
         % Only log entries from the leader's current term can be committed
         % solely by counting replicas (5.4.3).
-        QuorumIndex when QuorumIndex < TermStartIndex ->
+        {quorum, QuorumIndex} when QuorumIndex < TermStartIndex ->
             ?RAFT_COUNT(Table, 'apply.delay.old'),
             ?SERVER_LOG_WARNING(
                 leader,
@@ -2917,7 +2924,7 @@ leader_advance_commit_index(
                 [QuorumIndex, TermStartIndex]
             ),
             Data;
-        QuorumIndex when QuorumIndex > CommitIndex ->
+        {quorum, QuorumIndex} when QuorumIndex > CommitIndex ->
             Data#raft_state{commit_index = QuorumIndex};
         _ ->
             Data
@@ -3042,9 +3049,10 @@ enter_state(State, Data0) ->
     Data1 = Data0#raft_state{state_start_ts = Now},
     Data2 = set_leader_upon_entry(State, Data1),
     Data3 = cancel_pending_upon_entry(State, Data2),
-    update_current_term_info(State, Data3),
-    update_status(State, Data3),
-    Data3.
+    Data4 = update_quorum_ts(Now, Data3),
+    update_current_term_info(State, Data4),
+    update_status(State, Data4),
+    Data4.
 
 %% If we are entering leader, then ensure that we are set as the current leader.
 %% If we are entering any other state, then ensure that we don't have ourselves recorded as such.
@@ -3089,8 +3097,7 @@ advance_term(
         next_indices = #{},
         match_indices = #{},
         last_applied_indices = #{},
-        last_heartbeat_ts = #{},
-        heartbeat_response_ts = #{},
+        heartbeat_send_ts = #{},
         handover = undefined
     },
     update_current_term_info(State, NewData),
@@ -3103,17 +3110,35 @@ advance_term(
 
 %% Whether or not the local replica is eligible to maintain leadership.
 %% Generally, this requires that the replica is a member of cluster and is
-%% eligible to be leader.
--spec leader_eligible(Data :: #raft_state{}) -> boolean().
-leader_eligible(#raft_state{application = App} = Data) ->
-    ?RAFT_LEADER_ELIGIBLE(App) andalso is_self_member(Data).
+%% eligible to be leader. When check quorum is enabled, the leader must also
+%% have received heartbeat responses from a quorum of followers recently.
+-spec leader_eligible(Data :: #raft_state{}) -> eligible | ineligible | stale.
+leader_eligible(#raft_state{application = App, table = Table, last_quorum_ts = LastQuorumTs} = Data) ->
+    case ?RAFT_LEADER_ELIGIBLE(App) andalso is_self_member(Data) of
+        false ->
+            ineligible;
+        true ->
+            case ?RAFT_LEADER_CHECK_QUORUM(App, Table) of
+                false ->
+                    eligible;
+                true when LastQuorumTs =:= undefined ->
+                    stale;
+                true ->
+                    GracePeriod = ?RAFT_LIVENESS_GRACE_PERIOD_MS(App, Table),
+                    case erlang:monotonic_time(millisecond) - LastQuorumTs =< GracePeriod of
+                        true -> eligible;
+                        false -> stale
+                    end
+            end
+    end.
 
 %% Whether or not the local replica is eligible to start elections.
 %% Generally, this requires that the replica is a member of cluster, is
 %% eligible to be leader and has a non-zero election weight.
 -spec candidate_eligible(Data :: #raft_state{}) -> boolean().
 candidate_eligible(#raft_state{application = App} = Data) ->
-    leader_eligible(Data) andalso ?RAFT_ELECTION_WEIGHT(App) =/= 0.
+    ?RAFT_LEADER_ELIGIBLE(App) andalso is_self_member(Data) andalso ?RAFT_ELECTION_WEIGHT(App) =/= 0.
+
 
 -spec candidate_start_election(
     ElectionType :: election_type(),
@@ -3307,7 +3332,7 @@ heartbeat(
         commit_index = CommitIndex,
         next_indices = NextIndices,
         match_indices = MatchIndices,
-        last_heartbeat_ts = LastHeartbeatTs,
+        heartbeat_send_ts = HeartbeatSendTs,
         first_current_term_log_index = TermStartIndex
     } = State0
 ) ->
@@ -3318,8 +3343,8 @@ heartbeat(
     FollowerMatchIndex =/= 0 andalso
         ?RAFT_GATHER(Table, 'leader.follower.lag', CommitIndex - FollowerMatchIndex),
     NowTs = erlang:monotonic_time(millisecond),
-    LastFollowerHeartbeatTs = maps:get(FollowerId, LastHeartbeatTs, undefined),
-    State1 = State0#raft_state{last_heartbeat_ts = LastHeartbeatTs#{FollowerId => NowTs}, leader_heartbeat_ts = NowTs},
+    LastFollowerHeartbeatSendTs = maps:get(FollowerId, HeartbeatSendTs, undefined),
+    State1 = State0#raft_state{heartbeat_send_ts = HeartbeatSendTs#{FollowerId => NowTs}},
     LastIndex = wa_raft_log:last_index(View),
     case PrevLogTermRes of %% no log entry to replicate
         not_found ->
@@ -3329,8 +3354,8 @@ heartbeat(
             % Send append entries request.
             {ok, LastTerm} = wa_raft_log:term(View, LastIndex),
             send_rpc(Sender, ?APPEND_ENTRIES(LastIndex, LastTerm, [], CommitIndex, 0), State1),
-            LastFollowerHeartbeatTs =/= undefined andalso
-                ?RAFT_GATHER(Table, 'leader.heartbeat.interval_ms', erlang:monotonic_time(millisecond) - LastFollowerHeartbeatTs),
+            LastFollowerHeartbeatSendTs =/= undefined andalso
+                ?RAFT_GATHER(Table, 'leader.heartbeat.interval_ms', erlang:monotonic_time(millisecond) - LastFollowerHeartbeatSendTs),
             State1;
         _ ->
             MaxLogEntries = ?RAFT_HEARTBEAT_MAX_ENTRIES(App, Table),
@@ -3363,8 +3388,8 @@ heartbeat(
                     _ ->
                         NextIndices
                 end,
-            LastFollowerHeartbeatTs =/= undefined andalso
-                ?RAFT_GATHER(Table, 'leader.heartbeat.interval_ms', erlang:monotonic_time(millisecond) - LastFollowerHeartbeatTs),
+            LastFollowerHeartbeatSendTs =/= undefined andalso
+                ?RAFT_GATHER(Table, 'leader.heartbeat.interval_ms', erlang:monotonic_time(millisecond) - LastFollowerHeartbeatSendTs),
             State1#raft_state{next_indices = NewNextIndices}
     end.
 
@@ -3663,7 +3688,7 @@ handle_heartbeat(
             send_rpc(Leader, ?APPEND_ENTRIES_RESPONSE(PrevLogIndex, Accepted, NewMatchIndex, AdjustedLastApplied), Data1),
 
             Data2 = Data1#raft_state{
-                leader_heartbeat_ts = erlang:monotonic_time(millisecond),
+                last_quorum_ts = erlang:monotonic_time(millisecond),
                 leader_commit_index = LeaderCommitIndex
             },
             Data3 = case Accepted of
@@ -4009,8 +4034,8 @@ maybe_heartbeat(#raft_state{table = Table} = State) ->
 -spec should_heartbeat(#raft_state{}) -> boolean().
 should_heartbeat(#raft_state{handover = Handover}) when Handover =/= undefined ->
     false;
-should_heartbeat(#raft_state{application = App, table = Table, last_heartbeat_ts = LastHeartbeatTs}) ->
-    Latest = lists:max(maps:values(LastHeartbeatTs)),
+should_heartbeat(#raft_state{application = App, table = Table, heartbeat_send_ts = HeartbeatSendTs}) ->
+    Latest = lists:max(maps:values(HeartbeatSendTs)),
     Current = erlang:monotonic_time(millisecond),
     Current - Latest > ?RAFT_HEARTBEAT_INTERVAL(App, Table).
 
@@ -4039,6 +4064,30 @@ update_current_term_info(
     end,
     wa_raft_info:set_current_term_info(Table, Partition, CurrentTerm, LeaderNode, CandidateNode),
     ok.
+
+%% Update the heartbeat reply timestamp for a peer and recompute the quorum timestamp.
+-spec update_heartbeat_reply_ts(Peer :: node(), Data :: #raft_state{}) -> #raft_state{}.
+update_heartbeat_reply_ts(Peer, #raft_state{heartbeat_reply_ts = HeartbeatReply} = Data) ->
+    NowTs = erlang:monotonic_time(millisecond),
+    NewHeartbeatReply = HeartbeatReply#{Peer => NowTs},
+    NewData = Data#raft_state{heartbeat_reply_ts = NewHeartbeatReply},
+    update_quorum_ts(NowTs, NewData).
+
+%% Recompute the quorum timestamp from the current heartbeat reply timestamps.
+-spec update_quorum_ts(Data :: #raft_state{}) -> #raft_state{}.
+update_quorum_ts(Data) ->
+    update_quorum_ts(erlang:monotonic_time(millisecond), Data).
+
+%% Recompute the quorum timestamp from the current heartbeat reply timestamps.
+-spec update_quorum_ts(
+    NowTs :: integer(),
+    Data :: #raft_state{}
+) -> #raft_state{}.
+update_quorum_ts(NowTs, #raft_state{self = #raft_identity{node = Node}, heartbeat_reply_ts = HeartbeatReply} = Data) ->
+    case compute_member_quorum(HeartbeatReply#{Node => NowTs}, config(Data)) of
+        {quorum, QuorumTs} -> Data#raft_state{last_quorum_ts = QuorumTs};
+        _                  -> Data
+    end.
 
 %% Update the server's current status in `wa_raft_info`.
 %% For stalled, disabled:
@@ -4071,15 +4120,17 @@ update_status(
         name = Name,
         table = Table,
         partition = Partition,
-        heartbeat_response_ts = HeartbeatResponse
+        last_quorum_ts = LastQuorumTs
     } = Data
 ) when State =:= leader ->
-    NowTs = erlang:monotonic_time(millisecond),
-    QuorumTs = compute_member_quorum(HeartbeatResponse#{node() => NowTs}, 0, config(Data)),
 
     % If the quorum of the most recent timestamps of follower's acknowledgement
     % of heartbeats is too old, then the leader is considered stale.
-    QuorumAge = NowTs - QuorumTs,
+    NowTs = erlang:monotonic_time(millisecond),
+    QuorumAge = case LastQuorumTs of
+        undefined -> infinity;
+        _ -> NowTs - LastQuorumTs
+    end,
     QuorumGrace = ?RAFT_LEADER_STALE_INTERVAL(App, Table),
     NewLive = QuorumAge =< QuorumGrace,
 
@@ -4118,7 +4169,7 @@ update_status(
         table = Table,
         partition = Partition,
         last_applied = LastApplied,
-        leader_heartbeat_ts = LeaderHeartbeatTs,
+        last_quorum_ts = LeaderHeartbeatTs,
         leader_commit_index = LeaderCommitIndex
     } = Data
 ) when State =:= follower; State =:= candidate; State =:= witness ->
@@ -4172,11 +4223,11 @@ update_status(
 
 %% Check if the leader has not been seen for at least the minimum election timeout.
 -spec is_leader_missing(Data :: #raft_state{}) -> {Missing :: boolean(), Delay :: infinity | integer(), AllowedDelay :: integer()}.
-is_leader_missing(#raft_state{application = App, table = Table, leader_heartbeat_ts = LeaderHeartbeatTs}) ->
+is_leader_missing(#raft_state{application = App, table = Table, last_quorum_ts = LastQuorumTs}) ->
     AllowedDelay = ?RAFT_ELECTION_TIMEOUT_MIN(App, Table),
-    Delay = case LeaderHeartbeatTs of
+    Delay = case LastQuorumTs of
         undefined -> infinity;
-        _         -> erlang:monotonic_time(millisecond) - LeaderHeartbeatTs
+        _         -> erlang:monotonic_time(millisecond) - LastQuorumTs
     end,
     {Delay > AllowedDelay, Delay, AllowedDelay}.
 
