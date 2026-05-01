@@ -917,9 +917,7 @@ handle_rpc_impl(Type, Event, ?REQUEST_VOTE, Term, Sender, Payload, State,
                 "rejecting normal vote request from ~p because leader was still active ~p ms ago (allowed ~p ms).",
                 [Sender, Delay, AllowedDelay]
             ),
-            % TODO: This needs to reply with the same term as the request, but only after switching to
-            % single-round forced election.
-            send_rpc(Sender, ?VOTE(false), Data),
+            send_rpc(Sender, Term, ?VOTE(false), Data),
             keep_state_and_data
     end;
 %% [General Rules] Advance to the newer term and reset state when seeing a newer term in an incoming RPC
@@ -3788,10 +3786,19 @@ reply(Type, Message) ->
 
 -spec send_rpc(
     Destination :: #raft_identity{},
-    ProcedureCall :: normalized_procedure(),
+    Procedure :: normalized_procedure(),
     State :: #raft_state{}
 ) -> ok | {error, term()}.
-send_rpc(Destination, Procedure, #raft_state{self = Self, current_term = Term} = State) ->
+send_rpc(Destination, Procedure, #raft_state{current_term = Term} = State) ->
+    send_rpc(Destination, Term, Procedure, State).
+
+-spec send_rpc(
+    Destination :: #raft_identity{},
+    Term :: wa_raft_log:log_term(),
+    Procedure :: normalized_procedure(),
+    State :: #raft_state{}
+) -> ok | {error, term()}.
+send_rpc(Destination, Term, Procedure, #raft_state{self = Self} = State) ->
     cast(Destination, make_rpc(Self, Term, Procedure), State).
 
 -spec send_rpc_to_all_members(ProcedureCall :: normalized_procedure(), State :: #raft_state{}) -> [ok | {error, term()}].
