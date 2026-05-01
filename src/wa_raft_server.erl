@@ -834,9 +834,11 @@ terminate(Reason, State, #raft_state{name = Name, table = Table, partition = Par
 -type remote(Call) :: ?REMOTE(#raft_identity{}, Call).
 -type procedure()  :: ?PROCEDURE(atom(), tuple()).
 
--type normalized_procedure() :: append_entries() | append_entries_response() | request_vote() | vote() | handover() | handover_failed() | notify_term().
+-type normalized_procedure() :: append_entries() | append_entries_response() | request_pre_vote() | pre_vote() | request_vote() | vote() | handover() | handover_failed() | notify_term().
 -type append_entries()          :: ?APPEND_ENTRIES         (wa_raft_log:log_index(), wa_raft_log:log_term(), [wa_raft_log:log_entry() | binary()], wa_raft_log:log_index(), wa_raft_log:log_index()).
 -type append_entries_response() :: ?APPEND_ENTRIES_RESPONSE(wa_raft_log:log_index(), boolean(), wa_raft_log:log_index(), wa_raft_log:log_index() | undefined).
+-type request_pre_vote()        :: ?REQUEST_PRE_VOTE       (reference()).
+-type pre_vote()                :: ?PRE_VOTE               (reference(), boolean(), wa_raft_log:log_index(), wa_raft_log:log_term()).
 -type request_vote()            :: ?REQUEST_VOTE           (election_type(), wa_raft_log:log_index(), wa_raft_log:log_term()).
 -type vote()                    :: ?VOTE                   (boolean()).
 -type handover()                :: ?HANDOVER               (reference(), wa_raft_log:log_index(), wa_raft_log:log_term(), [wa_raft_log:log_entry() | binary()]).
@@ -848,6 +850,8 @@ protocol() ->
     #{
         ?APPEND_ENTRIES          => ?APPEND_ENTRIES(0, 0, [], 0, 0),
         ?APPEND_ENTRIES_RESPONSE => ?APPEND_ENTRIES_RESPONSE(0, false, 0, undefined),
+        ?REQUEST_PRE_VOTE        => ?REQUEST_PRE_VOTE(undefined),
+        ?PRE_VOTE                => ?PRE_VOTE(undefined, false, 0, 0),
         ?REQUEST_VOTE            => ?REQUEST_VOTE(normal, 0, 0),
         ?VOTE                    => ?VOTE(false),
         ?HANDOVER                => ?HANDOVER(undefined, 0, 0, []),
@@ -889,24 +893,21 @@ handle_rpc_impl(_, _, Key, Term, Sender, _, State, #raft_state{current_term = Cu
     ?SERVER_LOG_NOTICE(State, Data, "dropping stale ~0p from ~0p with old term ~0p.", [Key, Sender, Term]),
     State =/= disabled andalso send_rpc(Sender, ?NOTIFY_TERM(), Data),
     keep_state_and_data;
+%% [PreVote RPC] Pre-vote requests are processed without checking term
+handle_rpc_impl(Type, _, ?REQUEST_PRE_VOTE, _, Sender, Payload, State, Data) ->
+    handle_rpc_normalization(Type, ?REQUEST_PRE_VOTE, Sender, Payload, State, Data);
 %% [RequestVote RPC] RAFT servers should ignore vote requests with reason `normal`
 %%                   if it knows about a currently active leader even if the vote
 %%                   request has a newer term. A leader is only active if it is
 %%                   replicating to peers so we check if we have recently received
 %%                   a heartbeat. (4.2.3)
-handle_rpc_impl(Type, Event, ?REQUEST_VOTE, Term, Sender, Payload, State,
-                #raft_state{application = App, table = Table, leader_heartbeat_ts = LeaderHeartbeatTs} = Data) when is_tuple(Payload), element(1, Payload) =:= normal ->
-    AllowedDelay = ?RAFT_ELECTION_TIMEOUT_MIN(App, Table) div 2,
-    Delay = case LeaderHeartbeatTs of
-        undefined -> infinity;
-        _         -> erlang:monotonic_time(millisecond) - LeaderHeartbeatTs
-    end,
-    case Delay > AllowedDelay of
-        true ->
+handle_rpc_impl(Type, Event, ?REQUEST_VOTE, Term, Sender, Payload, State, #raft_state{table = Table} = Data) when is_tuple(Payload), element(1, Payload) =:= normal ->
+    case is_leader_missing(Data) of
+        {true, _, _} ->
             % We have not gotten a heartbeat from the leader recently so allow this vote request
             % to go through by reraising it with the special 'allowed' election type.
             handle_rpc_impl(Type, Event, ?REQUEST_VOTE, Term, Sender, setelement(1, Payload, allowed), State, Data);
-        false ->
+        {false, Delay, AllowedDelay} ->
             % We have gotten a heartbeat recently so drop this vote request.
             % Log this at debug level because we may end up with alot of these when we have
             % removed a server from the cluster but not yet shut it down.
@@ -926,8 +927,21 @@ handle_rpc_impl(Type, Event, _, Term, _, _, _, #raft_state{current_term = Curren
 %% [NotifyTerm RPC] Drop NotifyTerm RPCs with matching term
 handle_rpc_impl(_, _, ?NOTIFY_TERM, _, _, _, _, #raft_state{}) ->
     keep_state_and_data;
+%% [Protocol] Continue with normalization
+handle_rpc_impl(Type, _, Key, _, Sender, Payload, State, Data) when is_tuple(Payload) ->
+    handle_rpc_normalization(Type, Key, Sender, Payload, State, Data).
+
+-spec handle_rpc_normalization(
+    Type :: gen_statem:event_type(),
+    Key :: atom(),
+    Sender :: #raft_identity{},
+    Payload :: undefined | tuple(),
+    State :: state(),
+    Data :: #raft_state{}
+) -> gen_statem:event_handler_result(state(), #raft_state{}).
+
 %% [Protocol] Convert any valid remote procedure call to the appropriate local procedure call.
-handle_rpc_impl(Type, _, Key, _, Sender, Payload, State, #raft_state{table = Table} = Data) when is_tuple(Payload) ->
+handle_rpc_normalization(Type, Key, Sender, Payload, State, #raft_state{table = Table} = Data) when is_tuple(Payload) ->
     case protocol() of
         #{Key := ?PROCEDURE(Procedure, Defaults)} ->
             handle_procedure(Type, ?REMOTE(Sender, ?PROCEDURE(Procedure, defaultize_payload(Defaults, Payload))), State, Data);
@@ -1289,6 +1303,14 @@ leader(
     State2 = leader_apply_log(State1),
     {keep_state, maybe_heartbeat(State2), ?HEARTBEAT_TIMEOUT(State2)};
 
+%% [RequestPreVote RPC] Respond to pre-vote
+leader(_, ?REMOTE(Candidate, ?REQUEST_PRE_VOTE(Ref)), #raft_state{} = Data) ->
+    handle_request_pre_vote(Candidate, Ref, Data);
+
+%% [PreVote RPC] Pre-votes are only useful to candidates
+leader(_, ?REMOTE(_, ?PRE_VOTE(_, _, _, _)), #raft_state{}) ->
+    keep_state_and_data;
+
 %% [RequestVote RPC] Reject any vote requests as leadership is already established (5.1, 5.2)
 leader(_, ?REMOTE(Sender, ?REQUEST_VOTE(_, _, _)), #raft_state{} = Data) ->
     send_rpc(Sender, ?VOTE(false), Data),
@@ -1622,6 +1644,14 @@ follower(
 follower(_, ?REMOTE(_, ?APPEND_ENTRIES_RESPONSE(_, _, _, _)), #raft_state{}) ->
     keep_state_and_data;
 
+%% [RequestPreVote RPC] Respond to pre-vote
+follower(_, ?REMOTE(Candidate, ?REQUEST_PRE_VOTE(Ref)), #raft_state{} = Data) ->
+    handle_request_pre_vote(Candidate, Ref, Data);
+
+%% [PreVote RPC] Pre-votes are only useful to candidates
+follower(_, ?REMOTE(_, ?PRE_VOTE(_, _, _, _)), #raft_state{}) ->
+    keep_state_and_data;
+
 %% [RequestVote RPC] Handle incoming vote requests (5.2)
 follower(_, ?REMOTE(Candidate, ?REQUEST_VOTE(_, CandidateIndex, CandidateTerm)), #raft_state{} = State) ->
     handle_request_vote(?FUNCTION_NAME, Candidate, CandidateIndex, CandidateTerm, State);
@@ -1795,6 +1825,15 @@ candidate(Type, Event, #raft_state{} = State) when is_tuple(Event), element(1, E
 candidate(Type, ?REMOTE(Sender, ?APPEND_ENTRIES(_, _, _, _, _)) = Event, #raft_state{} = State) ->
     ?SERVER_LOG_NOTICE(State, "switching to follower after receiving heartbeat from ~0p.", [Sender]),
     {next_state, follower_or_witness(State), State, {next_event, Type, Event}};
+
+%% [RequestPreVote RPC] Respond to pre-vote
+candidate(_, ?REMOTE(Candidate, ?REQUEST_PRE_VOTE(Ref)), #raft_state{} = Data) ->
+    handle_request_pre_vote(Candidate, Ref, Data);
+
+%% [PreVote RPC] Check if a full pre-vote quorum is established and if so, proceed with election (9.6)
+candidate(_, ?REMOTE(_, ?PRE_VOTE(_, _, _, _)), #raft_state{}) ->
+    % not yet implemented
+    keep_state_and_data;
 
 %% [RequestVote RPC] Candidates should reject incoming vote requests as they always vote for themselves (5.2)
 candidate(_, ?REMOTE(Sender, ?REQUEST_VOTE(_, _, _)), #raft_state{} = Data) ->
@@ -1977,6 +2016,16 @@ disabled(Type, Event, #raft_state{} = State) when is_tuple(Event), element(1, Ev
 disabled(_, ?REMOTE(_, ?APPEND_ENTRIES(_, _, _, _, _)), #raft_state{}) ->
     keep_state_and_data;
 
+%% [RequestPreVote RPC]
+%% Disabled servers should not act upon any pre-vote requests as they should
+%% be invisible to the rest of the cluster
+disabled(_, ?REMOTE(_, ?REQUEST_PRE_VOTE(_)), #raft_state{}) ->
+    keep_state_and_data;
+
+%% [PreVote RPC] Pre-votes are only useful to candidates
+disabled(_, ?REMOTE(_, ?PRE_VOTE(_, _, _, _)), #raft_state{}) ->
+    keep_state_and_data;
+
 %% [RequestVote RPC] Disabled servers should reject any vote requests as they should behave
 %%                   as if dead to the cluster
 disabled(_, ?REMOTE(Sender, ?REQUEST_VOTE(_, _, _)), #raft_state{} = Data) ->
@@ -2082,6 +2131,14 @@ witness({call, From}, ?TRIGGER_ELECTION_COMMAND(_), #raft_state{}) ->
 
 witness({call, From}, ?PROMOTE_COMMAND(_, _), #raft_state{}) ->
     {keep_state_and_data, {reply, From, {error, invalid_state}}};
+
+%% [RequestPreVote RPC] Respond to pre-vote
+witness(_, ?REMOTE(Candidate, ?REQUEST_PRE_VOTE(Ref)), #raft_state{} = Data) ->
+    handle_request_pre_vote(Candidate, Ref, Data);
+
+%% [PreVote RPC] Pre-votes are only useful to candidates
+witness(_, ?REMOTE(_, ?PRE_VOTE(_, _, _, _)), #raft_state{}) ->
+    keep_state_and_data;
 
 %% [RequestVote RPC] Handle incoming vote requests (5.2)
 witness(_, ?REMOTE(Candidate, ?REQUEST_VOTE(_, CandidateIndex, CandidateTerm)), #raft_state{} = State) ->
@@ -3705,6 +3762,23 @@ cancel_queued(Queues, Start, End, Reason, Queued) ->
 %% RAFT Server - State Machine Implementation - Vote Requests
 %%------------------------------------------------------------------------------
 
+%% [RequestPreVote RPC]
+-spec handle_request_pre_vote(
+    Candidate :: #raft_identity{},
+    Ref :: reference(),
+    Data :: #raft_state{}
+) -> gen_statem:event_handler_result(state(), #raft_state{}).
+handle_request_pre_vote(
+    Candidate,
+    Ref,
+    #raft_state{log_view = View} = Data
+) ->
+    Index = wa_raft_log:last_index(View),
+    {ok, Term} = wa_raft_log:term(View, Index),
+    {Missing, _, _} = is_leader_missing(Data),
+    send_rpc(Candidate, ?PRE_VOTE(Ref, Missing, Index, Term), Data),
+    keep_state_and_data.
+
 %% [RequestVote RPC]
 -spec handle_request_vote(
     State :: state(),
@@ -4000,6 +4074,16 @@ update_status(
         wa_raft_info:set_status(Table, Partition, State, NewLive, NewLagging, NewStale),
     wa_raft_info:refresh_message_queue_length(Name),
     ok.
+
+%% Check if the leader has not been seen for at least the minimum election timeout.
+-spec is_leader_missing(Data :: #raft_state{}) -> {Missing :: boolean(), Delay :: infinity | integer(), AllowedDelay :: integer()}.
+is_leader_missing(#raft_state{application = App, table = Table, leader_heartbeat_ts = LeaderHeartbeatTs}) ->
+    AllowedDelay = ?RAFT_ELECTION_TIMEOUT_MIN(App, Table),
+    Delay = case LeaderHeartbeatTs of
+        undefined -> infinity;
+        _         -> erlang:monotonic_time(millisecond) - LeaderHeartbeatTs
+    end,
+    {Delay > AllowedDelay, Delay, AllowedDelay}.
 
 %% Check if the leader should send a storage snapshot to this follower and request
 %% if necessary.

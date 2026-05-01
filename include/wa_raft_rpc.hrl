@@ -32,6 +32,8 @@
 
 -define(APPEND_ENTRIES,          append_entries).
 -define(APPEND_ENTRIES_RESPONSE, append_entries_response).
+-define(REQUEST_PRE_VOTE,        request_pre_vote).
+-define(PRE_VOTE,                pre_vote).
 -define(REQUEST_VOTE,            request_vote).
 -define(VOTE,                    vote).
 -define(HANDOVER,                handover).
@@ -42,6 +44,8 @@
 -define(PROCEDURE(Type, Payload), {procedure, Type, Payload}).
 -define(APPEND_ENTRIES(PrevLogIndex, PrevLogTerm, Entries, CommitIndex, TrimIndex),   ?PROCEDURE(?APPEND_ENTRIES, {PrevLogIndex, PrevLogTerm, Entries, CommitIndex, TrimIndex})).
 -define(APPEND_ENTRIES_RESPONSE(PrevLogIndex, Success, MatchIndex, LastAppliedIndex), ?PROCEDURE(?APPEND_ENTRIES_RESPONSE, {PrevLogIndex, Success, MatchIndex, LastAppliedIndex})).
+-define(REQUEST_PRE_VOTE(Ref),                                                        ?PROCEDURE(?REQUEST_PRE_VOTE, {Ref})).
+-define(PRE_VOTE(Ref, Vote, LastLogIndex, LastLogTerm),                               ?PROCEDURE(?PRE_VOTE, {Ref, Vote, LastLogIndex, LastLogTerm})).
 -define(REQUEST_VOTE(ElectionType, LastLogIndex, LastLogTerm),                        ?PROCEDURE(?REQUEST_VOTE, {ElectionType, LastLogIndex, LastLogTerm})).
 -define(VOTE(Vote),                                                                   ?PROCEDURE(?VOTE, {Vote})).
 -define(HANDOVER(Ref, PrevLogIndex, PrevLogTerm, Entries),                            ?PROCEDURE(?HANDOVER, {Ref, PrevLogIndex, PrevLogTerm, Entries})).
