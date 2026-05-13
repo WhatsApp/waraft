@@ -1781,7 +1781,7 @@ candidate(
 
     State1 = enter_state(?FUNCTION_NAME, State0#raft_state{next_election_type = normal}),
 
-    case ElectionType =:= normal andalso ?RAFT_ELECTION_PRE_VOTE(App) of
+    case ElectionType =:= normal andalso ?RAFT_ELECTION_PRE_VOTE(App, Table) of
         true ->
             ?SERVER_LOG_NOTICE(State1, "advances to new term and starts pre-vote.", []),
 

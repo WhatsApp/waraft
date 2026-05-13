@@ -146,10 +146,6 @@
 -define(RAFT_ELECTION_WEIGHT, raft_election_weight).
 -define(RAFT_ELECTION_WEIGHT(App), ?RAFT_APP_CONFIG(App, ?RAFT_ELECTION_WEIGHT, ?RAFT_ELECTION_DEFAULT_WEIGHT)).
 
-%% Whether or not to enable RAFT pre-vote for spurious election control.
--define(RAFT_ELECTION_PRE_VOTE, raft_election_pre_vote).
--define(RAFT_ELECTION_PRE_VOTE(App), (?RAFT_APP_CONFIG(App, ?RAFT_ELECTION_PRE_VOTE, false) =:= true)).
-
 %% Time in seconds to retain transport destination directories after use
 -define(RAFT_TRANSPORT_RETAIN_INTERVAL, transport_retain_min_secs).
 -define(RAFT_TRANSPORT_RETAIN_INTERVAL(App), ?RAFT_APP_CONFIG(App, ?RAFT_TRANSPORT_RETAIN_INTERVAL, 300)).
@@ -173,6 +169,10 @@
 %% Maximum number of pending reads for any single RAFT partition
 -define(RAFT_MAX_PENDING_READS, raft_max_pending_reads).
 -define(RAFT_MAX_PENDING_READS(App, Table), ?RAFT_TABLE_CONFIG(App, Table, ?RAFT_MAX_PENDING_READS, 5000)).
+
+%% Whether or not to enable RAFT pre-vote for spurious election control.
+-define(RAFT_ELECTION_PRE_VOTE, raft_election_pre_vote).
+-define(RAFT_ELECTION_PRE_VOTE(App, Table), (?RAFT_TABLE_CONFIG(App, Table, ?RAFT_ELECTION_PRE_VOTE, false) =:= true)).
 
 %% Whether or not the leader should step down if it has not received heartbeat
 %% responses from a quorum of followers within the liveness grace period.
