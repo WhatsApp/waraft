@@ -144,7 +144,7 @@
 -define(RAFT_LEADER_ELIGIBLE(App), (?RAFT_APP_CONFIG(App, ?RAFT_LEADER_ELIGIBLE, true) =/= false)).
 %% Relative "weight" at which this node will trigger elections and thereby be elected.
 -define(RAFT_ELECTION_WEIGHT, raft_election_weight).
--define(RAFT_ELECTION_WEIGHT(App), ?RAFT_APP_CONFIG(App, ?RAFT_ELECTION_WEIGHT, ?RAFT_ELECTION_DEFAULT_WEIGHT)).
+-define(RAFT_ELECTION_WEIGHT(App), wa_raft_env:election_weight(App)).
 
 %% Time in seconds to retain transport destination directories after use
 -define(RAFT_TRANSPORT_RETAIN_INTERVAL, transport_retain_min_secs).

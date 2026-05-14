@@ -12,7 +12,9 @@
 
 %% Config API
 -export([
-    database_path/1
+    database_path/1,
+    election_weight/1,
+    set_election_weight_override/2
 ]).
 
 %% Internal API
@@ -26,6 +28,8 @@
 -type scope() :: Application :: atom() | {Table :: wa_raft:table(), Partition :: wa_raft:partition()} | SearchApps :: [atom()].
 -type key() :: Key :: atom() | {Primary :: atom(), Fallback :: atom()}.
 
+-define(ELECTION_WEIGHT_OVERRIDE(App), {?MODULE, election_weight, App}).
+
 -include_lib("wa_raft/include/wa_raft.hrl").
 
 %%-------------------------------------------------------------------
@@ -38,6 +42,22 @@ database_path(Scope) ->
         {ok, Root} -> Root;
         undefined  -> error({no_configured_database_path, Scope})
     end.
+
+-spec election_weight(Scope :: scope()) -> Weight :: non_neg_integer().
+election_weight(Scope) ->
+    Apps = search_apps(Scope),
+    case persistent_term:get(?ELECTION_WEIGHT_OVERRIDE(hd(Apps)), undefined) of
+        undefined ->
+            case get_env_impl(Apps, key(?RAFT_ELECTION_WEIGHT), fallback(?RAFT_ELECTION_WEIGHT)) of
+                undefined -> ?RAFT_ELECTION_DEFAULT_WEIGHT;
+                {ok, Weight} -> Weight
+            end;
+        Weight    -> Weight
+    end.
+
+-spec set_election_weight_override(App :: atom(), Weight :: non_neg_integer()) -> ok.
+set_election_weight_override(App, Weight) ->
+    persistent_term:put(?ELECTION_WEIGHT_OVERRIDE(App), Weight).
 
 %%-------------------------------------------------------------------
 %% Internal API
