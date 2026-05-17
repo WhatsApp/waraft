@@ -21,13 +21,11 @@
 
 %% Options API
 -export([
-    default_name/2,
     registered_name/2
 ]).
 
 %% Options API
 -export([
-    partition_path/2,
     default_partition_path/3,
     registered_partition_path/2
 ]).
