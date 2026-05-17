@@ -59,7 +59,7 @@ load(#raft_state{name = Name, partition_path = PartitionPath} = State) ->
             ?RAFT_LOG_ERROR("~p read state file but no CRC was found", [Name]),
             {error, no_crc};
         {error, enoent} ->
-            ?RAFT_LOG_NOTICE("~p is not loading non-existant state file.", [Name]),
+            ?RAFT_LOG_NOTICE("~p is not loading non-existent state file.", [Name]),
             no_state;
         {error, Reason} ->
             ?RAFT_LOG_ERROR("~p could not read state file due to ~p.", [Name, Reason]),

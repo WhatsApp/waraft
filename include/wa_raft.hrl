@@ -243,7 +243,7 @@
 -define(RAFT_STALE_GRACE_PERIOD_ENTRIES, raft_stale_grace_period_entries).
 -define(RAFT_STALE_GRACE_PERIOD_ENTRIES(App, Table), ?RAFT_TABLE_CONFIG(App, Table, ?RAFT_STALE_GRACE_PERIOD_ENTRIES, 5_000)).
 
-%% Minium amount of time in seconds since the last successfully received
+%% Minimum amount of time in seconds since the last successfully received
 %% heartbeat from a leader of a term for non-forced promotion to be allowed.
 -define(RAFT_PROMOTION_GRACE_PERIOD, raft_promotion_grace_period_secs).
 -define(RAFT_PROMOTION_GRACE_PERIOD(App, Table), ?RAFT_TABLE_CONFIG(App, Table, ?RAFT_PROMOTION_GRACE_PERIOD, 60)).
@@ -268,7 +268,7 @@
 -define(RAFT_HANDOVER_TIMEOUT, raft_handover_timeout_ms).
 -define(RAFT_HANDOVER_TIMEOUT(App, Table), ?RAFT_TABLE_CONFIG(App, Table, ?RAFT_HANDOVER_TIMEOUT, 600)).
 
-%% Minimum nubmer of log entries past the minimum kept by the RAFT server before triggering
+%% Minimum number of log entries past the minimum kept by the RAFT server before triggering
 %% log rotation
 -define(RAFT_LOG_ROTATION_INTERVAL, raft_max_log_records_per_file).
 -define(RAFT_LOG_ROTATION_INTERVAL(App, Table), ?RAFT_TABLE_CONFIG(App, Table, ?RAFT_LOG_ROTATION_INTERVAL, 200000)).

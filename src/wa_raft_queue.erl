@@ -84,7 +84,7 @@
 %% ETS table creation options shared by all queue tables
 -define(RAFT_QUEUE_TABLE_OPTIONS, [named_table, public, {read_concurrency, true}, {write_concurrency, true}]).
 
-%% Total number of counters for RAFT partition specfic counters
+%% Total number of counters for RAFT partition specific counters
 -define(RAFT_NUMBER_OF_QUEUE_SIZE_COUNTERS, 5).
 %% Index into counter reference for counter tracking apply queue size
 -define(RAFT_APPLY_QUEUE_SIZE_COUNTER, 1).

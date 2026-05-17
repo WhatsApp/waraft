@@ -260,7 +260,7 @@
 %% Load a snapshot previously created by the same storage provider, possibly
 %% copied, rooted at the provided path. If successful, the current storage
 %% state should be replaced by the storage state represented by the snapshot.
-%% If a recoverable error occured, the storage state should remain unchanged.
+%% If a recoverable error occurred, the storage state should remain unchanged.
 %% If the storage state is no longer suitable for use, an error should be
 %% raised.
 -callback storage_open_snapshot(Path :: file:filename(), ExpectedPosition :: wa_raft_log:log_pos(), Handle :: storage_handle()) -> {ok, NewHandle :: storage_handle()} | {error, Reason :: term()}.

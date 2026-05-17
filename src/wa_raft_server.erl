@@ -906,7 +906,7 @@ handle_rpc_impl(Type, Event, ?REQUEST_VOTE, Term, Sender, Payload, State, #raft_
             handle_rpc_impl(Type, Event, ?REQUEST_VOTE, Term, Sender, setelement(1, Payload, allowed), State, Data);
         {false, Delay, AllowedDelay} ->
             % We have gotten a heartbeat recently so drop this vote request.
-            % Log this at debug level because we may end up with alot of these when we have
+            % Log this at debug level because we may end up with a lot of these when we have
             % removed a server from the cluster but not yet shut it down.
             ?RAFT_COUNT(Table, 'server.request_vote.drop'),
             ?SERVER_LOG_DEBUG(
@@ -3771,7 +3771,7 @@ append_entries(
             % A conflict is detected that would result in the truncation of a
             % log entry that the local replica has committed. We cannot validly
             % delete log entries that are already committed because doing so
-            % may potenially cause the log entry to be no longer present on a
+            % may potentially cause the log entry to be no longer present on a
             % majority of replicas.
             {ok, LocalTerm} = wa_raft_log:term(View0, ConflictIndex),
             {ConflictTerm, _} = if

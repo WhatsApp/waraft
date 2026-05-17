@@ -261,7 +261,7 @@
 %% process, the log will be inspected to see if it contains a record
 %% corresponding to the last applied index of the storage backing this
 %% RAFT partition and whether or not the term of this entry matches
-%% that reported by the storage. If so, then opening proceeeds normally.
+%% that reported by the storage. If so, then opening proceeds normally.
 %% If there is a mismatch, then the log will be reinitialized using
 %% `reset/3`.
 %% If this setup fails such that the log is not usable, implementations
