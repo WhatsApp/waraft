@@ -744,6 +744,7 @@ init(
     } = Options
 ) ->
     process_flag(trap_exit, true),
+    rand:seed(exsp, {erlang:monotonic_time(), erlang:time_offset(), erlang:unique_integer()}),
 
     ?RAFT_LOG_NOTICE("Server[~0p] starting with options ~0p", [Name, Options]),
 
@@ -759,7 +760,7 @@ init(
     {ok, View} = wa_raft_log:open(Log, Last),
 
     Now = erlang:monotonic_time(millisecond),
-    State0 = #raft_state{
+    Data0 = #raft_state{
         application = Application,
         name = Name,
         self = Self,
@@ -778,31 +779,22 @@ init(
         current_term = Last#raft_log_pos.term,
         state_start_ts = Now
     },
-
-    State1 = load_config(State0),
-    rand:seed(exsp, {erlang:monotonic_time(), erlang:time_offset(), erlang:unique_integer()}),
+    Data1 = load_config(Data0),
     % TODO T246543655 When we have proper error handling for data corruption
     %                 vs. stalled server then handle {error, Reason} type
     %                 returns from load_state.
-    State2 = case wa_raft_durable_state:load(State1) of
-        {ok, NewState} -> NewState;
-        _              -> State1
+    Data2 = case wa_raft_durable_state:load(Data1) of
+        {ok, Loaded} -> Loaded;
+        _            -> Data1
     end,
 
-    % 1. Begin as disabled if a disable reason is set
-    % 2. Begin as stalled if there is no data
-    % 3. Begin as witness if configured
-    % 4. Begin as follower otherwise
-    InitialState = case State2 of
-        #raft_state{disable_reason = undefined, last_applied = 0} -> stalled;
-        #raft_state{disable_reason = undefined} -> follower_or_witness(State2);
-        _ -> disabled
-    end,
+    CurrentTerm = Data2#raft_state.current_term,
+    InitialState = initial_state(Data2),
 
-    wa_raft_info:set_current_term_info(Table, Partition, State2#raft_state.current_term, undefined, undefined),
+    wa_raft_info:set_current_term_info(Table, Partition, CurrentTerm, undefined, undefined),
     wa_raft_info:set_status(Table, Partition, InitialState, false, true, true),
 
-    {ok, InitialState, State2}.
+    {ok, InitialState, Data2}.
 
 -spec callback_mode() -> gen_statem:callback_mode_result().
 callback_mode() ->
@@ -3034,6 +3026,23 @@ send_op_to_storage(Index, Record, Size, #raft_state{storage = Storage, queued = 
 %%------------------------------------------------------------------------------
 %% RAFT Server - State Machine Implementation - State Management
 %%------------------------------------------------------------------------------
+
+-spec initial_state(Data :: #raft_state{}) -> state().
+%% Start as disabled whenever a disable reason is set
+initial_state(#raft_state{disable_reason = Reason}) when Reason =/= undefined ->
+    disabled;
+%% Start as stalled if no data or configuration is available
+initial_state(#raft_state{last_applied = 0}) ->
+    stalled;
+initial_state(#raft_state{cached_config = undefined}) ->
+    stalled;
+%% Start as candidate if configured as a single member cluster or
+%% otherwise started as follower or witness as configured
+initial_state(#raft_state{self = Self} = Data) ->
+    case is_single_member(Self, config(Data)) of
+        true -> candidate;
+        false -> follower_or_witness(Data)
+    end.
 
 -spec follower_or_witness(Data :: #raft_state{}) -> follower | witness.
 follower_or_witness(Data) ->
