@@ -86,10 +86,10 @@
 %% Number of counters
 -define(RAFT_TRANSPORT_COUNTERS, 2).
 
-%% Counter - inflight receives
+%% Counter - in-flight receives
 -define(RAFT_TRANSPORT_COUNTER_ACTIVE_RECEIVES, 1).
 
-%% Counter - inflight witness receives
+%% Counter - in-flight witness receives
 -define(RAFT_TRANSPORT_COUNTER_ACTIVE_WITNESS_RECEIVES, 2).
 
 -type transport_id() :: pos_integer().
