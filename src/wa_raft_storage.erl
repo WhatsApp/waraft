@@ -356,7 +356,7 @@
 -type open_request() :: ?OPEN_REQUEST.
 -type fulfill_request() :: ?FULFILL_REQUEST(Key :: wa_raft_acceptor:key(), Result :: wa_raft_acceptor:commit_result()).
 -type apply_request() :: ?APPLY_REQUEST(From :: gen_server:from() | undefined, Record :: wa_raft_log:log_record(), Size :: non_neg_integer(), Priority :: wa_raft_acceptor:priority()).
--type apply_read_request() :: ?APPLY_READ_REQUEST(From :: gen_server:from(), Comman :: wa_raft_acceptor:command()).
+-type apply_read_request() :: ?APPLY_READ_REQUEST(From :: gen_server:from(), Command :: wa_raft_acceptor:command()).
 -type cancel_reads_request() :: ?CANCEL_READS_REQUEST(Result :: wa_raft_acceptor:read_error()).
 
 -type create_snapshot_request() :: ?CREATE_SNAPSHOT_REQUEST() | ?CREATE_SNAPSHOT_REQUEST(Name :: string()) | ?CREATE_SNAPSHOT_REQUEST(Name :: string(), Options :: snapshot_options()).
