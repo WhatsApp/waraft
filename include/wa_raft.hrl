@@ -316,6 +316,12 @@
 -define(RAFT_STORAGE_NOTIFY_COMPLETE, raft_storage_notify_complete).
 -define(RAFT_STORAGE_NOTIFY_COMPLETE(App, Table), (?RAFT_TABLE_CONFIG(App, Table, ?RAFT_STORAGE_NOTIFY_COMPLETE, true) =:= true)).
 
+%% The allowed maximum number of applies in the queue when the RAFT
+%% server receives a completion notification from the storage server
+%% before it will ignore the notification.
+-define(RAFT_STORAGE_NOTIFY_COMPLETE_BUFFER, raft_storage_notify_complete_buffer).
+-define(RAFT_STORAGE_NOTIFY_COMPLETE_BUFFER(App, Table), ?RAFT_TABLE_CONFIG(App, Table, ?RAFT_STORAGE_NOTIFY_COMPLETE_BUFFER, 100)).
+
 %%-------------------------------------------------------------------
 %% Records
 %%-------------------------------------------------------------------

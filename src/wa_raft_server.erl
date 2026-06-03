@@ -2262,16 +2262,17 @@ command(
     State,
     cast,
     ?NOTIFY_COMPLETE_COMMAND(),
-    #raft_state{queues = Queues} = Data
+    #raft_state{application = App, table = Table, queues = Queues} = Data
 ) when State =:= leader; State =:= follower; State =:= witness ->
-    case wa_raft_queue:apply_queue_size(Queues) of
-        0 ->
+    Buffer = ?RAFT_STORAGE_NOTIFY_COMPLETE_BUFFER(App, Table),
+    case wa_raft_queue:apply_queue_size(Queues) =< Buffer of
+        true ->
             NewState = case State of
                 leader -> leader_apply_log(Data);
                 _ -> apply_log(State, infinity, Data)
             end,
             {keep_state, NewState};
-        _ ->
+        false ->
             keep_state_and_data
     end;
 command(_, cast, ?NOTIFY_COMPLETE_COMMAND(), #raft_state{}) ->
