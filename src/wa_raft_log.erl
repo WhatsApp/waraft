@@ -66,6 +66,7 @@
 %% Internal API
 -export([
     log/1,
+    log/2,
     log_name/1,
     provider/1
 ]).
@@ -819,6 +820,35 @@ log(#log_view{log = Log}) ->
     Log;
 log(#raft_log{} = Log) ->
     Log.
+
+-doc """
+Construct a `#raft_log{}` for the given RAFT partition by reading the
+registered `#raft_options{}` for the partition.
+
+Raises an error if no options have been registered for `(Table,
+Partition)` (i.e., the partition has not been brought up under
+`wa_raft_part_sup`).
+""".
+-spec log(Table :: wa_raft:table(), Partition :: wa_raft:partition()) -> Log :: log().
+log(Table, Partition) ->
+    case wa_raft_part_sup:options(Table, Partition) of
+        undefined ->
+            error({not_registered, Table, Partition});
+        #raft_options{
+            application = Application,
+            table = OptionsTable,
+            partition = OptionsPartition,
+            log_name = Name,
+            log_module = Provider
+        } ->
+            #raft_log{
+                name = Name,
+                application = Application,
+                table = OptionsTable,
+                partition = OptionsPartition,
+                provider = Provider
+            }
+    end.
 
 -spec log_name(LogOrView :: log() | view()) -> Name :: log_name().
 log_name(#log_view{log = #raft_log{name = Name}}) ->
