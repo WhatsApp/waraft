@@ -275,7 +275,7 @@
 %% Maximum number of log entries past the minimum kept by the RAFT server to retain in
 %% the log after rotation
 -define(RAFT_LOG_ROTATION_KEEP, raft_max_log_records).
--define(RAFT_LOG_ROTATION_KEEP(App, Table, Interval), ?RAFT_TABLE_CONFIG(App, Table, ?RAFT_LOG_ROTATION_KEEP, Interval * 10)).
+-define(RAFT_LOG_ROTATION_KEEP(App, Table, Interval), ?RAFT_TABLE_CONFIG(App, Table, ?RAFT_LOG_ROTATION_KEEP, (Interval) * 10)).
 %% Whether log rotation should be controlled by local log length or by
 %% leader-announced cluster trimming index
 -define(RAFT_LOG_ROTATION_BY_TRIM_INDEX, raft_rotate_by_trim_index).
