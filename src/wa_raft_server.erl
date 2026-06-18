@@ -2443,9 +2443,35 @@ command(
     case Allowed of
         true ->
             ?SERVER_LOG_NOTICE(State, Data, "is promoting to leader of term ~0p.", [Term]),
-            NewData = case Term > CurrentTerm of
+            NewData0 = case Term > CurrentTerm of
                 true -> advance_term(State, Term, node(), Data);
                 false -> Data
+            end,
+            NewData = case Force of
+                true ->
+                    % Forced promotion skips the candidate vote phase, so
+                    % `heartbeat_reply_ts` is not populated by vote responses
+                    % the way a normally-elected leader's is. Seed
+                    % `last_quorum_ts` to `Now` so that, under
+                    % ?RAFT_LEADER_CHECK_QUORUM, the new leader is granted the
+                    % standard ?RAFT_LIVENESS_GRACE_PERIOD_MS window to receive
+                    % real heartbeat replies from peers; otherwise
+                    % `leader_eligible/1` would see `last_quorum_ts = undefined`
+                    % and force an immediate resignation on the first heartbeat
+                    % tick, defeating the purpose of the forced promotion.
+                    %
+                    % Also clear `heartbeat_reply_ts`: entries left from a
+                    % prior leadership tenure could otherwise form a quorum
+                    % when `update_quorum_ts/2` runs in `enter_state/2` and
+                    % overwrite the seed with a stale `last_quorum_ts`,
+                    % triggering exactly the immediate resignation this seed
+                    % is meant to prevent.
+                    NewData0#raft_state{
+                        last_quorum_ts = Now,
+                        heartbeat_reply_ts = #{}
+                    };
+                false ->
+                    NewData0
             end,
             case State of
                 leader -> {repeat_state, NewData, {reply, From, ok}};
@@ -3109,6 +3135,15 @@ advance_term(
         last_applied_indices = #{},
         heartbeat_send_ts = #{},
         handover = undefined
+        %% `heartbeat_reply_ts` is deliberately not reset here. It records
+        %% recent peer liveness independent of term: a peer that answered a
+        %% heartbeat is alive whether or not the term has since advanced, and
+        %% in the candidate path `update_heartbeat_reply_ts/2` populates it
+        %% from vote responses *after* `advance_term/4` runs. Resetting it
+        %% here would either discard valid liveness evidence carried into a
+        %% new candidate round or race with that population. Callers that
+        %% need a clean slate (e.g. the `?PROMOTE_COMMAND` `Force = true`
+        %% branch) must clear it explicitly.
     },
     update_current_term_info(State, NewData),
     ok = wa_raft_durable_state:store(NewData),
