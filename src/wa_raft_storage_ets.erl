@@ -35,7 +35,7 @@
 %% Filename used for the actual ETS table file in a snapshot
 -define(SNAPSHOT_FILENAME, "data").
 
-%% Tag used in keys for metadata stored on the behalf of RAFT
+%% Tag used in keys for metadata stored on behalf of RAFT
 -define(METADATA_TAG, '$metadata').
 %% Tag used for label metadata stored on behalf of RAFT.
 -define(LABEL_TAG, '$label').

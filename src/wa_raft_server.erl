@@ -3,8 +3,8 @@
 %%% This source code is licensed under the Apache 2.0 license found in
 %%% the LICENSE file in the root directory of this source tree.
 %%%
-%%% This module implements RPC of raft consensus protocol. See raft spec
-%%% on https://raft.github.io/. A wa_raft instance is a participant in
+%%% This module implements RPC handling for the RAFT consensus protocol. See the
+%%% RAFT spec at https://raft.github.io/. A wa_raft instance is a participant in
 %%% a consensus group. Each participant plays a certain role (follower,
 %%% leader or candidate). The mission of a consensus group is to
 %%% implement a replicated state machine in a distributed cluster.
@@ -1545,9 +1545,9 @@ leader(
                     {ok, PrevLogTerm} = wa_raft_log:term(View, PrevLogIndex),
                     {ok, LogEntries} = wa_raft_log:entries(View, PeerSendIndex, MaxHandoverBatchSize, MaxHandoverBytes),
 
-                    % The request to load the log may result in not all required log entries being loaded
-                    % if we hit the byte size limit. Ensure that we have loaded all required log entries
-                    % before initiating a handover.
+                    % The request to load the log may fail to load all required log entries
+                    % if we hit the byte size limit. Ensure that we have loaded all required
+                    % log entries before initiating a handover.
                     case PrevLogIndex + length(LogEntries) of
                         LastIndex ->
                             Ref = make_ref(),
@@ -1924,7 +1924,7 @@ candidate(
                     {next_state, follower_or_witness(Data2), Data2}
             end;
         none ->
-            % If no majority is found, the continue waiting.
+            % If no majority is found, then continue waiting.
             {keep_state, Data2}
     end;
 
@@ -2007,12 +2007,12 @@ candidate(Type, Event, #raft_state{} = State) ->
 %% RAFT Server - State Machine Implementation - Disabled State
 %%------------------------------------------------------------------------------
 %% The disabled state is an extension to the RAFT protocol used to hold any
-%% replicas of an FSM that have for some reason or another identified that some
-%% deficiency or malfunction that makes them unfit to either enforce any prior
-%% quorum decisions or properly participate in future quorum decisions. Common
-%% reasons include the detection of corruptions or inconsistencies within the
-%% FSM state or RAFT log. The reason for which the replica was disabled is kept
-%% in persistent so that the replica will remain disabled even when restarted.
+%% replicas of an FSM that have identified some deficiency or malfunction that
+%% makes them unfit to either enforce any prior quorum decisions or properly
+%% participate in future quorum decisions. Common reasons include the detection
+%% of corruptions or inconsistencies within the FSM state or RAFT log. The reason
+%% for which the replica was disabled is kept in persistent state so that the
+%% replica will remain disabled even when restarted.
 %%------------------------------------------------------------------------------
 
 -spec disabled
@@ -2112,11 +2112,10 @@ disabled(Type, Event, #raft_state{} = State) ->
 %% The witness state is an extension to the RAFT protocol that identifies a
 %% replica as a special "witness replica" that participates in quorum decisions
 %% but does not retain a full copy of the actual underlying FSM. These replicas
-%% can use significantly fewer system resources to operate however it is not
+%% can use significantly fewer system resources to operate; however, it is not
 %% recommended for more than 25% of the replicas in a RAFT cluster to be
-%% witness replicas as having more than such a number of witness replicas can
-%% result in significantly reduced chance of data durability in the face of
-%% unexpected replica loss.
+%% witness replicas, as having more than that number of witness replicas can
+%% significantly reduce data durability in the face of unexpected replica loss.
 %%------------------------------------------------------------------------------
 
 -spec witness
@@ -2214,7 +2213,7 @@ witness(Type, Event, #raft_state{} = State) ->
 %%------------------------------------------------------------------------------
 %% RAFT Server - State Machine Implementation - Command Handlers
 %%------------------------------------------------------------------------------
-%% Fallbacks for command calls to the RAFT server for when there is no special
+%% Fallbacks for command calls to the RAFT server when there is no special
 %% handling for a command defined within the state-specific callback itself.
 %%------------------------------------------------------------------------------
 
@@ -2563,7 +2562,7 @@ command(State, Type, Event, #raft_state{} = Data) ->
 %% RAFT Server - State Machine Implementation - Cluster Configuration Helpers
 %%------------------------------------------------------------------------------
 
-%% Return whether or not the specified peer is a member of in the provided configuration.
+%% Return whether or not the specified peer is a member of the provided configuration.
 %% Raises an error if the membership list is missing or empty.
 -spec is_member(Peer :: peer(), Config :: config()) -> boolean().
 is_member(Peer, Config) ->
@@ -2855,7 +2854,7 @@ random_election_timeout(#raft_state{application = App, table = Table}) ->
         end,
     case ?RAFT_ELECTION_WEIGHT(App) of
         Weight when Weight > 0, Weight =< ?RAFT_ELECTION_MAX_WEIGHT ->
-            % higher weight, shorter timeout so it has more chances to initiate an leader election
+            % higher weight, shorter timeout so it has more chances to initiate a leader election
             round(Timeout * ?RAFT_ELECTION_MAX_WEIGHT div Weight);
         _ ->
             Timeout * ?RAFT_ELECTION_DEFAULT_WEIGHT
@@ -3154,7 +3153,7 @@ advance_term(
 %%------------------------------------------------------------------------------
 
 %% Whether or not the local replica is eligible to maintain leadership.
-%% Generally, this requires that the replica is a member of cluster and is
+%% Generally, this requires that the replica is a member of the cluster and is
 %% eligible to be leader. When check quorum is enabled, the leader must also
 %% have received heartbeat responses from a quorum of followers recently.
 -spec leader_eligible(Data :: #raft_state{}) -> eligible | ineligible | stale.
@@ -3178,7 +3177,7 @@ leader_eligible(#raft_state{application = App, table = Table, last_quorum_ts = L
     end.
 
 %% Whether or not the local replica is eligible to start elections.
-%% Generally, this requires that the replica is a member of cluster, is
+%% Generally, this requires that the replica is a member of the cluster, is
 %% eligible to be leader and has a non-zero election weight.
 -spec candidate_eligible(Data :: #raft_state{}) -> boolean().
 candidate_eligible(#raft_state{application = App} = Data) ->
@@ -3281,7 +3280,7 @@ commit_pending(#raft_state{table = Table, log_view = View, pending_high = Pendin
                         ),
                     % We can clear pending read flag as we've successfully added at
                     % least one new log entry so the leader will proceed to replicate
-                    % and establish a new quorum is it is still up to date.
+                    % and establish a new quorum if it is still up to date.
                     Data1 = Data#raft_state{
                         log_view = NewView,
                         last_label = NewLabel,
@@ -3427,8 +3426,8 @@ heartbeat(
             NewNextIndices =
                 case CastResult of
                     ok ->
-                        % pipelining - move NextIndex after sending out logs. If a packet is lost, follower's AppendEntriesResponse
-                        % will return send back its correct index
+                        % pipelining - move NextIndex after sending out logs. If a packet is lost, the follower's AppendEntriesResponse
+                        % will return its correct index
                         NextIndices#{FollowerId => PrevLogIndex + length(Entries) + 1};
                     _ ->
                         NextIndices
@@ -3529,7 +3528,7 @@ leader_config_change_allowed(
     % term because it is ready for a configuration change.
     QuorumReady = CommitIndex >= TermStartIndex,
     % No two configuration changes can be in the log at the same time
-    % and both be not yet committed.
+    % while both remain uncommitted.
     ConfigIndex = case wa_raft_log:config(View) of
         {ok, LogConfigIndex, _} -> erlang:max(CachedConfigIndex, LogConfigIndex);
         _ -> CachedConfigIndex
@@ -4169,8 +4168,8 @@ update_status(
     } = Data
 ) when State =:= leader ->
 
-    % If the quorum of the most recent timestamps of follower's acknowledgement
-    % of heartbeats is too old, then the leader is considered stale.
+    % If the quorum of the most recent follower heartbeat acknowledgement
+    % timestamps is too old, then the leader is considered stale.
     NowTs = erlang:monotonic_time(millisecond),
     QuorumAge = case LastQuorumTs of
         undefined -> infinity;

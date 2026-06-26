@@ -214,12 +214,12 @@
 -define(RAFT_MAX_CONSECUTIVE_APPLY_BYTES, raft_apply_batch_max_bytes).
 -define(RAFT_MAX_CONSECUTIVE_APPLY_BYTES(App, Table), ?RAFT_TABLE_CONFIG(App, Table, ?RAFT_MAX_CONSECUTIVE_APPLY_BYTES, 200 * 4 * 1024)).
 
-%% Minimum time in milliseconds since the receiving the last valid leader heartbeat
+%% Minimum time in milliseconds since receiving the last valid leader heartbeat
 %% before triggering a new election due to term timeout. This time should be much
 %% greater than the maximum expected network delay.
 -define(RAFT_ELECTION_TIMEOUT_MIN, raft_election_timeout_ms).
 -define(RAFT_ELECTION_TIMEOUT_MIN(App, Table), ?RAFT_TABLE_CONFIG(App, Table, ?RAFT_ELECTION_TIMEOUT_MIN, 5000)).
-%% Maximum time in milliseconds since the receiving the last valid leader heartbeat
+%% Maximum time in milliseconds since receiving the last valid leader heartbeat
 %% before triggering a new election due to term timeout. The difference between this
 %% time and the minimum election timeout should be much greater than the expected
 %% variance in network delay.
@@ -238,7 +238,7 @@
 %% can be considered live without receiving a heartbeat from a valid leader of the current term.
 -define(RAFT_LIVENESS_GRACE_PERIOD_MS, raft_liveness_grace_period_ms).
 -define(RAFT_LIVENESS_GRACE_PERIOD_MS(App, Table), ?RAFT_TABLE_CONFIG(App, Table, ?RAFT_LIVENESS_GRACE_PERIOD_MS, 30_000)).
-%% The maximum number of log entries that can be not yet applied to a follower or witnesse's log
+%% The maximum number of log entries that may remain unapplied in a follower's or witness's log
 %% compared to the leader's commit index before the replica is considered stale.
 -define(RAFT_STALE_GRACE_PERIOD_ENTRIES, raft_stale_grace_period_entries).
 -define(RAFT_STALE_GRACE_PERIOD_ENTRIES(App, Table), ?RAFT_TABLE_CONFIG(App, Table, ?RAFT_STALE_GRACE_PERIOD_ENTRIES, 5_000)).

@@ -3,7 +3,7 @@
 %%% This source code is licensed under the Apache 2.0 license found in
 %%% the LICENSE file in the root directory of this source tree.
 %%%
-%%% Pluggable metrics interface to allow integration with different metrics system.
+%%% Pluggable metrics interface to allow integration with different metrics systems.
 %%% The default implementation skips metrics logging and does nothing.
 
 -module(wa_raft_metrics).

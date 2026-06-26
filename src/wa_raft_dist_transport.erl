@@ -3,7 +3,7 @@
 %%% This source code is licensed under the Apache 2.0 license found in
 %%% the LICENSE file in the root directory of this source tree.
 %%%
-%%% This module implements transport interface by using erlang OTP dist.
+%%% This module implements the transport interface using Erlang distribution.
 
 -module(wa_raft_dist_transport).
 -compile(warn_missing_spec_all).

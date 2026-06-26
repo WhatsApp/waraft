@@ -4,7 +4,7 @@
 %%% the LICENSE file in the root directory of this source tree.
 
 %%%
-%%% This supervisor starts 4 RAFT partitions under itself.
+%%% This supervisor starts four RAFT partitions.
 %%%
 
 -module(kvstore_sup).
@@ -30,7 +30,7 @@ init([]) ->
     ],
     {ok, {#{}, ChildSpecs}}.
 
-% Construct a RAFT "args" for a partition.
+% Construct RAFT args for a partition.
 -spec raft_args(Partition :: wa_raft:partition()) -> wa_raft:args().
 raft_args(Partition) ->
     % RAFT clusters are primarily identified by their table and partition number

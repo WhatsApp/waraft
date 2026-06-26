@@ -4,7 +4,7 @@
 %%% the LICENSE file in the root directory of this source tree.
 
 %%%
-%%% This module offers APIs to access the storage.
+%%% This module provides APIs for accessing storage.
 %%%
 -module(kvstore_client).
 -compile(warn_missing_spec_all).
@@ -21,7 +21,7 @@
 -define(TABLE, kvstore).
 -define(NUM_PARTITIONS, 4).
 
-%% Read value for a given key. It's a blocking call.
+%% Read the value for a given key. It's a blocking call.
 -spec read(term()) ->  {ok, term()} | wa_raft_acceptor:read_error().
 read(Key) ->
     Acceptor = ?RAFT_ACCEPTOR_NAME(?TABLE, partition(Key)),

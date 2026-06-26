@@ -9,7 +9,7 @@
     {description, "Erlang implementation of RAFT Consensus Protocol"},
     {vsn, "1.0.0"},
     {modules, []},
-    %% NOTE: No more dependency is expected for this app
+    %% NOTE: No additional dependencies are expected for this app
     {applications, [
         kernel,
         stdlib

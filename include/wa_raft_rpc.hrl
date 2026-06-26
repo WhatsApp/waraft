@@ -9,7 +9,7 @@
 %%-------------------------------------------------------------------
 %% RAFT Server RPC Formats
 %%-------------------------------------------------------------------
-%% As the RAFT process that is intended to performs the cross-node
+%% As the RAFT process that is intended to perform the cross-node
 %% communication required to provide durability against failure,
 %% RAFT servers across nodes must agree on the RPC formats in use.
 %% This means that RPC formats should not be changed once created.
@@ -54,8 +54,8 @@
 
 %% A request to execute a particular procedure. This request could
 %% have been issued locally or as a result of a remote procedure
-%% call. The peer (if exists and could be oneself) that issued the
-%% procedure call will be provided as the sender.
+%% call. The peer that issued the procedure call, if one exists, may be
+%% the local peer and will be provided as the sender.
 -define(REMOTE(Sender, Call), {remote, Sender, Call}).
 
 %%-------------------------------------------------------------------

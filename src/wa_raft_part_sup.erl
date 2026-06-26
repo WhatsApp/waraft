@@ -3,10 +3,9 @@
 %%% This source code is licensed under the Apache 2.0 license found in
 %%% the LICENSE file in the root directory of this source tree.
 %%%
-%%% OTP Supervisor for monitoring RAFT processes. Correctness of RAFT
-%%% relies on the consistency of the signaling between the processes,
-%%% this supervisor is configured to restart all RAFT processes
-%%% when any of them exits abnormally.
+%%% OTP Supervisor for monitoring RAFT processes. RAFT correctness relies on
+%%% consistent signaling between the processes, so this supervisor restarts all
+%%% RAFT processes when any of them exits abnormally.
 
 -module(wa_raft_part_sup).
 -compile(warn_missing_spec_all).
@@ -87,7 +86,7 @@ start_link(Application, Spec) ->
     %% persistent term for access by shared resources and other services.
     %% The RAFT options for a table are not expected to change during the
     %% runtime of the RAFT application and so repeated updates should not
-    %% result in any GC load. Warn if this is case.
+    %% result in any GC load. Warn if this is the case.
     PrevOptions = persistent_term:get(?OPTIONS_KEY(Table, Partition), Options),
     PrevOptions =/= Options andalso
         ?RAFT_LOG_WARNING(

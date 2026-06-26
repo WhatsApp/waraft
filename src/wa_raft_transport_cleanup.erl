@@ -60,14 +60,14 @@ start_link(#raft_options{transport_cleanup_name = Name} = Options) ->
 %% Internal API
 %%-------------------------------------------------------------------
 
-%% Get the default name for the RAFT acceptor server associated with the
+%% Get the default name for the RAFT transport cleanup server associated with the
 %% provided RAFT partition.
 -spec default_name(Table :: wa_raft:table(), Partition :: wa_raft:partition()) -> Name :: atom().
 default_name(Table, Partition) ->
     % elp:ignore W0023 bounded atom, one per table/partition at startup
     binary_to_atom(<<"raft_transport_cleanup_", (atom_to_binary(Table))/binary, "_", (integer_to_binary(Partition))/binary>>).
 
-%% Get the registered name for the RAFT acceptor server associated with the
+%% Get the registered name for the RAFT transport cleanup server associated with the
 %% provided RAFT partition or the default name if no registration exists.
 -spec registered_name(Table :: wa_raft:table(), Partition :: wa_raft:partition()) -> Name :: atom().
 registered_name(Table, Partition) ->

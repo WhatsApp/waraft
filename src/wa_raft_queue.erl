@@ -334,7 +334,7 @@ fulfill_incomplete_read(#queues{counters = Counters}, From, Reply) ->
     atomics:sub(Counters, ?RAFT_READ_QUEUE_SIZE_COUNTER, 1),
     gen_server:reply(From, Reply).
 
-% Fulfill a pending reads with an error that indicates that the read was not completed.
+% Fulfill pending reads with an error that indicates that the read was not completed.
 -spec fulfill_all_reads(Queues :: queues(), wa_raft_acceptor:read_error()) -> ok.
 fulfill_all_reads(#queues{counters = Counters, reads = Reads}, Reply) ->
     lists:foreach(

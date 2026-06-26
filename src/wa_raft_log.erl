@@ -3,8 +3,8 @@
 %%% This source code is licensed under the Apache 2.0 license found in
 %%% the LICENSE file in the root directory of this source tree.
 %%%
-%%% This module is the interface for raft log. It defines the callbacks
-%%% required by the specific log implementations.
+%%% This module defines the interface for the RAFT log and the callbacks
+%%% required by specific log implementations.
 
 -module(wa_raft_log).
 -compile(warn_missing_spec_all).
@@ -150,7 +150,7 @@
 %% Call the provided combining function on successive log entries in the
 %% specified log starting from the specified start index (inclusive) and ending
 %% at the specified end index (also inclusive) or until the total cumulative
-%% size of log entries for which the combining function has been called upon
+%% size of log entries for which the combining function has been called
 %% is at least the specified size limit. The combining function must always be
 %% called with log entries in log order starting with the first log entry that
 %% exists within the provided range. The combining function should not be
@@ -173,13 +173,13 @@
 %% successive log entries in the specified log starting from the specified
 %% start index (inclusive) and ending at the specified end index (also
 %% inclusive) or until the total cumulative size of log entries for which the
-%% combining function has been called upon is at least the specified size
+%% combining function has been called is at least the specified size
 %% limit. The combining function must always be called with log entries in log
 %% order starting with the first log entry that exists within the provided
 %% range. The combining function should not be called for those log indices
 %% within the provided range that do not have a stored log entry. The byte
 %% size of the binary provided to the combining function must be used as the
-%% size of the entry for tracking of the size limit.
+%% size of the entry for tracking the size limit.
 %%
 %% The combining function may raise an error. Implementations should take care
 %% to release any resources held in the case that the fold needs to terminate
@@ -250,7 +250,7 @@
 %% RAFT log provider interface for managing underlying RAFT log
 %%-------------------------------------------------------------------
 
-%% Perform any first time setup operations before opening the RAFT log.
+%% Perform any first-time setup operations before opening the RAFT log.
 %% This function is called from the RAFT log server and is only called
 %% once per incarnation of a RAFT partition.
 %% If this setup fails such that the log is not usable, implementations
@@ -273,14 +273,14 @@
 %% is called when the RAFT log server is terminating.
 -callback close(Log :: log(), State :: term()) -> term().
 
-%% Completely clear the RAFT log and setup a new log with an initial entry
+%% Completely clear the RAFT log and set up a new log with an initial entry
 %% at the provided index with the provided term and an undefined op.
 -callback reset(Log :: log(), Position :: log_pos(), State :: term()) -> {ok, NewState :: term()} | {error, Reason :: term()}.
 
 %% Truncate the RAFT log to the given position so that all log entries
 %% including and after the provided index are completely deleted from
 %% the RAFT log. If the truncation failed but the log state was not
-%% changed, then an error can be returned. Otherwise, a error should
+%% changed, then an error can be returned. Otherwise, an error should
 %% be raised.
 -callback truncate(Log :: log(), Index :: log_index(), State :: term()) -> {ok, NewState :: term()} | {error, Reason :: term()}.
 
@@ -761,10 +761,10 @@ trim(#log_view{log = Log, first = First} = View, Index) ->
 -spec rotate(View :: view(), Index :: log_index()) -> {ok, NewView :: view()}.
 rotate(#log_view{log = #raft_log{application = App, table = Table}} = View, Index) ->
     % Current rotation configuration is based on two configuration values,
-    % 'raft_max_log_records_per_file' which indicates after how many outstanding extra
-    % log entries are in the log should we trim and 'raft_max_log_records' which
-    % indicates how many additional log entries after the fully replicated index should
-    % be considered not extraneous and be kept by rotation.
+    % 'raft_max_log_records_per_file' which indicates how many extra outstanding
+    % log entries must be in the log before trimming, and 'raft_max_log_records'
+    % which indicates how many additional log entries after the fully replicated
+    % index should be retained by rotation.
     Interval = ?RAFT_LOG_ROTATION_INTERVAL(App, Table),
     Keep = ?RAFT_LOG_ROTATION_KEEP(App, Table, Interval),
     rotate(View, Index, Interval, Keep).

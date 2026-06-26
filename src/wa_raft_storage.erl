@@ -5,7 +5,7 @@
 %%%
 %%% The RAFT storage server provides functionality for handling the
 %%% state machine replicated by RAFT in a way suitable for implementing
-%%% storage solutions on top the RAFT consensus algorithm.
+%%% storage solutions on top of the RAFT consensus algorithm.
 
 -module(wa_raft_storage).
 -compile(warn_missing_spec_all).
@@ -84,7 +84,7 @@
 %% ensuring the consistent replication of the "RAFT log", which is a sequence
 %% of "write commands", or "log entries". The RAFT algorithm intends for these
 %% entries to be applied sequentially against an underlying state machine. As
-%% this implementation of RAFT is primarily designed for implementation of
+%% this implementation of RAFT is primarily designed for implementing
 %% storage solutions, we call the underlying state machine the "storage" and
 %% the state of the state machine after the application of each log entry the
 %% "storage state". As the sequence of commands is the same on each replica,
@@ -103,9 +103,9 @@
 %% ensure a fundamental level of consistency, atomicity, and durability.
 %%
 %% The RAFT storage server is designed to be able to tolerate crashes caused
-%% by storage providers. If any callback could not be handled in a way in
-%% which it would be safe to continue operation, then storage providers are
-%% expected to raise an error to reset the RAFT replica to a known good state.
+%% by storage providers. If any callback cannot be handled in a way that makes
+%% it safe to continue operation, then storage providers are expected to raise
+%% an error to reset the RAFT replica to a known good state.
 %%-----------------------------------------------------------------------------
 
 %% Open the storage state for the specified RAFT partition.
@@ -155,7 +155,7 @@
 %%-----------------------------------------------------------------------------
 %% For most practical applications, it is sufficient to ensure that, regardless
 %% of the internal details of the starting and intermediate storage states,
-%% two independent applications of the same sequence of write commands produces
+%% two independent applications of the same sequence of write commands produce
 %% a storage state that will continue to produce the same results when any
 %% valid sequence of future commands is applied to both identically.
 %%-----------------------------------------------------------------------------
@@ -168,20 +168,20 @@
 %% operation was interrupted in the middle of a previous command.
 %%
 %% Generally, ensuring these qualities requires that implementations make
-%% changes that may be saved to a durable media that will persist between
+%% changes that may be saved to durable media that will persist between
 %% openings of the storage to be performed atomically (either actually or
 %% effectively) so that it is not possible for opening the storage to
 %% result in observing any intermediate state. On the other hand, that any
 %% applied changes are made durable against restart is only necessary insofar
-%% as the log of commands still retains those log entries necessary tt
+%% as the log of commands still retains those log entries necessary to
 %% reproduce the lost changes.
 %%-----------------------------------------------------------------------------
 
 %% Apply a write command against the storage state, updating the state as
-%% required if a standard command or as desired for custom commands.
-%% If the command could not be applied in a manner so as to preserve the
-%% desired consistency guarantee then implementations can raise an error to
-%% cause the apply to be aborted safely.
+%% required for a standard command or as desired for custom commands.
+%% If the command cannot be applied in a way that preserves the desired
+%% consistency guarantee then implementations can raise an error to cause the
+%% apply to be aborted safely.
 -callback storage_apply(Command :: wa_raft_acceptor:command(), Position :: wa_raft_log:log_pos(), Handle :: storage_handle()) -> {Result :: dynamic(), NewHandle :: storage_handle()}.
 
 %% Apply a write command against the storage state, in the same way as the
@@ -195,8 +195,8 @@
 %% Apply a write command to update the raft config stored by the storage provider
 %% on behalf of the RAFT implementation. Subsequent calls to read the config
 %% should return the updated version and value.
-%% If the command could not be applied in a manner so as to preserve the
-%% desired consistency guarantee then implementations can raise an error to be
+%% If the command cannot be applied in a way that preserves the desired
+%% consistency guarantee then implementations can raise an error so it can be
 %% aborted safely.
 -callback storage_apply_config(Config :: wa_raft_server:config(), Position :: wa_raft_log:log_pos(), Handle :: storage_handle()) -> {Result :: ok | {error, Reason :: term()}, NewHandle :: storage_handle()}.
 
@@ -209,7 +209,7 @@
 %% commands are called "read commands".
 %%
 %% Storage providers are recommended to ensure that the execution of read
-%% commands produce no externally visible side-effects. Ideally, the insertion
+%% commands produces no externally visible side-effects. Ideally, the insertion
 %% or removal of a read command anywhere into the RAFT log (with any number
 %% of other read commands already inserted) would not affect the result
 %% returned by any other command or the results of any future commands.
@@ -218,7 +218,7 @@
 %% access of the storage state and should be considered to be read commands.
 %%
 %% Not exhaustively, the RAFT implementation uses read commands to access
-%% metadata stored by in the storage state on behalf of the RAFT implementation
+%% metadata stored in the storage state on behalf of the RAFT implementation
 %% or to serve strong read requests issued by users.
 %%-----------------------------------------------------------------------------
 
@@ -272,7 +272,7 @@
 %% Create a new snapshot at the provided path that contains some directory
 %% tree that when subsequently loaded using `storage_open_snapshot` results in
 %% a storage state with the provided last applied position and for which
-%% subsequent calls to `storage_config` returns the provided position as the
+%% subsequent calls to `storage_config` return the provided position as the
 %% version and the config as the value. Extra data may be used by implementors
 %% to provide extra state via arguments to external APIs that use this
 %% endpoint, such as the partition bootstrapping API.
@@ -468,7 +468,7 @@ create_witness_snapshot(Storage, Name) ->
 %% return the current position upon success.
 %% Options are opaque to the RAFT implementation and are passed through to the
 %% storage provider for interpretation.
-%% Snaphots created with custom options should not be created using the default
+%% Snapshots created with custom options should not be created using the default
 %% snapshot name as RAFT may confuse it with a generic snapshot and incorrectly use
 %% it for transport or other RAFT operations.
 -spec create_snapshot(Storage :: gen_server:server_ref(), Name :: string(), Options :: snapshot_options()) -> {ok, Pos :: wa_raft_log:log_pos()} | {error, Reason :: term()}.

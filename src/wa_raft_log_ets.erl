@@ -5,7 +5,7 @@
 %%%
 %%% This module is an implementation of a completely in-memory RAFT
 %%% log provider that uses ETS as a backing store for the log data.
-%%% This module is only suitable as a log provider for an fully
+%%% This module is only suitable as a log provider for a fully
 %%% in-memory RAFT cluster and should not be used when any durability
 %%% guarantees are required against node shutdown.
 

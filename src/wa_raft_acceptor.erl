@@ -156,8 +156,7 @@ start_link(#raft_options{acceptor_name = Name} = Options) ->
 %% Request that the specified RAFT server commit the provided command. The commit can only be
 %% successful if the requested RAFT server is the active leader of the RAFT partition it is a
 %% part of. Returns either the result returned by the storage module when applying the command
-%% or an error indicating some reason for which the command was not able to be committed or
-%% should be retried.
+%% or an error indicating why the command could not be committed or should be retried.
 -spec commit(ServerRef :: gen_server:server_ref(), Op :: op()) -> commit_result().
 commit(ServerRef, Op) ->
     commit(ServerRef, Op, ?RAFT_RPC_CALL_TIMEOUT()).
