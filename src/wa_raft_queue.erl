@@ -419,7 +419,7 @@ handle_call(Request, From, #state{name = Name} = State) ->
 
 -spec handle_cast(Request :: term(), State :: #state{}) -> {noreply, #state{}}.
 handle_cast(Request, #state{name = Name} = State) ->
-    ?RAFT_LOG_NOTICE("Queue[~p] got unexpected call ~0P", [Name, Request, 100]),
+    ?RAFT_LOG_NOTICE("Queue[~p] got unexpected cast ~0P", [Name, Request, 100]),
     {noreply, State}.
 
 -spec terminate(Reason :: dynamic(), State :: #state{}) -> ok.

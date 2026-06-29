@@ -177,7 +177,7 @@ handle_call({chunk, ID, FileID, Offset, Data}, _From, #receiver_state{} = State0
             end;
         {error, Reason, State1} ->
             ?RAFT_LOG_WARNING(
-                "wa_raft_dist_transport receiver failed to handle file chunk ~p/~p @ ~p due to open failing due to ~p",
+                "wa_raft_dist_transport receiver failed to handle file chunk ~p/~p @ ~p due to open failure: ~p",
                 [ID, FileID, Offset, Reason]
             ),
             {{open_failed, Reason}, State1}
@@ -197,7 +197,7 @@ handle_cast({complete, ID, FileID}, #receiver_state{} = State0) ->
             {noreply, State2};
         {error, Reason, State1} ->
             ?RAFT_LOG_WARNING(
-                "wa_raft_dist_transport receiver failed to handle file complete ~p/~p due to open failing due to ~p",
+                "wa_raft_dist_transport receiver failed to handle file complete ~p/~p due to open failure: ~p",
                 [ID, FileID, Reason]
             ),
             {noreply, State1}

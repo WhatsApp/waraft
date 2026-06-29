@@ -27,7 +27,7 @@
 ]).
 
 %%% ------------------------------------------------------------------------
-%%%  OTP supervision callbacks
+%%%  Internal API
 %%%
 
 -spec get_or_start(node()) -> atom().

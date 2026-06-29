@@ -90,7 +90,7 @@ start_link(Application, Spec) ->
     PrevOptions = persistent_term:get(?OPTIONS_KEY(Table, Partition), Options),
     PrevOptions =/= Options andalso
         ?RAFT_LOG_WARNING(
-            ?MODULE_STRING " storing changed options for RAFT partitition ~0p/~0p",
+            ?MODULE_STRING " storing changed options for RAFT partition ~0p/~0p",
             [Table, Partition]
         ),
     ok = persistent_term:put(?OPTIONS_KEY(Table, Partition), Options),

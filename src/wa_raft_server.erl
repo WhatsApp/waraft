@@ -748,8 +748,8 @@ init(
 
     ?RAFT_LOG_NOTICE("Server[~0p] starting with options ~0p", [Name, Options]),
 
-    % This increases the potential overhead of sending messages to server;
-    % however, can protect the server from GC overhead
+    % This increases the potential overhead of sending messages to the server;
+    % however, this can protect the server from GC overhead
     % and other memory-related issues (most notably when receiving log entries
     % when undergoing a fast log catchup).
     ?RAFT_CONFIG(raft_server_message_queue_off_heap, true) andalso
@@ -1162,7 +1162,7 @@ leader(enter, LastState, #raft_state{table = Table, log_view = View} = State0) -
             State1#raft_state{last_label = LastLabel};
         {ok, {_, undefined}} ->
             % The RAFT log could have been reset (i.e. after snapshot installation).
-            % In such case load the log label state from storage.
+            % In such a case load the log label state from storage.
             LastLabel = load_label_state(State1),
             State1#raft_state{last_label = LastLabel};
         {ok, _} ->
@@ -1176,7 +1176,7 @@ leader(enter, LastState, #raft_state{table = Table, log_view = View} = State0) -
     State4 = case has_pending_commits(State3) of
         true ->
             % If there are pending commits, then use those for the initial
-            % heartbeat. There is potential risk that the log may reject
+            % heartbeat. There is a potential risk that the log may reject
             % these initial commits; leaving the leader with no log entry
             % in the current term; however, this should be a rare occurrence.
             State3;
@@ -1690,7 +1690,7 @@ follower(
                     {next_state, disabled, State0#raft_state{disable_reason = Reason}}
             end;
         false ->
-            ?SERVER_LOG_NOTICE(State0, "not considering handover RPC due to being inelgibile for leadership.", []),
+            ?SERVER_LOG_NOTICE(State0, "not considering handover RPC due to being ineligible for leadership.", []),
             send_rpc(Sender, ?HANDOVER_FAILED(Ref), State0),
             {keep_state, State0}
     end;

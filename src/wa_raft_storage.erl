@@ -512,7 +512,7 @@ init(#raft_options{application = Application, table = Table, partition = Partiti
     process_flag(trap_exit, true),
 
     % This increases the potential overhead of sending log entries to storage
-    % to be applied; however, can protect the storage server from GC overhead
+    % to be applied; however, this can protect the storage server from GC overhead
     % and other memory-related issues.
     process_flag(message_queue_data, off_heap),
 
