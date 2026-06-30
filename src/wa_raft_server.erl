@@ -336,6 +336,9 @@
     %% is ready. A participant is ready if it would be eligible for a handover
     %% if it were a voting member.
     {promote_participant_if_ready, Peer :: peer()} |
+    %% Add a witness gated on every voting member (other than the leader and
+    %% the excluded nodes) being eligible for handover.
+    {add_witness_if_ready, Peer :: peer(), ExcludedNodes :: [node()]} |
     %% Remove a voting member's membership and participation or a non-voting
     %% participant's participation from the cluster.
     {remove, Peer :: peer()} |
@@ -3594,6 +3597,38 @@ leader_change_config(NewConfig, From, #raft_state{log_view = View, current_term 
     {ok, NewConfig :: config()} | {error, Reason :: atom()}.
 leader_adjust_config(refresh, Data) ->
     {ok, config(Data)};
+leader_adjust_config({add_witness_if_ready, Peer, ExcludedNodes}, #raft_state{self = #raft_identity{node = SelfNode}} = Data) ->
+    Config = config(Data),
+    IsMember = lists:member(Peer, config_membership(Config)),
+    IsWitness = lists:member(Peer, config_witnesses(Config)),
+    IsParticipant = lists:member(Peer, config_participants(Config)),
+    if
+        IsMember andalso IsWitness -> {error, already_witness};
+        IsMember -> {error, already_member};
+        IsParticipant andalso not IsWitness -> {error, not_a_witness};
+        true ->
+            % Gate on every non-excluded voting member being handover-eligible.
+            Excluded = [SelfNode | ExcludedNodes],
+            MatchCutoffIndex = get_handover_eligibility_match_cutoff(Data),
+            ApplyCutoffIndex = get_handover_eligibility_apply_cutoff(Data),
+            NotReady =
+                [Node ||
+                    {_, Node} <- config_membership(Config),
+                    not lists:member(Node, Excluded),
+                    not is_eligible_for_handover_impl(Node, MatchCutoffIndex, ApplyCutoffIndex, Data)],
+            case NotReady of
+                [] ->
+                    {ok, config_add_witness(Peer, Config)};
+                _ ->
+                    ?SERVER_LOG_NOTICE(
+                        leader,
+                        Data,
+                        "refused add_witness_if_ready for ~0p because nodes ~0p are not ready (excluded ~0p).",
+                        [Peer, NotReady, ExcludedNodes]
+                    ),
+                    {error, not_ready}
+            end
+    end;
 leader_adjust_config({Action, Peer}, Data) ->
     Config = config(Data),
     IsSelf = is_self(Peer, Data),
