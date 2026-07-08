@@ -144,10 +144,10 @@ handle_cast(?CATCHUP(App, Name, Node, Table, Partition, Witness), State0) ->
             try
                 {#raft_log_pos{index = Index, term = Term} = LogPos, Path} = create_snapshot(Table, Partition, Witness),
                 case wa_raft_transport:start_snapshot_transfer(Node, Table, Partition, LogPos, Path, Witness, infinity) of
-                    {error, receiver_overloaded} ->
+                    {error, Reason} when Reason =:= receiver_overloaded; Reason =:= receiver_disk_full ->
                         ?RAFT_LOG_NOTICE(
-                            "destination node ~0p is overloaded, abort new transport for ~0p:~0p and try again later",
-                            [Node, Table, Partition]
+                            "destination node ~0p rejected new transport for ~0p:~0p due to ~0p, try again later",
+                            [Node, Table, Partition, Reason]
                         ),
                         NewOverloadBackoff = Now + ?RAFT_SNAPSHOT_CATCHUP_OVERLOADED_BACKOFF_MS(App, Table),
                         NewOverloadBackoffs = OverloadBackoffs#{Node => NewOverloadBackoff},

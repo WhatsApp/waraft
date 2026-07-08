@@ -71,7 +71,8 @@
     transport_id/0,
     transport_info/0,
     file_id/0,
-    file_info/0
+    file_info/0,
+    meta/0
 ]).
 
 %% Name of the ETS table to keep records for transports
@@ -171,8 +172,14 @@
 %% Optional callback for performing any shutdown operations.
 -callback transport_terminate(Reason :: term(), State :: term()) -> term().
 
+%% Optional callback allowing the transport implementation to reject an incoming
+%% transport before it is accepted, e.g. when the receiver is under disk pressure.
+%% IncomingBytes is the total size of the files about to be received.
+-callback transport_accept(Meta :: meta(), IncomingBytes :: non_neg_integer()) -> ok | {error, Reason :: term()}.
+
 -optional_callbacks([
-    transport_terminate/2
+    transport_terminate/2,
+    transport_accept/2
 ]).
 
 %%% ------------------------------------------------------------------------
@@ -466,13 +473,24 @@ handle_call({transport, ID, Peer, Module, Meta, Files}, From, #state{counters = 
             false -> {?RAFT_MAX_CONCURRENT_INCOMING_SNAPSHOT_TRANSFERS(), counters:get(Counters, ?RAFT_TRANSPORT_COUNTER_ACTIVE_RECEIVES)}
         end,
         ShouldThrottle = NumActiveReceives >= MaxIncomingSnapshotTransfers,
-        case {transport_info(ID), ShouldThrottle} of
+        Admission = case ShouldThrottle of
+            true ->
+                {error, receiver_overloaded};
+            false ->
+                IncomingBytes = lists:sum([Size || {_FileID, _Name, Size} <- Files]),
+                transport_accept(Module, Meta, IncomingBytes)
+        end,
+        case {transport_info(ID), Admission} of
             {{ok, _Info}, _} ->
                 ?RAFT_LOG_WARNING("wa_raft_transport got duplicate transport receive start for ~p from ~p", [ID, From]),
                 {reply, duplicate, State};
-            {not_found, true} ->
+            {not_found, {error, receiver_overloaded}} ->
                 {reply, {error, receiver_overloaded}, State};
-            {not_found, _} ->
+            {not_found, {error, Reason}} ->
+                ?RAFT_COUNT(Table, 'transport.receive.rejected'),
+                ?RAFT_LOG_WARNING("wa_raft_transport rejecting transport receive for ~p due to ~p", [ID, Reason]),
+                {reply, {error, Reason}, State};
+            {not_found, ok} ->
                 ?RAFT_COUNT(Table, 'transport.receive'),
                 ?RAFT_LOG_NOTICE("wa_raft_transport starting transport receive for ~p", [ID]),
 
@@ -754,6 +772,21 @@ handle_transport_start(From, Peer, Meta, Root, Counters) ->
                     Counters
                 ),
                 {error, receiver_overloaded};
+            {error, receiver_disk_full} ->
+                ?RAFT_COUNT(Table, 'transport.rejected.receiver_disk_full'),
+                ?RAFT_LOG_WARNING("wa_raft_transport peer ~p rejected transport ~p because of disk pressure", [Peer, ID]),
+                update_and_get_transport_info(
+                    ID,
+                    fun (Info) ->
+                        Info#{
+                            status => failed,
+                            end_ts => NowMillis,
+                            error => {rejected, receiver_disk_full}
+                        }
+                    end,
+                    Counters
+                ),
+                {error, receiver_disk_full};
             Error ->
                 ?RAFT_COUNT(Table, 'transport.rejected'),
                 ?RAFT_LOG_WARNING("wa_raft_transport peer ~p rejected transport ~p with error ~p", [Peer, ID, Error]),
@@ -796,6 +829,16 @@ transport_module(#{table := Table, partition := Partition}) ->
     wa_raft_transport:registered_module(Table, Partition);
 transport_module(_Meta) ->
     ?RAFT_DEFAULT_TRANSPORT_MODULE.
+
+%% Ask the transport implementation whether it can accept an incoming transport of
+%% IncomingBytes total. Implementations that do not export the optional callback always accept.
+-spec transport_accept(Module :: module(), Meta :: meta(), IncomingBytes :: non_neg_integer()) ->
+    ok | {error, Reason :: term()}.
+transport_accept(Module, Meta, IncomingBytes) ->
+    case erlang:function_exported(Module, transport_accept, 2) of
+        true  -> Module:transport_accept(Meta, IncomingBytes);
+        false -> ok
+    end.
 
 -spec transport_destination(ID :: transport_id(), Meta :: meta()) -> string().
 transport_destination(ID, #{type := transfer, table := Table, partition := Partition}) ->
