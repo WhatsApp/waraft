@@ -2,13 +2,16 @@
 %%%
 %%% This source code is licensed under the Apache 2.0 license found in
 %%% the LICENSE file in the root directory of this source tree.
-%%%
-%%% Supervisor for supervising RAFT partitions started by a client application.
-%%% As a `simple_one_for_one` supervisor, this supervisor can dynamically
-%%% start and stop partitions and will stop partitions in parallel during
-%%% shutdown.
 
 -module(wa_raft_sup).
+
+-moduledoc """
+Supervisor for supervising RAFT partitions started by a client application.
+As a `simple_one_for_one` supervisor, this supervisor can dynamically
+start and stop partitions and will stop partitions in parallel during
+shutdown.
+""".
+
 -compile(warn_missing_spec_all).
 -behaviour(supervisor).
 

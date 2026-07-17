@@ -2,10 +2,13 @@
 %%%
 %%% This source code is licensed under the Apache 2.0 license found in
 %%% the LICENSE file in the root directory of this source tree.
-%%%
-%%% Application implementation for wa_raft.
 
 -module(wa_raft_app).
+
+-moduledoc """
+Application implementation for wa_raft.
+""".
+
 -compile(warn_missing_spec_all).
 -behaviour(application).
 

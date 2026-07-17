@@ -2,12 +2,15 @@
 %%%
 %%% This source code is licensed under the Apache 2.0 license found in
 %%% the LICENSE file in the root directory of this source tree.
-%%%
-%%% Application supervisor to be started by the wa_raft application for
-%%% supervising services and resources shared between application-started
-%%% RAFT processes.
 
 -module(wa_raft_app_sup).
+
+-moduledoc """
+Application supervisor to be started by the wa_raft application for
+supervising services and resources shared between application-started
+RAFT processes.
+""".
+
 -compile(warn_missing_spec_all).
 -behaviour(supervisor).
 

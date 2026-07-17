@@ -2,12 +2,15 @@
 %%%
 %%% This source code is licensed under the Apache 2.0 license found in
 %%% the LICENSE file in the root directory of this source tree.
-%%%
-%%% API for accessing certain useful information about the state of local
-%%% RAFT servers without requiring a status request against the RAFT server
-%%% itself.
 
 -module(wa_raft_info).
+
+-moduledoc """
+API for accessing certain useful information about the state of local
+RAFT servers without requiring a status request against the RAFT server
+itself.
+""".
+
 -compile(warn_missing_spec_all).
 
 %% Public API

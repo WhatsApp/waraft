@@ -2,10 +2,13 @@
 %%%
 %%% This source code is licensed under the Apache 2.0 license found in
 %%% the LICENSE file in the root directory of this source tree.
-%%%
-%%% This file defines dialyzer types.
 
 -module(wa_raft).
+
+-moduledoc """
+This file defines dialyzer types.
+""".
+
 -compile(warn_missing_spec_all).
 
 -include_lib("wa_raft/include/wa_raft.hrl").

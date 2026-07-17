@@ -2,10 +2,13 @@
 %%%
 %%% This source code is licensed under the Apache 2.0 license found in
 %%% the LICENSE file in the root directory of this source tree.
-%%%
-%%% Pluggable module for labeling log entries before adding them to the RAFT log.
 
 -module(wa_raft_label).
+
+-moduledoc """
+Pluggable module for labeling log entries before adding them to the RAFT log.
+""".
+
 -compile(warn_missing_spec_all).
 
     -type label() :: dynamic().

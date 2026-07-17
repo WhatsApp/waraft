@@ -2,14 +2,17 @@
 %%%
 %%% This source code is licensed under the Apache 2.0 license found in
 %%% the LICENSE file in the root directory of this source tree.
-%%%
-%%% This module is an implementation of a completely in-memory RAFT
-%%% log provider that uses ETS as a backing store for the log data.
-%%% This module is only suitable as a log provider for a fully
-%%% in-memory RAFT cluster and should not be used when any durability
-%%% guarantees are required against node shutdown.
 
 -module(wa_raft_log_ets).
+
+-moduledoc """
+This module is an implementation of a completely in-memory RAFT
+log provider that uses ETS as a backing store for the log data.
+This module is only suitable as a log provider for a fully
+in-memory RAFT cluster and should not be used when any durability
+guarantees are required against node shutdown.
+""".
+
 -compile(warn_missing_spec_all).
 -behaviour(wa_raft_log).
 

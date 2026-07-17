@@ -2,11 +2,14 @@
 %%%
 %%% This source code is licensed under the Apache 2.0 license found in
 %%% the LICENSE file in the root directory of this source tree.
-%%%
-%%% Supervisor responsible for managing workers responsible for the
-%%% transport to a particular target node.
 
 -module(wa_raft_transport_target_sup).
+
+-moduledoc """
+Supervisor responsible for managing workers responsible for the
+transport to a particular target node.
+""".
+
 -compile(warn_missing_spec_all).
 -behaviour(supervisor).
 

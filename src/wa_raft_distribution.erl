@@ -2,11 +2,14 @@
 %%%
 %%% This source code is licensed under the Apache 2.0 license found in
 %%% the LICENSE file in the root directory of this source tree.
-%%%
-%%% Pluggable distribution interface. The default implementation uses Erlang
-%%% distribution.
 
 -module(wa_raft_distribution).
+
+-moduledoc """
+Pluggable distribution interface. The default implementation uses Erlang
+distribution.
+""".
+
 -compile(warn_missing_spec_all).
 
 -export([

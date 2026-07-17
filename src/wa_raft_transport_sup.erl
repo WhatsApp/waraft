@@ -2,11 +2,14 @@
 %%%
 %%% This source code is licensed under the Apache 2.0 license found in
 %%% the LICENSE file in the root directory of this source tree.
-%%%
-%%% OTP supervisor for handling workers responsible for actual data
-%%% send and receive for RAFT transport mechanisms.
 
 -module(wa_raft_transport_sup).
+
+-moduledoc """
+OTP supervisor for handling workers responsible for actual data
+send and receive for RAFT transport mechanisms.
+""".
+
 -compile(warn_missing_spec_all).
 -behaviour(supervisor).
 

@@ -2,10 +2,13 @@
 %%%
 %%% This source code is licensed under the Apache 2.0 license found in
 %%% the LICENSE file in the root directory of this source tree.
-%%%
-%%% This module implements functions for storing / loading persistent state.
 
 -module(wa_raft_durable_state).
+
+-moduledoc """
+This module implements functions for storing / loading persistent state.
+""".
+
 -compile(warn_missing_spec_all).
 
 -include_lib("wa_raft/include/wa_raft.hrl").

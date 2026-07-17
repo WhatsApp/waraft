@@ -2,11 +2,14 @@
 %%%
 %%% This source code is licensed under the Apache 2.0 license found in
 %%% the LICENSE file in the root directory of this source tree.
-%%%
-%%% This module defines the interface for the RAFT log and the callbacks
-%%% required by specific log implementations.
 
 -module(wa_raft_log).
+
+-moduledoc """
+This module defines the interface for the RAFT log and the callbacks
+required by specific log implementations.
+""".
+
 -compile(warn_missing_spec_all).
 -behaviour(gen_server).
 

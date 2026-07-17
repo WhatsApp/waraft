@@ -2,12 +2,15 @@
 %%%
 %%% This source code is licensed under the Apache 2.0 license found in
 %%% the LICENSE file in the root directory of this source tree.
-%%%
-%%% An example implementation of the RAFT storage provider behaviour that
-%%% uses ETS as a backing store. This implementation is for demonstration
-%%% purposes only and should not be used in actual applications.
 
 -module(wa_raft_storage_ets).
+
+-moduledoc """
+An example implementation of the RAFT storage provider behaviour that
+uses ETS as a backing store. This implementation is for demonstration
+purposes only and should not be used in actual applications.
+""".
+
 -compile(warn_missing_spec_all).
 -behaviour(wa_raft_storage).
 

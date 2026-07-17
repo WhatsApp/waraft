@@ -2,12 +2,15 @@
 %%%
 %%% This source code is licensed under the Apache 2.0 license found in
 %%% the LICENSE file in the root directory of this source tree.
-%%%
-%%% The RAFT storage server provides functionality for handling the
-%%% state machine replicated by RAFT in a way suitable for implementing
-%%% storage solutions on top of the RAFT consensus algorithm.
 
 -module(wa_raft_storage).
+
+-moduledoc """
+The RAFT storage server provides functionality for handling the
+state machine replicated by RAFT in a way suitable for implementing
+storage solutions on top of the RAFT consensus algorithm.
+""".
+
 -compile(warn_missing_spec_all).
 -behaviour(gen_server).
 

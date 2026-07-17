@@ -2,12 +2,15 @@
 %%%
 %%% This source code is licensed under the Apache 2.0 license found in
 %%% the LICENSE file in the root directory of this source tree.
-%%%
-%%% This module contains utility functions for consulting application
-%%% configuration in the OTP application environment according to the search
-%%% order configured for each RAFT partition.
 
 -module(wa_raft_env).
+
+-moduledoc """
+This module contains utility functions for consulting application
+configuration in the OTP application environment according to the search
+order configured for each RAFT partition.
+""".
+
 -compile(warn_missing_spec_all).
 
 %% Config API
