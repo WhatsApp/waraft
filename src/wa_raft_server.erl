@@ -1381,22 +1381,12 @@ leader(
 leader(
     cast,
     ?COMMIT_COMMAND(From, Op, Priority),
-    #raft_state{application = App, table = Table} = State0
+    #raft_state{table = Table} = State
 ) ->
     % No size limit is imposed here as the pending queue cannot grow larger
     % than the limit on the number of pending commits.
     ?RAFT_COUNT(Table, {'commit', Priority}),
-    State1 = add_pending(From, Op, Priority, State0),
-    State2 = apply_single_node_cluster(State1),
-    PendingCount = pending_count(State2),
-    case ?RAFT_COMMIT_BATCH_INTERVAL(App, Table) > 0 andalso PendingCount =< ?RAFT_COMMIT_BATCH_MAX_ENTRIES(App, Table) of
-        true ->
-            ?RAFT_COUNT(Table, 'commit.batch.delay'),
-            {keep_state, State2, ?COMMIT_BATCH_TIMEOUT(State2)};
-        false ->
-            State3 = append_entries_to_followers(State2),
-            {keep_state, State3, ?HEARTBEAT_TIMEOUT(State3)}
-    end;
+    pending_continue_or_submit(add_pending(From, Op, Priority, State));
 
 %% [Strong Read]
 %%   If a handover is in progress, reject the read immediately with a
@@ -1437,8 +1427,11 @@ leader(
             ok = wa_raft_queue:submit_read(Queues, ReadIndex, From, Command),
             % Regardless of whether or not the read index is an existing log entry, indicate that
             % a read is pending as the leader must establish a new quorum to be able to serve the
-            % read request.
-            {keep_state, State0#raft_state{pending_read = true}}
+            % read request. It's possible that a previous dispatch to storage can cause this read
+            % to be served earlier than any round of heartbeats caused by the following pending
+            % entry, but as long as the actual storage state has reached the effective index, then
+            % the read will still be sequentially consistent.
+            pending_continue_or_submit(State0#raft_state{pending_read = true})
     end;
 
 %% [Resign] Leader resigns by switching to follower state.
@@ -3241,8 +3234,27 @@ has_pending_commits(#raft_state{}) ->
     true.
 
 -spec pending_count(Data :: #raft_state{}) -> non_neg_integer().
+pending_count(#raft_state{pending_high = [], pending_low = [], pending_read = true}) ->
+    1;
 pending_count(#raft_state{pending_high = PendingHigh, pending_low = PendingLow}) ->
     length(PendingHigh) + length(PendingLow).
+
+-spec pending_continue_or_submit(Data :: #raft_state{}) -> gen_statem:event_handler_result(state(), #raft_state{}).
+pending_continue_or_submit(#raft_state{application = App, table = Table} = Data0) ->
+    Data1 = apply_single_node_cluster(Data0),
+    case pending_count(Data1) of
+        0 ->
+            {keep_state, Data1};
+        PendingCount ->
+            case ?RAFT_COMMIT_BATCH_INTERVAL(App, Table) > 0 andalso PendingCount =< ?RAFT_COMMIT_BATCH_MAX_ENTRIES(App, Table) of
+                true ->
+                    ?RAFT_COUNT(Table, 'commit.batch.delay'),
+                    {keep_state, Data1, ?COMMIT_BATCH_TIMEOUT(Data1)};
+                false ->
+                    Data2 = append_entries_to_followers(Data1),
+                    {keep_state, Data2, ?HEARTBEAT_TIMEOUT(Data2)}
+            end
+    end.
 
 -spec add_pending(
     From :: gen_server:from(),
