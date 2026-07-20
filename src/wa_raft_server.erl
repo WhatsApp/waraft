@@ -105,7 +105,8 @@ implement a replicated state machine in a distributed cluster.
 
 -export([
     commit/4,
-    read/2,
+    read/3,
+    read/4,
     snapshot_available/3,
     adjust_config/2,
     adjust_config/3,
@@ -304,7 +305,7 @@ implement a replicated state machine in a distributed cluster.
                    is_peer_ready_command().
 
 -type commit_command()              :: ?COMMIT_COMMAND(gen_server:from(), wa_raft_acceptor:op(), wa_raft_acceptor:priority()).
--type read_command()                :: ?READ_COMMAND(wa_raft_acceptor:read_op()).
+-type read_command()                :: ?READ_COMMAND(gen_server:from(), wa_raft_acceptor:command(), wa_raft_log:log_index() | undefined).
 -type current_config_command()      :: ?CURRENT_CONFIG_COMMAND.
 -type status_command()              :: ?STATUS_COMMAND.
 -type trigger_election_command()    :: ?TRIGGER_ELECTION_COMMAND(term_or_offset()).
@@ -597,10 +598,20 @@ commit(Server, From, Op, Priority) ->
 
 -spec read(
     Server :: gen_statem:server_ref(),
-    Op :: wa_raft_acceptor:read_op()
+    From :: gen_server:from(),
+    Command :: wa_raft_acceptor:command()
 ) -> ok.
-read(Server, Op) ->
-    gen_statem:cast(Server, ?READ_COMMAND(Op)).
+read(Server, From, Command) ->
+    read(Server, From, Command, undefined).
+
+-spec read(
+    Server :: gen_statem:server_ref(),
+    From :: gen_server:from(),
+    Command :: wa_raft_acceptor:command(),
+    MinIndex :: wa_raft_log:log_index() | undefined
+) -> ok.
+read(Server, From, Command, MinIndex) ->
+    gen_statem:cast(Server, ?READ_COMMAND(From, Command, MinIndex)).
 
 -spec snapshot_available(
     Server :: gen_statem:server_ref(),
@@ -1393,7 +1404,7 @@ leader(
 %%   notify_redirect error so the client can redirect to the new leader.
 leader(
     cast,
-    ?READ_COMMAND({From, _}),
+    ?READ_COMMAND(From, _, _),
     #raft_state{
         table = Table,
         queues = Queues,
@@ -1405,7 +1416,7 @@ leader(
     keep_state_and_data;
 leader(
     cast,
-    ?READ_COMMAND({From, Command}),
+    ?READ_COMMAND(From, Command, MinIndex),
     #raft_state{
         self = Self,
         queues = Queues,
@@ -1415,14 +1426,22 @@ leader(
         pending_high = PendingHigh,
         pending_low = PendingLow,
         first_current_term_log_index = FirstLogIndex
-    } = State0
+    } = State
 ) ->
-    ReadIndex = max(CommitIndex, FirstLogIndex),
-    case is_single_member(Self, config(State0)) of
+    % The index that this read command is effective at must be at least the leader's effective
+    % commit index (the latest commit index in the current term). Allow clients to request any
+    % later effective index. No protection is provided against indices that may not actually be
+    % present in the cluster.
+    MinReadIndex = max(CommitIndex, FirstLogIndex),
+    ReadIndex = case MinIndex of
+        undefined -> MinReadIndex;
+        _ -> max(MinIndex, MinReadIndex)
+    end,
+    case is_single_member(Self, config(State)) of
         % If we are a single node cluster and we are fully-applied, then immediately dispatch.
         true when PendingHigh =:= [], PendingLow =:= [], ReadIndex =< LastApplied ->
             wa_raft_storage:apply_read(Storage, From, Command),
-            {keep_state, State0};
+            {keep_state, State};
         _ ->
             ok = wa_raft_queue:submit_read(Queues, ReadIndex, From, Command),
             % Regardless of whether or not the read index is an existing log entry, indicate that
@@ -1431,7 +1450,7 @@ leader(
             % to be served earlier than any round of heartbeats caused by the following pending
             % entry, but as long as the actual storage state has reached the effective index, then
             % the read will still be sequentially consistent.
-            pending_continue_or_submit(State0#raft_state{pending_read = true})
+            pending_continue_or_submit(State#raft_state{pending_read = true})
     end;
 
 %% [Resign] Leader resigns by switching to follower state.
@@ -1981,13 +2000,17 @@ candidate(
 %% failure will cancel all reads via cancel_pending/2.
 candidate(
     cast = Event,
-    ?READ_COMMAND({From, ReadOp}) = Command,
+    ?READ_COMMAND(From, ReadCommand, MinIndex) = Command,
     #raft_state{application = App, table = Table, queues = Queues, log_view = View} = State
 ) ->
     case ?RAFT_CANDIDATE_BUFFER_REQUESTS(App, Table) of
         true ->
-            ReadIndex = wa_raft_log:last_index(View) + 1,
-            ok = wa_raft_queue:submit_read(Queues, ReadIndex, From, ReadOp),
+            MinReadIndex = wa_raft_log:last_index(View) + 1,
+            ReadIndex = case MinIndex of
+                undefined -> MinReadIndex;
+                _ -> max(MinReadIndex, MinIndex)
+            end,
+            ok = wa_raft_queue:submit_read(Queues, ReadIndex, From, ReadCommand),
             {keep_state, State#raft_state{pending_read = true}};
         false ->
             command(?FUNCTION_NAME, Event, Command, State)
@@ -2243,7 +2266,7 @@ command(
 command(
     State,
     cast,
-    ?READ_COMMAND({From, _}),
+    ?READ_COMMAND(From, _, _),
     #raft_state{queues = Queues, leader = Leader} = Data
 ) when State =/= leader ->
     ?SERVER_LOG_WARNING(

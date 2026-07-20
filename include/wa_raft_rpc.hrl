@@ -78,7 +78,7 @@
 -define(RAFT_COMMAND(Type, Payload), {command, Type, Payload}).
 
 -define(COMMIT_COMMAND(From, Op, Priority),         ?RAFT_COMMAND(commit, {From, Op, Priority})).
--define(READ_COMMAND(Op),                           ?RAFT_COMMAND(read, Op)).
+-define(READ_COMMAND(From, Command, MinIndex),      ?RAFT_COMMAND(read, {From, Command, MinIndex})).
 
 -define(CURRENT_CONFIG_COMMAND,                     ?RAFT_COMMAND(current_config, undefined)).
 -define(STATUS_COMMAND,                             ?RAFT_COMMAND(status, undefined)).

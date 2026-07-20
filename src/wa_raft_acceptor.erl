@@ -26,7 +26,9 @@ This module implements the front-end process for accepting commits / reads
     commit_async/3,
     commit_async/4,
     read/2,
-    read/3
+    read/3,
+    read_after/3,
+    read_after/4
 ]).
 
 %% Client API - RAFT apis
@@ -54,8 +56,8 @@ This module implements the front-end process for accepting commits / reads
     command/0,
     key/0,
     op/0,
-    read_op/0,
-    priority/0
+    priority/0,
+    from/0
 ]).
 
 -export_type([
@@ -76,7 +78,7 @@ This module implements the front-end process for accepting commits / reads
 -include_lib("wa_raft/include/wa_raft_logger.hrl").
 
 %% Request type macros
--define(READ_REQUEST(Command), {read, Command}).
+-define(READ_REQUEST(Command, MinIndex), {read, Command, MinIndex}).
 -define(COMMIT_REQUEST(Op, Priority), {commit, Op, Priority}).
 -define(COMMIT_ASYNC_REQUEST(From, Op, Priority), {commit, From, Op, Priority}).
 
@@ -91,8 +93,8 @@ This module implements the front-end process for accepting commits / reads
 
 -type key() :: term().
 -type op() :: {Key :: key(), Command :: command()}.
--type read_op() :: {From :: gen_server:from(), Command :: command()}.
 -type priority() :: high | low.
+-type from() :: gen_server:from() | {Pid :: pid(), Tag :: dynamic()}.
 
 -type call_error_type() :: timeout | unreachable | {call_error, Reason :: term()}.
 -type call_error() :: {error, call_error_type()}.
@@ -101,7 +103,7 @@ This module implements the front-end process for accepting commits / reads
 -type common_error_type() :: not_supported | not_leader | commit_stalled | {notify_redirect, Peer :: node()}.
 -type common_error() :: {error, common_error_type()}.
 
--type read_request() :: ?READ_REQUEST(Command :: command()).
+-type read_request() :: ?READ_REQUEST(Command :: command(), MinIndex :: wa_raft_log:log_index() | undefined).
 
 -type read_error_type() :: read_queue_full | apply_queue_full | common_error_type().
 -type read_error() :: {error, read_error_type()}.
@@ -112,7 +114,7 @@ This module implements the front-end process for accepting commits / reads
 -type adjust_config_op() :: ?OP_ADJUST_CONFIG(Action :: wa_raft_server:config_action(), Index :: wa_raft_log:log_index() | undefined).
 
 -type commit_request() :: ?COMMIT_REQUEST(Op :: commit_op(), Priority :: priority()).
--type commit_async_request() :: ?COMMIT_ASYNC_REQUEST(From :: gen_server:from(), Op :: commit_op(), Priority :: priority()).
+-type commit_async_request() :: ?COMMIT_ASYNC_REQUEST(From :: from(), Op :: commit_op(), Priority :: priority()).
 
 -type commit_error_type() :: commit_queue_full | apply_queue_full | cancelled | common_error_type().
 -type commit_error() :: {error, commit_error_type()}.
@@ -156,73 +158,122 @@ start_link(#raft_options{acceptor_name = Name} = Options) ->
 %% successful if the requested RAFT server is the active leader of the RAFT partition it is a
 %% part of. Returns either the result returned by the storage module when applying the command
 %% or an error indicating why the command could not be committed or should be retried.
--spec commit(ServerRef :: gen_server:server_ref(), Op :: op()) -> commit_result().
-commit(ServerRef, Op) ->
-    commit(ServerRef, Op, ?RAFT_RPC_CALL_TIMEOUT()).
+-spec commit(
+    Acceptor :: gen_server:server_ref(),
+    Op :: op()
+) -> commit_result().
+commit(Acceptor, Op) ->
+    commit(Acceptor, Op, ?RAFT_RPC_CALL_TIMEOUT()).
 
--spec commit(ServerRef :: gen_server:server_ref(), Op :: op(), Timeout :: timeout()) -> commit_result().
-commit(ServerRef, Op, Timeout) ->
-    commit(ServerRef, Op, Timeout, high).
+-spec commit(
+    Acceptor :: gen_server:server_ref(),
+    Op :: op(),
+    Timeout :: timeout()
+) -> commit_result().
+commit(Acceptor, Op, Timeout) ->
+    commit(Acceptor, Op, Timeout, high).
 
--spec commit(ServerRef :: gen_server:server_ref(), Op :: op(), Timeout :: timeout(), Priority :: priority()) -> commit_result().
-commit(ServerRef, Op, Timeout, Priority) ->
-    call(ServerRef, ?COMMIT_REQUEST(?OP_DEFAULT(Op), Priority), Timeout).
+-spec commit(
+    Acceptor :: gen_server:server_ref(),
+    Op :: op(),
+    Timeout :: timeout(),
+    Priority :: priority()
+) -> commit_result().
+commit(Acceptor, Op, Timeout, Priority) ->
+    call(Acceptor, ?COMMIT_REQUEST(?OP_DEFAULT(Op), Priority), Timeout).
 
--spec commit_async(ServerRef :: gen_server:server_ref(), From :: {pid(), term()}, Op :: op()) -> ok.
-commit_async(ServerRef, From, Op) ->
-    commit_async(ServerRef, From, Op, high).
+-spec commit_async(
+    Acceptor :: gen_server:server_ref(),
+    From :: from(),
+    Op :: op()
+) -> ok.
+commit_async(Acceptor, From, Op) ->
+    commit_async(Acceptor, From, Op, high).
 
--spec commit_async(ServerRef :: gen_server:server_ref(), From :: {pid(), term()}, Op :: op(), Priority :: priority()) -> ok.
-commit_async(ServerRef, From, Op, Priority) ->
-    gen_server:cast(ServerRef, ?COMMIT_ASYNC_REQUEST(From, ?OP_DEFAULT(Op), Priority)).
+-spec commit_async(
+    Acceptor :: gen_server:server_ref(),
+    From :: from(),
+    Op :: op(),
+    Priority :: priority()
+) -> ok.
+commit_async(Acceptor, From, Op, Priority) ->
+    gen_server:cast(Acceptor, ?COMMIT_ASYNC_REQUEST(From, ?OP_DEFAULT(Op), Priority)).
 
 % Strong-read
--spec read(ServerRef :: gen_server:server_ref(), Command :: command()) -> read_result().
-read(ServerRef, Command) ->
-    read(ServerRef, Command, ?RAFT_RPC_CALL_TIMEOUT()).
+-spec read(
+    Acceptor :: gen_server:server_ref(),
+    Command :: command()
+) -> read_result().
+read(Acceptor, Command) ->
+    read(Acceptor, Command, ?RAFT_RPC_CALL_TIMEOUT()).
 
--spec read(ServerRef :: gen_server:server_ref(), Command :: command(), Timeout :: timeout()) -> read_result().
-read(ServerRef, Command, Timeout) ->
-    call(ServerRef, ?READ_REQUEST(Command), Timeout).
+-spec read(
+    Acceptor :: gen_server:server_ref(),
+    Command :: command(),
+    Timeout :: timeout()
+) -> read_result().
+read(Acceptor, Command, Timeout) ->
+    call(Acceptor, ?READ_REQUEST(Command, undefined), Timeout).
+
+-spec read_after(
+    Acceptor :: gen_server:server_ref(),
+    Command :: command(),
+    MinIndex :: wa_raft_log:log_index() | undefined
+) -> read_result().
+read_after(Acceptor, Command, MinIndex) ->
+    read_after(Acceptor, Command, MinIndex, ?RAFT_RPC_CALL_TIMEOUT()).
+
+-spec read_after(
+    Acceptor :: gen_server:server_ref(),
+    Command :: command(),
+    MinIndex :: wa_raft_log:log_index() | undefined,
+    Timeout :: timeout()
+) -> read_result().
+read_after(Acceptor, Command, MinIndex, Timeout) ->
+    call(Acceptor, ?READ_REQUEST(Command, MinIndex), Timeout).
 
 -spec adjust_config(
-    ServerRef :: gen_server:server_ref(),
+    Acceptor :: gen_server:server_ref(),
     Action :: wa_raft_server:config_action(),
     Index :: wa_raft_log:log_index() | undefined
 ) -> commit_result().
-adjust_config(ServerRef, Action, Index) ->
-    adjust_config(ServerRef, Action, Index, ?RAFT_RPC_CALL_TIMEOUT()).
+adjust_config(Acceptor, Action, Index) ->
+    adjust_config(Acceptor, Action, Index, ?RAFT_RPC_CALL_TIMEOUT()).
 
 -spec adjust_config(
-    ServerRef :: gen_server:server_ref(),
+    Acceptor :: gen_server:server_ref(),
     Action :: wa_raft_server:config_action(),
     Index :: wa_raft_log:log_index() | undefined,
     Timeout :: timeout()
 ) -> commit_result().
-adjust_config(ServerRef, Action, Index, Timeout) ->
-    call(ServerRef, ?COMMIT_REQUEST(?OP_ADJUST_CONFIG(Action, Index), high), Timeout).
+adjust_config(Acceptor, Action, Index, Timeout) ->
+    call(Acceptor, ?COMMIT_REQUEST(?OP_ADJUST_CONFIG(Action, Index), high), Timeout).
 
 -spec adjust_config_async(
-    ServerRef :: gen_server:server_ref(),
-    From :: gen_server:from(),
+    Acceptor :: gen_server:server_ref(),
+    From :: from(),
     Action :: wa_raft_server:config_action()
 ) -> ok.
-adjust_config_async(ServerRef, From, Action) ->
-    adjust_config_async(ServerRef, From, Action, undefined).
+adjust_config_async(Acceptor, From, Action) ->
+    adjust_config_async(Acceptor, From, Action, undefined).
 
 -spec adjust_config_async(
-    ServerRef :: gen_server:server_ref(),
-    From :: gen_server:from(),
+    Acceptor :: gen_server:server_ref(),
+    From :: from(),
     Action :: wa_raft_server:config_action(),
     Index :: wa_raft_log:log_index() | undefined
 ) -> ok.
-adjust_config_async(ServerRef, From, Action, Index) ->
-    gen_server:cast(ServerRef, ?COMMIT_ASYNC_REQUEST(From, ?OP_ADJUST_CONFIG(Action, Index), high)).
+adjust_config_async(Acceptor, From, Action, Index) ->
+    gen_server:cast(Acceptor, ?COMMIT_ASYNC_REQUEST(From, ?OP_ADJUST_CONFIG(Action, Index), high)).
 
--spec call(ServerRef :: gen_server:server_ref(), Request :: term(), Timeout :: timeout()) -> call_result().
-call(ServerRef, Request, Timeout) ->
+-spec call(
+    Acceptor :: gen_server:server_ref(),
+    Request :: term(),
+    Timeout :: timeout()
+) -> call_result().
+call(Acceptor, Request, Timeout) ->
     try
-        gen_server:call(ServerRef, Request, Timeout)
+        gen_server:call(Acceptor, Request, Timeout)
     catch
         exit:{timeout, _}       -> {error, timeout};
         exit:{noproc, _}        -> {error, unreachable};
@@ -270,8 +321,8 @@ init(#raft_options{table = Table, partition = Partition, acceptor_name = Name, s
 
 -spec handle_call(read_request(), gen_server:from(), #state{}) -> {reply, read_result(), #state{}} | {noreply, #state{}};
                  (commit_request(), gen_server:from(), #state{}) -> {reply, commit_result(), #state{}} | {noreply, #state{}}.
-handle_call(?READ_REQUEST(Command), From, State) ->
-    case read_impl(From, Command, State) of
+handle_call(?READ_REQUEST(Command, MinIndex), From, State) ->
+    case read_impl(From, Command, MinIndex, State) of
         continue           -> {noreply, State};
         {error, _} = Error -> {reply, Error, State}
     end;
@@ -304,7 +355,7 @@ terminate(Reason, #state{name = Name}) ->
 
 %% Enqueue a commit.
 -spec commit_impl(
-    From :: gen_server:from(),
+    From :: from(),
     CommitOp :: commit_op(),
     Priority :: priority(),
     State :: #state{}
@@ -342,14 +393,19 @@ commit_impl(From, CommitOp, Priority, #state{table = Table, name = Name, server 
     end.
 
 %% Enqueue a strongly-consistent read.
--spec read_impl(gen_server:from(), command(), #state{}) -> continue | read_error().
-read_impl(From, Command, #state{table = Table, name = Name, server = Server, queues = Queues}) ->
+-spec read_impl(
+    From :: from(),
+    Command :: command(),
+    MinIndex :: wa_raft_log:log_index() | undefined,
+    State :: #state{}
+) -> continue | read_error().
+read_impl(From, Command, MinIndex, #state{table = Table, name = Name, server = Server, queues = Queues}) ->
     StartTUsec = erlang:monotonic_time(microsecond),
     ?RAFT_LOG_DEBUG("Acceptor[~p] starts to handle read of ~0P from ~0p.", [Name, Command, 100, From]),
     try
         case wa_raft_queue:reserve_read(Queues) of
             ok ->
-                wa_raft_server:read(Server, {From, Command}),
+                wa_raft_server:read(Server, From, Command, MinIndex),
                 continue;
             Reason ->
                 ?RAFT_COUNT(Table, {'acceptor.strong_read.error', Reason}),
