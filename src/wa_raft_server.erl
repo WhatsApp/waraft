@@ -2,17 +2,14 @@
 %%%
 %%% This source code is licensed under the Apache 2.0 license found in
 %%% the LICENSE file in the root directory of this source tree.
+%%%
+%%% This module implements RPC handling for the RAFT consensus protocol. See the
+%%% RAFT spec at https://raft.github.io/. A wa_raft instance is a participant in
+%%% a consensus group. Each participant plays a certain role (follower,
+%%% leader or candidate). The mission of a consensus group is to
+%%% implement a replicated state machine in a distributed cluster.
 
 -module(wa_raft_server).
-
--moduledoc """
-This module implements RPC handling for the RAFT consensus protocol. See the
-RAFT spec at https://raft.github.io/. A wa_raft instance is a participant in
-a consensus group. Each participant plays a certain role (follower,
-leader or candidate). The mission of a consensus group is to
-implement a replicated state machine in a distributed cluster.
-""".
-
 -compile(warn_missing_spec_all).
 -behaviour(gen_statem).
 -compile({inline, [require_valid_state/1]}).
@@ -1189,7 +1186,10 @@ leader(enter, LastState, #raft_state{table = Table, log_view = View} = State0) -
     % At the start of a new term, the leader should append at least one log
     % entry to start the process of establishing the first quorum in the new
     % term.
-    State3 = State2#raft_state{first_current_term_log_index = LastLogIndex + 1},
+    State3 = State2#raft_state{
+        first_current_term_log_index = LastLogIndex + 1,
+        handover_lease_state = unaffected
+    },
     State4 = case has_pending_commits(State3) of
         true ->
             % If there are pending commits, then use those for the initial
@@ -1340,7 +1340,11 @@ leader(
     } = State
 ) ->
     ?SERVER_LOG_NOTICE(State, "resuming normal operations after failed handover to ~0p.", [Sender]),
-    {keep_state, State#raft_state{handover = undefined}};
+    %% `HANDOVER_FAILED` is only sent by a target that rejected the RPC
+    %% without soliciting any votes, so pre-handover in-flight heartbeat
+    %% ACKs remain valid evidence of quorum health and the lease can
+    %% re-arm as soon as the next `update_quorum_ts` completes.
+    {keep_state, State#raft_state{handover = undefined, handover_lease_state = unaffected}};
 
 %% [Handover][HandoverFailed RPC] Got a handover failed with an unknown ID. Ignore.
 leader(_, ?REMOTE(_, ?HANDOVER_FAILED(_)), #raft_state{}) ->
@@ -1352,7 +1356,17 @@ leader(state_timeout = Type, Event, #raft_state{handover = {Peer, _, Timeout}} =
     case NowMillis > Timeout of
         true ->
             ?SERVER_LOG_NOTICE(State, "handover to ~0p times out.", [Peer]),
-            {keep_state, State#raft_state{handover = undefined}, {next_event, Type, Event}};
+            %% On timeout, the target's state is unknown and pre-timeout
+            %% ACKs may have come from peers that subsequently voted for the
+            %% target in T+1. Force a fresh post-timeout quorum round by
+            %% clearing `heartbeat_reply_ts` and holding the lease off in
+            %% `pending_reconfirmation` until `update_quorum_ts` produces a
+            %% new quorum.
+            {keep_state, State#raft_state{
+                handover = undefined,
+                handover_lease_state = pending_reconfirmation,
+                heartbeat_reply_ts = #{}
+            }, {next_event, Type, Event}};
         false ->
             update_status(?FUNCTION_NAME, State),
             {keep_state_and_data, ?HEARTBEAT_TIMEOUT(State)}
@@ -1419,6 +1433,7 @@ leader(
     ?READ_COMMAND(From, Command, MinIndex),
     #raft_state{
         self = Self,
+        table = Table,
         queues = Queues,
         storage = Storage,
         commit_index = CommitIndex,
@@ -1440,17 +1455,25 @@ leader(
     case is_single_member(Self, config(State)) of
         % If we are a single node cluster and we are fully-applied, then immediately dispatch.
         true when PendingHigh =:= [], PendingLow =:= [], ReadIndex =< LastApplied ->
-            wa_raft_storage:apply_read(Storage, From, Command),
+            wa_raft_queue:fulfill_immediate_read(Queues, Storage, From, Command),
             {keep_state, State};
         _ ->
-            ok = wa_raft_queue:submit_read(Queues, ReadIndex, From, Command),
-            % Regardless of whether or not the read index is an existing log entry, indicate that
-            % a read is pending as the leader must establish a new quorum to be able to serve the
-            % read request. It's possible that a previous dispatch to storage can cause this read
-            % to be served earlier than any round of heartbeats caused by the following pending
-            % entry, but as long as the actual storage state has reached the effective index, then
-            % the read will still be sequentially consistent.
-            pending_continue_or_submit(State#raft_state{pending_read = true})
+            case try_lease_read(ReadIndex, State) of
+                hit ->
+                    ?RAFT_COUNT(Table, 'leader.read.lease.hit'),
+                    wa_raft_queue:fulfill_immediate_read(Queues, Storage, From, Command),
+                    {keep_state, State};
+                {miss, Reason} ->
+                    ?RAFT_COUNT(Table, {'leader.read.lease.miss', Reason}),
+                    ok = wa_raft_queue:submit_read(Queues, ReadIndex, From, Command),
+                    % Regardless of whether or not the read index is an existing log entry, indicate that
+                    % a read is pending as the leader must establish a new quorum to be able to serve the
+                    % read request. It's possible that a previous dispatch to storage can cause this read
+                    % to be served earlier than any round of heartbeats caused by the following pending
+                    % entry, but as long as the actual storage state has reached the effective index, then
+                    % the read will still be sequentially consistent.
+                    pending_continue_or_submit(State#raft_state{pending_read = true})
+            end
     end;
 
 %% [Resign] Leader resigns by switching to follower state.
@@ -1570,7 +1593,10 @@ leader(
                         LastIndex ->
                             Ref = make_ref(),
                             Timeout = erlang:monotonic_time(millisecond) + ?RAFT_HANDOVER_TIMEOUT(App, Table),
-                            State1 = State0#raft_state{handover = {Peer, Ref, Timeout}},
+                            State1 = State0#raft_state{
+                                handover = {Peer, Ref, Timeout},
+                                handover_lease_state = in_progress
+                            },
                             send_rpc(?IDENTITY_REQUIRES_MIGRATION(Name, Peer), ?HANDOVER(Ref, PrevLogIndex, PrevLogTerm, LogEntries), State1),
                             reply(Type, {ok, Peer}),
                             {keep_state, State1};
@@ -3155,7 +3181,8 @@ advance_term(
         match_indices = #{},
         last_applied_indices = #{},
         heartbeat_send_ts = #{},
-        handover = undefined
+        handover = undefined,
+        handover_lease_state = unaffected
         %% `heartbeat_reply_ts` is deliberately not reset here. It records
         %% recent peer liveness independent of term: a peer that answered a
         %% heartbeat is alive whether or not the term has since advanced, and
@@ -4202,8 +4229,63 @@ update_quorum_ts(Data) ->
 ) -> #raft_state{}.
 update_quorum_ts(NowTs, #raft_state{self = #raft_identity{node = Node}, heartbeat_reply_ts = HeartbeatReply} = Data) ->
     case compute_member_quorum(HeartbeatReply#{Node => NowTs}, config(Data)) of
-        {quorum, QuorumTs} -> Data#raft_state{last_quorum_ts = QuorumTs};
-        _                  -> Data
+        {quorum, QuorumTs} ->
+            %% A successful quorum computation after a handover-timeout
+            %% clears the `pending_reconfirmation` hold. `heartbeat_reply_ts`
+            %% was reset on timeout, so any quorum reached here is
+            %% structurally post-timeout.
+            NewData = Data#raft_state{last_quorum_ts = QuorumTs},
+            case NewData#raft_state.handover_lease_state of
+                pending_reconfirmation ->
+                    NewData#raft_state{handover_lease_state = unaffected};
+                _ ->
+                    NewData
+            end;
+        _ ->
+            Data
+    end.
+
+%% Evaluate whether a strong read may be served via the leader read lease
+%% instead of a fresh log entry. Returns `hit` if all safety invariants are
+%% satisfied, or `{miss, Reason}` describing which invariant blocked the
+%% lease. The lease's freshness signal is `last_quorum_ts` (maintained by
+%% `update_quorum_ts/2`); everything else is a purely local invariant check.
+%% Also records the age of `last_quorum_ts` for sizing observability.
+-spec try_lease_read(ReadIndex :: wa_raft_log:log_index(), Data :: #raft_state{}) ->
+    hit | {miss, handover | pending_reconfirmation | not_current_term | no_quorum_ts | stale | not_applied | disabled}.
+try_lease_read(ReadIndex, #raft_state{
+    application = App,
+    table = Table,
+    handover = Handover,
+    handover_lease_state = HandoverLeaseState,
+    commit_index = CommitIndex,
+    last_applied = LastApplied,
+    last_quorum_ts = LastQuorumTs,
+    first_current_term_log_index = FirstCurrentTermLogIndex
+}) ->
+    LeaseMs = ?RAFT_LEADER_READ_LEASE_MS(App, Table),
+    if
+        LeaseMs =< 0 ->
+            {miss, disabled};
+        Handover =/= undefined ->
+            {miss, handover};
+        HandoverLeaseState =:= in_progress ->
+            {miss, handover};
+        HandoverLeaseState =:= pending_reconfirmation ->
+            {miss, pending_reconfirmation};
+        CommitIndex < FirstCurrentTermLogIndex ->
+            {miss, not_current_term};
+        LastQuorumTs =:= undefined ->
+            {miss, no_quorum_ts};
+        LastApplied < ReadIndex ->
+            {miss, not_applied};
+        true ->
+            Age = erlang:monotonic_time(millisecond) - LastQuorumTs,
+            ?RAFT_GATHER(Table, 'leader.read.lease.age_ms', Age),
+            case Age =< LeaseMs of
+                true -> hit;
+                false -> {miss, stale}
+            end
     end.
 
 %% Update the server's current status in `wa_raft_info`.

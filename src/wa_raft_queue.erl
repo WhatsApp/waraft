@@ -25,7 +25,8 @@ This module implements tracking of pending requests and queue limits.
     apply_queue_byte_size/1,
     apply_queue_byte_size/2,
     apply_queue_full/1,
-    apply_queue_full/2
+    apply_queue_full/2,
+    read_queue_size/1
 ]).
 
 %% INTERNAL API
@@ -50,6 +51,7 @@ This module implements tracking of pending requests and queue limits.
     query_reads/2,
     fulfill_read/3,
     fulfill_incomplete_read/3,
+    fulfill_immediate_read/4,
     fulfill_all_reads/2
 ]).
 
@@ -196,6 +198,10 @@ apply_queue_full(Table, Partition) ->
         Queues    -> apply_queue_full(Queues)
     end.
 
+-spec read_queue_size(Queues :: queues()) -> non_neg_integer().
+read_queue_size(#queues{counters = Counters}) ->
+    atomics:get(Counters, ?RAFT_READ_QUEUE_SIZE_COUNTER).
+
 %%-------------------------------------------------------------------
 %% INTERNAL API
 %%-------------------------------------------------------------------
@@ -336,6 +342,16 @@ fulfill_read(#queues{counters = Counters, reads = Reads}, Reference, Reply) ->
 fulfill_incomplete_read(#queues{counters = Counters}, From, Reply) ->
     atomics:sub(Counters, ?RAFT_READ_QUEUE_SIZE_COUNTER, 1),
     gen_server:reply(From, Reply).
+
+% Complete a read that was reserved by the RAFT acceptor but is being
+% served immediately (without a submit_read/4) by dispatching directly
+% to storage. Releases the reserved slot and casts the read to storage
+% in a single call so callers can keep parity with the submit_read /
+% fulfill_read pair.
+-spec fulfill_immediate_read(Queues :: queues(), Storage :: gen_server:server_ref(), From :: gen_server:from(), Command :: wa_raft_acceptor:command()) -> ok.
+fulfill_immediate_read(#queues{counters = Counters}, Storage, From, Command) ->
+    atomics:sub(Counters, ?RAFT_READ_QUEUE_SIZE_COUNTER, 1),
+    wa_raft_storage:apply_read(Storage, From, Command).
 
 % Fulfill pending reads with an error that indicates that the read was not completed.
 -spec fulfill_all_reads(Queues :: queues(), wa_raft_acceptor:read_error()) -> ok.

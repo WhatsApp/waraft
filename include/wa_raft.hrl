@@ -179,6 +179,16 @@
 -define(RAFT_LEADER_CHECK_QUORUM, raft_leader_check_quorum).
 -define(RAFT_LEADER_CHECK_QUORUM(App, Table), (?RAFT_TABLE_CONFIG(App, Table, ?RAFT_LEADER_CHECK_QUORUM, false) =/= false)).
 
+%% Maximum time in milliseconds since the last quorum-acknowledged heartbeat
+%% during which the leader may serve strong reads directly from local storage
+%% without initiating a fresh log entry to re-establish leadership. Setting
+%% this to `0` (the default) disables the lease and forces every strong read
+%% to go through the full quorum-establishment path. When enabled, the value
+%% must be safely below the election timeout minus expected clock skew and
+%% one-way network latency.
+-define(RAFT_LEADER_READ_LEASE_MS, raft_leader_read_lease_ms).
+-define(RAFT_LEADER_READ_LEASE_MS(App, Table), ?RAFT_TABLE_CONFIG(App, Table, ?RAFT_LEADER_READ_LEASE_MS, 0)).
+
 %% Time in milliseconds during which a leader was unable to replicate heartbeats to a
 %% quorum of followers before considering the leader to be stale.
 -define(RAFT_LEADER_STALE_INTERVAL, raft_max_heartbeat_age_msecs).
@@ -534,6 +544,12 @@
     %% [Leader] Information about a currently pending handover of leadership to
     %%          a peer
     handover :: undefined | {node(), reference(), integer()},
+    %% [Leader] Whether recent handover activity should suppress the leader
+    %%          read lease. `unaffected` = normal; `in_progress` = handover
+    %%          started, lease suppressed; `pending_reconfirmation` = handover
+    %%          ended ambiguously (timeout), lease suppressed until a fresh
+    %%          post-timeout quorum round completes.
+    handover_lease_state = unaffected :: unaffected | in_progress | pending_reconfirmation,
 
     %% [Disabled] The reason for which this RAFT replica was disabled
     disable_reason :: term()
