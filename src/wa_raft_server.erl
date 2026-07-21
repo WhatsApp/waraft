@@ -333,9 +333,13 @@
     {add_witness, Peer :: peer()} |
     %% Add a new peer to the cluster as a non-voting participant.
     {add_participant, Peer :: peer()} |
+    %% Add a new peer to the cluster as a non-voting witness participant.
+    {add_witness_participant, Peer :: peer()} |
     %% Promote a non-voting participant to a voting member if the participant
-    %% is ready. A participant is ready if it would be eligible for a handover
-    %% if it were a voting member.
+    %% is ready. Handles both plain non-voting participants (which become
+    %% voting full members) and non-voting witness participants (which
+    %% become voting witness members). A participant is ready if it would
+    %% be eligible for a handover if it were a voting member.
     {promote_participant_if_ready, Peer :: peer()} |
     %% Add a witness gated on every voting member (other than the leader and
     %% the excluded nodes) being eligible for handover.
@@ -2776,6 +2780,15 @@ config_add_witness_only(Peer, Config) ->
         witness => lists:umerge([Peer], config_witnesses(Config))
     }.
 
+%% Add a new peer to the participants and witness lists of the provided
+%% cluster configuration (a non-voting witness participant).
+-spec config_add_witness_participant(Peer :: peer(), Config :: config()) -> config().
+config_add_witness_participant(Peer, Config) ->
+    Config#{
+        participants => lists:umerge([Peer], config_participants(Config)),
+        witness => lists:umerge([Peer], config_witnesses(Config))
+    }.
+
 %% Remove a peer from the participants, membership, and witness lists of the
 %% provided cluster configuration.
 -spec config_remove_participant(Peer :: peer(), Config :: config()) -> config().
@@ -3722,10 +3735,16 @@ leader_adjust_config({Action, Peer}, Data) ->
                 IsParticipant -> {error, already_participating};
                 true -> {ok, config_add_participant(Peer, Config)}
             end;
-        promote_participant_if_ready ->
+        add_witness_participant ->
             if
                 IsMember -> {error, already_member};
                 IsWitness -> {error, already_witness};
+                IsParticipant -> {error, already_participating};
+                true -> {ok, config_add_witness_participant(Peer, Config)}
+            end;
+        promote_participant_if_ready ->
+            if
+                IsMember -> {error, already_member};
                 not IsParticipant -> {error, not_a_participant};
                 not IsReady -> {error, not_ready};
                 true -> {ok, config_add_member(Peer, Config)}
