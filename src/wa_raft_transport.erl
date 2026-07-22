@@ -67,6 +67,13 @@
     handle_info/2
 ]).
 
+%% Test exports
+-ifdef(TEST).
+-export([
+    resolve_transport_files/2
+]).
+-endif.
+
 -export_type([
     transport_id/0,
     transport_info/0,
@@ -491,62 +498,72 @@ handle_call({transport, ID, Peer, Module, Meta, Files}, From, #state{counters = 
                 ?RAFT_LOG_WARNING("wa_raft_transport rejecting transport receive for ~p due to ~p", [ID, Reason]),
                 {reply, {error, Reason}, State};
             {not_found, ok} ->
-                ?RAFT_COUNT(Table, 'transport.receive'),
-                ?RAFT_LOG_NOTICE("wa_raft_transport starting transport receive for ~p", [ID]),
-
-                TransportAtomics = atomics:new(?RAFT_TRANSPORT_TRANSPORT_ATOMICS_COUNT, []),
                 RootDir = transport_destination(ID, Meta),
-                NowMillis = erlang:system_time(millisecond),
-                TotalFiles = length(Files),
+                case resolve_transport_files(RootDir, Files) of
+                    {ok, ResolvedFiles} ->
+                        ?RAFT_COUNT(Table, 'transport.receive'),
+                        ?RAFT_LOG_NOTICE("wa_raft_transport starting transport receive for ~p", [ID]),
 
-                % Force the receiving directory to always exist
-                try filelib:ensure_dir([RootDir, $/]) catch _:_ -> ok end,
+                        TransportAtomics = atomics:new(?RAFT_TRANSPORT_TRANSPORT_ATOMICS_COUNT, []),
+                        NowMillis = erlang:system_time(millisecond),
+                        TotalFiles = length(Files),
 
-                % Setup overall transport info
-                set_transport_info(ID, #{
-                    type => receiver,
-                    status => running,
-                    atomics => TransportAtomics,
-                    peer => Peer,
-                    module => Module,
-                    meta => Meta,
-                    root => RootDir,
-                    start_ts => NowMillis,
-                    total_files => TotalFiles,
-                    completed_files => 0
-                }, Counters),
+                        % Force the receiving directory to always exist
+                        try filelib:ensure_dir([RootDir, $/]) catch _:_ -> ok end,
 
-                % Setup file info for each file
-                [
-                    begin
-                        FileAtomics = atomics:new(?RAFT_TRANSPORT_FILE_ATOMICS_COUNT, []),
-                        set_file_info(ID, FileID, #{
-                            status => requested,
-                            atomics => {TransportAtomics, FileAtomics},
-                            name => RelativePath,
-                            path => filename:join(RootDir, RelativePath),
-                            total_bytes => Size,
-                            completed_bytes => 0
-                        })
-                    end || {FileID, RelativePath, Size} <- Files
-                ],
+                        % Setup overall transport info
+                        set_transport_info(ID, #{
+                            type => receiver,
+                            status => running,
+                            atomics => TransportAtomics,
+                            peer => Peer,
+                            module => Module,
+                            meta => Meta,
+                            root => RootDir,
+                            start_ts => NowMillis,
+                            total_files => TotalFiles,
+                            completed_files => 0
+                        }, Counters),
 
-                % If the transport is empty, then immediately complete it
-                TotalFiles =:= 0 andalso
-                    update_and_get_transport_info(
-                        ID,
-                        fun (Info0) ->
-                            Info1 = Info0#{status => completed, end_ts => NowMillis},
-                            Info2 = case maybe_notify_complete(ID, Info1, State) of
-                                ok              -> Info1;
-                                {error, Reason} -> Info1#{status => failed, error => {notify_failed, Reason}}
-                            end,
-                            maybe_notify(ID, Info2)
-                        end,
-                        Counters
-                    ),
+                        % Setup file info for each file
+                        [
+                            begin
+                                FileAtomics = atomics:new(?RAFT_TRANSPORT_FILE_ATOMICS_COUNT, []),
+                                set_file_info(ID, FileID, #{
+                                    status => requested,
+                                    atomics => {TransportAtomics, FileAtomics},
+                                    name => RelativePath,
+                                    path => Path,
+                                    total_bytes => Size,
+                                    completed_bytes => 0
+                                })
+                            end || {FileID, RelativePath, Path, Size} <- ResolvedFiles
+                        ],
 
-                {reply, ok, State}
+                        % If the transport is empty, then immediately complete it
+                        TotalFiles =:= 0 andalso
+                            update_and_get_transport_info(
+                                ID,
+                                fun (Info0) ->
+                                    Info1 = Info0#{status => completed, end_ts => NowMillis},
+                                    Info2 = case maybe_notify_complete(ID, Info1, State) of
+                                        ok              -> Info1;
+                                        {error, Reason} -> Info1#{status => failed, error => {notify_failed, Reason}}
+                                    end,
+                                    maybe_notify(ID, Info2)
+                                end,
+                                Counters
+                            ),
+
+                        {reply, ok, State};
+                    {error, invalid_file_path} ->
+                        ?RAFT_COUNT(Table, 'transport.receive.rejected'),
+                        ?RAFT_LOG_WARNING(
+                            "wa_raft_transport rejecting transport receive for ~p from ~p due to invalid file path",
+                            [ID, Peer]
+                        ),
+                        {reply, {error, invalid_file_path}, State}
+                end
         end
     catch
         T:E:S ->
@@ -845,6 +862,31 @@ transport_destination(ID, #{type := transfer, table := Table, partition := Parti
     filename:join(wa_raft_transport:registered_directory(Table, Partition), integer_to_list(ID));
 transport_destination(ID, #{type := snapshot, table := Table, partition := Partition}) ->
     filename:join(wa_raft_transport:registered_directory(Table, Partition), integer_to_list(ID)).
+
+% Resolve every peer-supplied relative path against RootDir using
+% filelib:safe_relative_path/2, which rejects absolute paths, ".." escapes,
+% and symlink-based escapes above the root. Returning {error, invalid_file_path}
+% if any path is unsafe means the whole transport is rejected with no partial
+% writes.
+-spec resolve_transport_files(
+    RootDir :: string(),
+    Files :: [{file_id(), RelPath :: string(), Size :: integer()}]
+) ->
+    {ok, [{file_id(), RelPath :: string(), Path :: string(), Size :: integer()}]}
+    | {error, invalid_file_path}.
+resolve_transport_files(RootDir, Files) ->
+    try
+        Resolved = [
+            case filelib:safe_relative_path(RelativePath, RootDir) of
+                unsafe -> throw(invalid_file_path);
+                Safe   -> {FileID, RelativePath, filename:join(RootDir, Safe), Size}
+            end
+            || {FileID, RelativePath, Size} <- Files
+        ],
+        {ok, Resolved}
+    catch
+        throw:invalid_file_path -> {error, invalid_file_path}
+    end.
 
 -spec collect_files(string()) -> [{non_neg_integer(), string(), string(), integer(), non_neg_integer()}].
 collect_files(Root) ->
