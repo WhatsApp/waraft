@@ -3525,14 +3525,15 @@ stub_entry(Binary) when is_binary(Binary) ->
 stub_entry({Term, undefined}) ->
     {Term, undefined};
 stub_entry({Term, {Key, Cmd}}) ->
-    {Term, {Key, stub_command(Cmd)}};
+    {Term, {Key, stub_command(Key, Cmd)}};
 stub_entry({Term, {Key, Label, Cmd}}) ->
-    {Term, {Key, Label, stub_command(Cmd)}}.
+    {Term, {Key, Label, stub_command(Key, Cmd)}}.
 
--spec stub_command(wa_raft_acceptor:command()) -> wa_raft_acceptor:command().
-stub_command(noop) -> noop;
-stub_command({config, _} = ConfigCmd) -> ConfigCmd;
-stub_command(_) -> noop_omitted.
+-spec stub_command(wa_raft_acceptor:key(), wa_raft_acceptor:command()) -> wa_raft_acceptor:command().
+stub_command(?READ_OP, noop) -> noop_omitted;
+stub_command(_, noop) -> noop;
+stub_command(_, {config, _} = ConfigCmd) -> ConfigCmd;
+stub_command(_, _) -> noop_omitted.
 
 -spec get_handover_eligibility_match_cutoff(State :: #raft_state{}) -> wa_raft_log:log_index().
 get_handover_eligibility_match_cutoff(#raft_state{application = App, table = Table, log_view = View}) ->
