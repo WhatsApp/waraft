@@ -1207,10 +1207,8 @@ leader(enter, LastState, #raft_state{table = Table, log_view = View} = State0) -
     end,
 
     % Perform initial heartbeat and log entry resolution
-    State5 = append_entries_to_followers(State4),
-    State6 = update_quorum_ts(State5),
-    State7 = apply_single_node_cluster(State6),
-    {keep_state, State7, ?HEARTBEAT_TIMEOUT(State7)};
+    State5 = leader_commit_and_replicate(State4),
+    {keep_state, State5, ?HEARTBEAT_TIMEOUT(State5)};
 
 %% [Internal] Advance to newer term when requested
 leader(
@@ -1269,7 +1267,7 @@ leader(
     State3 = leader_advance_commit_index(State2),
     State4 = leader_apply_log(State3),
     ?RAFT_GATHER(Table, 'leader.apply.func', erlang:monotonic_time(microsecond) - StartT),
-    {keep_state, maybe_heartbeat(State4), ?HEARTBEAT_TIMEOUT(State4)};
+    leader_maybe_heartbeat(State4);
 
 %% and failures.
 leader(
@@ -1308,7 +1306,7 @@ leader(
         last_applied_indices = NewLastAppliedIndices
     },
     State3 = leader_apply_log(State2),
-    {keep_state, maybe_heartbeat(State3), ?HEARTBEAT_TIMEOUT(State3)};
+    leader_maybe_heartbeat(State3);
 
 %% [RequestPreVote RPC] Respond to pre-vote
 leader(_, ?REMOTE(Candidate, ?REQUEST_PRE_VOTE(Ref)), #raft_state{} = Data) ->
@@ -1374,18 +1372,8 @@ leader(state_timeout = Type, Event, #raft_state{handover = {Peer, _, Timeout}} =
     end;
 
 %% [Timeout] Periodic heartbeat to followers
-leader(state_timeout, _, #raft_state{table = Table} = State0) ->
-    case leader_eligible(State0) of
-        eligible ->
-            State1 = append_entries_to_followers(State0),
-            State2 = apply_single_node_cluster(State1),
-            update_status(?FUNCTION_NAME, State2),
-            {keep_state, State2, ?HEARTBEAT_TIMEOUT(State2)};
-        Reason ->
-            ?RAFT_COUNT(Table, {'leader.resign', Reason}),
-            ?SERVER_LOG_NOTICE(State0, "resigns from leadership because this node is ~0p.", [Reason]),
-            {next_state, follower_or_witness(State0), State0}
-    end;
+leader(state_timeout, _, #raft_state{} = State) ->
+    leader_heartbeat(State);
 
 %% [Commit]
 %%   If a handover is in progress, reject the commit immediately with a
@@ -1412,7 +1400,7 @@ leader(
     % No size limit is imposed here as the pending queue cannot grow larger
     % than the limit on the number of pending commits.
     ?RAFT_COUNT(Table, {'commit', Priority}),
-    pending_continue_or_submit(add_pending(From, Op, Priority, State));
+    leader_batch_or_heartbeat(add_pending(From, Op, Priority, State));
 
 %% [Strong Read]
 %%   If a handover is in progress, reject the read immediately with a
@@ -1473,7 +1461,7 @@ leader(
                     % to be served earlier than any round of heartbeats caused by the following pending
                     % entry, but as long as the actual storage state has reached the effective index, then
                     % the read will still be sequentially consistent.
-                    pending_continue_or_submit(State#raft_state{pending_read = true})
+                    leader_batch_or_heartbeat(State#raft_state{pending_read = true})
             end
     end;
 
@@ -1498,10 +1486,9 @@ leader(Type, ?ADJUST_CONFIG_COMMAND(From, Action, Index), #raft_state{queues = Q
             "is attempting to change configuration from ~0p to ~0p at ~0p.",
             [config(State0), NewConfig, NewConfigIndex]
         ),
-        State2 = apply_single_node_cluster(State1),
-        State3 = append_entries_to_followers(State2),
+        State2 = leader_commit_and_replicate(State1),
         reply(Type, {ok, NewConfigPosition}),
-        {keep_state, State3, ?HEARTBEAT_TIMEOUT(State3)}
+        {keep_state, State2, ?HEARTBEAT_TIMEOUT(State2)}
     else
         {error, Reason} ->
             ?SERVER_LOG_NOTICE(
@@ -2960,20 +2947,6 @@ requires_new_label(noop) -> false;
 requires_new_label({config, _}) -> false;
 requires_new_label(_) -> true.
 
--spec apply_single_node_cluster(Data :: #raft_state{}) -> #raft_state{}.
-apply_single_node_cluster(#raft_state{self = Self} = Data0) ->
-    case is_single_member(Self, config(Data0)) of
-        true ->
-            Data1 = commit_pending(Data0, high),
-            Data2 = commit_pending(Data1, low),
-            Data3 = leader_advance_commit_index(Data2),
-            Data4 = leader_apply_log(Data3),
-            Data5 = update_quorum_ts(Data4),
-            Data5;
-        false ->
-            Data0
-    end.
-
 %% Check if the leader should update the recorded commit index due to an
 %% advancement in the log quorum. (5.4.2)
 -spec leader_advance_commit_index(Data :: #raft_state{}) -> #raft_state{}.
@@ -3242,7 +3215,6 @@ leader_eligible(#raft_state{application = App, table = Table, last_quorum_ts = L
 candidate_eligible(#raft_state{application = App} = Data) ->
     ?RAFT_LEADER_ELIGIBLE(App) andalso is_self_member(Data) andalso ?RAFT_ELECTION_WEIGHT(App) =/= 0.
 
-
 -spec candidate_start_election(
     ElectionType :: election_type(),
     Data :: #raft_state{}
@@ -3277,15 +3249,165 @@ candidate_start_election(
     {keep_state, NewData, ?ELECTION_TIMEOUT(NewData)}.
 
 %%------------------------------------------------------------------------------
-%% RAFT Server - State Machine Implementation - Leader Methods
+%% RAFT Server - State Machine Implementation - Leader - Replication
 %%------------------------------------------------------------------------------
 
--spec append_entries_to_followers(Data :: #raft_state{}) -> #raft_state{}.
-append_entries_to_followers(Data0) ->
+-spec leader_batch_or_heartbeat(Data :: #raft_state{}) -> gen_statem:event_handler_result(state(), #raft_state{}).
+leader_batch_or_heartbeat(#raft_state{table = Table} = Data) ->
+    case leader_should_batch(Data) of
+        true ->
+            ?RAFT_COUNT(Table, 'commit.batch.delay'),
+            {keep_state, Data, ?COMMIT_BATCH_TIMEOUT(Data)};
+        false ->
+            leader_heartbeat(Data)
+    end.
+
+-spec leader_should_batch(Data :: #raft_state{}) -> boolean().
+leader_should_batch(#raft_state{application = App, table = Table} = Data) ->
+    Pending = pending_count(Data),
+    ?RAFT_COMMIT_BATCH_INTERVAL(App, Table) > 0 andalso Pending =< ?RAFT_COMMIT_BATCH_MAX_ENTRIES(App, Table).
+
+-spec leader_maybe_heartbeat(#raft_state{}) -> gen_statem:event_handler_result(state(), #raft_state{}).
+leader_maybe_heartbeat(Data) ->
+    case leader_should_heartbeat(Data) of
+        true -> leader_heartbeat(Data);
+        false -> {keep_state, Data, ?HEARTBEAT_TIMEOUT(Data)}
+    end.
+
+-spec leader_should_heartbeat(#raft_state{}) -> boolean().
+leader_should_heartbeat(#raft_state{handover = Handover}) when Handover =/= undefined ->
+    false;
+leader_should_heartbeat(#raft_state{application = App, table = Table, heartbeat_send_ts = HeartbeatSendTs}) ->
+    Latest = lists:max(maps:values(HeartbeatSendTs)),
+    Current = erlang:monotonic_time(millisecond),
+    Current - Latest > ?RAFT_HEARTBEAT_INTERVAL(App, Table).
+
+-spec leader_heartbeat(#raft_state{}) -> gen_statem:event_handler_result(state(), #raft_state{}).
+leader_heartbeat(#raft_state{table = Table} = Data) ->
+    case leader_eligible(Data) of
+        eligible ->
+            NewData = leader_commit_and_replicate(Data),
+            update_status(leader, NewData),
+            {keep_state, NewData, ?HEARTBEAT_TIMEOUT(NewData)};
+        Reason ->
+            ?RAFT_COUNT(Table, {'leader.resign', Reason}),
+            ?SERVER_LOG_NOTICE(leader, Data, "resigns from leadership because this node is ~0p.", [Reason]),
+            {next_state, follower_or_witness(Data), Data}
+    end.
+
+-spec leader_commit_and_replicate(#raft_state{}) -> #raft_state{}.
+leader_commit_and_replicate(#raft_state{self = Self, table = Table} = Data0) ->
+    ?RAFT_COUNT(Table, 'leader.heartbeat'),
     Data1 = commit_pending(Data0, high),
     Data2 = commit_pending(Data1, low),
-    Data3 = lists:foldl(fun heartbeat/2, Data2, config_participant_identities(config(Data2))),
-    Data3.
+    FinalData = case is_single_member(Self, config(Data2)) of
+        true ->
+            Data3 = leader_advance_commit_index(Data2),
+            Data4 = leader_apply_log(Data3),
+            update_quorum_ts(Data4);
+        false ->
+            Data2
+    end,
+    lists:foldl(fun leader_replicate_to_peer/2, FinalData, config_participant_identities(config(FinalData))).
+
+-spec leader_replicate_to_peer(Peer :: #raft_identity{}, State :: #raft_state{}) -> #raft_state{}.
+leader_replicate_to_peer(Self, #raft_state{self = Self} = Data) ->
+    % Skip sending heartbeat to self
+    Data;
+leader_replicate_to_peer(
+    ?IDENTITY_REQUIRES_MIGRATION(_, FollowerId) = Sender,
+    #raft_state{
+        application = App,
+        table = Table,
+        name = Name,
+        log_view = View,
+        commit_index = CommitIndex,
+        next_indices = NextIndices,
+        match_indices = MatchIndices,
+        heartbeat_send_ts = HeartbeatSendTs,
+        first_current_term_log_index = TermStartIndex
+    } = State0
+) ->
+    FollowerNextIndex = maps:get(FollowerId, NextIndices, TermStartIndex),
+    PrevLogIndex = FollowerNextIndex - 1,
+    PrevLogTermRes = wa_raft_log:term(View, PrevLogIndex),
+    FollowerMatchIndex = maps:get(FollowerId, MatchIndices, 0),
+    FollowerMatchIndex =/= 0 andalso
+        ?RAFT_GATHER(Table, 'leader.follower.lag', CommitIndex - FollowerMatchIndex),
+    NowTs = erlang:monotonic_time(millisecond),
+    LastFollowerHeartbeatSendTs = maps:get(FollowerId, HeartbeatSendTs, undefined),
+    State1 = State0#raft_state{heartbeat_send_ts = HeartbeatSendTs#{FollowerId => NowTs}},
+    LastIndex = wa_raft_log:last_index(View),
+    case PrevLogTermRes of %% no log entry to replicate
+        not_found ->
+            ?RAFT_COUNT(Table, 'leader.heartbeat.not_ready'),
+            ?SERVER_LOG_DEBUG(leader, State1, "at ~0p sends empty heartbeat to follower ~0p at ~0p.",
+                [CommitIndex, FollowerId, FollowerNextIndex]),
+            % Send append entries request.
+            {ok, LastTerm} = wa_raft_log:term(View, LastIndex),
+            send_rpc(Sender, ?APPEND_ENTRIES(LastIndex, LastTerm, [], CommitIndex, 0), State1),
+            LastFollowerHeartbeatSendTs =/= undefined andalso
+                ?RAFT_GATHER(Table, 'leader.heartbeat.interval_ms', erlang:monotonic_time(millisecond) - LastFollowerHeartbeatSendTs),
+            State1;
+        _ ->
+            MaxLogEntries = ?RAFT_HEARTBEAT_MAX_ENTRIES(App, Table),
+            MaxHeartbeatSize = ?RAFT_HEARTBEAT_MAX_BYTES(App, Table),
+            Witnesses = config_witnesses(config(State0)),
+            Entries = case lists:member({Name, FollowerId}, Witnesses) of
+                true ->
+                    {ok, RawEntries} = wa_raft_log:get(View, FollowerNextIndex, MaxLogEntries, MaxHeartbeatSize),
+                    stub_entries_for_witness(RawEntries);
+                false ->
+                    {ok, RawEntries} = wa_raft_log:entries(View, FollowerNextIndex, MaxLogEntries, MaxHeartbeatSize),
+                    RawEntries
+            end,
+            {ok, PrevLogTerm} = PrevLogTermRes,
+            % track when we send out a heartbeat that is empty but also not at the end of the log
+            Entries =:= [] andalso PrevLogIndex =/= LastIndex andalso ?RAFT_COUNT(Table, 'leader.heartbeat.empty'),
+            ?RAFT_GATHER(Table, 'leader.heartbeat.size', length(Entries)),
+            ?SERVER_LOG_DEBUG(leader, State1, "at ~0p sends heartbeat to follower ~0p at ~0p with ~0p entr(ies).",
+                [CommitIndex, FollowerId, FollowerNextIndex, length(Entries)]),
+            % Compute trim index.
+            TrimIndex = lists:min(to_member_list(MatchIndices#{node() => LastIndex}, 0, config(State1))),
+            % Send append entries request.
+            CastResult = send_rpc(Sender, ?APPEND_ENTRIES(PrevLogIndex, PrevLogTerm, Entries, CommitIndex, TrimIndex), State1),
+            NewNextIndices =
+                case CastResult of
+                    ok ->
+                        % pipelining - move NextIndex after sending out logs. If a packet is lost, the follower's AppendEntriesResponse
+                        % will return its correct index
+                        NextIndices#{FollowerId => PrevLogIndex + length(Entries) + 1};
+                    _ ->
+                        NextIndices
+                end,
+            LastFollowerHeartbeatSendTs =/= undefined andalso
+                ?RAFT_GATHER(Table, 'leader.heartbeat.interval_ms', erlang:monotonic_time(millisecond) - LastFollowerHeartbeatSendTs),
+            State1#raft_state{next_indices = NewNextIndices}
+    end.
+
+-spec stub_entries_for_witness([wa_raft_log:log_entry() | binary()]) -> [wa_raft_log:log_entry() | binary()].
+stub_entries_for_witness(Entries) ->
+    [stub_entry(E) || E <- Entries].
+
+-spec stub_entry(wa_raft_log:log_entry() | binary()) -> wa_raft_log:log_entry() | binary().
+stub_entry(Binary) when is_binary(Binary) ->
+    Binary;
+stub_entry({Term, undefined}) ->
+    {Term, undefined};
+stub_entry({Term, {Key, Cmd}}) ->
+    {Term, {Key, stub_command(Key, Cmd)}};
+stub_entry({Term, {Key, Label, Cmd}}) ->
+    {Term, {Key, Label, stub_command(Key, Cmd)}}.
+
+-spec stub_command(wa_raft_acceptor:key(), wa_raft_acceptor:command()) -> wa_raft_acceptor:command().
+stub_command(?READ_OP, noop) -> noop_omitted;
+stub_command(_, noop) -> noop;
+stub_command(_, {config, _} = ConfigCmd) -> ConfigCmd;
+stub_command(_, _) -> noop_omitted.
+
+%%------------------------------------------------------------------------------
+%% RAFT Server - State Machine Implementation - Leader - Pending Commits
+%%------------------------------------------------------------------------------
 
 -spec has_pending_commits(Data :: #raft_state{}) -> boolean().
 has_pending_commits(#raft_state{pending_high = [], pending_low = []}) ->
@@ -3298,23 +3420,6 @@ pending_count(#raft_state{pending_high = [], pending_low = [], pending_read = tr
     1;
 pending_count(#raft_state{pending_high = PendingHigh, pending_low = PendingLow}) ->
     length(PendingHigh) + length(PendingLow).
-
--spec pending_continue_or_submit(Data :: #raft_state{}) -> gen_statem:event_handler_result(state(), #raft_state{}).
-pending_continue_or_submit(#raft_state{application = App, table = Table} = Data0) ->
-    Data1 = apply_single_node_cluster(Data0),
-    case pending_count(Data1) of
-        0 ->
-            {keep_state, Data1};
-        PendingCount ->
-            case ?RAFT_COMMIT_BATCH_INTERVAL(App, Table) > 0 andalso PendingCount =< ?RAFT_COMMIT_BATCH_MAX_ENTRIES(App, Table) of
-                true ->
-                    ?RAFT_COUNT(Table, 'commit.batch.delay'),
-                    {keep_state, Data1, ?COMMIT_BATCH_TIMEOUT(Data1)};
-                false ->
-                    Data2 = append_entries_to_followers(Data1),
-                    {keep_state, Data2, ?HEARTBEAT_TIMEOUT(Data2)}
-            end
-    end.
 
 -spec add_pending(
     From :: gen_server:from(),
@@ -3440,100 +3545,9 @@ cancel_pending_and_queued(Reason, #raft_state{queues = Queues, queued = Queued} 
     [wa_raft_queue:commit_cancelled(Queues, From, Reason, Priority) || _ := {From, Priority} <- maps:iterator(Queued, ordered)],
     NewData#raft_state{queued = #{}}.
 
--spec heartbeat(Peer :: #raft_identity{}, State :: #raft_state{}) -> #raft_state{}.
-heartbeat(Self, #raft_state{self = Self} = Data) ->
-    % Skip sending heartbeat to self
-    Data;
-heartbeat(
-    ?IDENTITY_REQUIRES_MIGRATION(_, FollowerId) = Sender,
-    #raft_state{
-        application = App,
-        table = Table,
-        name = Name,
-        log_view = View,
-        commit_index = CommitIndex,
-        next_indices = NextIndices,
-        match_indices = MatchIndices,
-        heartbeat_send_ts = HeartbeatSendTs,
-        first_current_term_log_index = TermStartIndex
-    } = State0
-) ->
-    FollowerNextIndex = maps:get(FollowerId, NextIndices, TermStartIndex),
-    PrevLogIndex = FollowerNextIndex - 1,
-    PrevLogTermRes = wa_raft_log:term(View, PrevLogIndex),
-    FollowerMatchIndex = maps:get(FollowerId, MatchIndices, 0),
-    FollowerMatchIndex =/= 0 andalso
-        ?RAFT_GATHER(Table, 'leader.follower.lag', CommitIndex - FollowerMatchIndex),
-    NowTs = erlang:monotonic_time(millisecond),
-    LastFollowerHeartbeatSendTs = maps:get(FollowerId, HeartbeatSendTs, undefined),
-    State1 = State0#raft_state{heartbeat_send_ts = HeartbeatSendTs#{FollowerId => NowTs}},
-    LastIndex = wa_raft_log:last_index(View),
-    case PrevLogTermRes of %% no log entry to replicate
-        not_found ->
-            ?RAFT_COUNT(Table, 'leader.heartbeat.not_ready'),
-            ?SERVER_LOG_DEBUG(leader, State1, "at ~0p sends empty heartbeat to follower ~0p at ~0p.",
-                [CommitIndex, FollowerId, FollowerNextIndex]),
-            % Send append entries request.
-            {ok, LastTerm} = wa_raft_log:term(View, LastIndex),
-            send_rpc(Sender, ?APPEND_ENTRIES(LastIndex, LastTerm, [], CommitIndex, 0), State1),
-            LastFollowerHeartbeatSendTs =/= undefined andalso
-                ?RAFT_GATHER(Table, 'leader.heartbeat.interval_ms', erlang:monotonic_time(millisecond) - LastFollowerHeartbeatSendTs),
-            State1;
-        _ ->
-            MaxLogEntries = ?RAFT_HEARTBEAT_MAX_ENTRIES(App, Table),
-            MaxHeartbeatSize = ?RAFT_HEARTBEAT_MAX_BYTES(App, Table),
-            Witnesses = config_witnesses(config(State0)),
-            Entries = case lists:member({Name, FollowerId}, Witnesses) of
-                true ->
-                    {ok, RawEntries} = wa_raft_log:get(View, FollowerNextIndex, MaxLogEntries, MaxHeartbeatSize),
-                    stub_entries_for_witness(RawEntries);
-                false ->
-                    {ok, RawEntries} = wa_raft_log:entries(View, FollowerNextIndex, MaxLogEntries, MaxHeartbeatSize),
-                    RawEntries
-            end,
-            {ok, PrevLogTerm} = PrevLogTermRes,
-            % track when we send out a heartbeat that is empty but also not at the end of the log
-            Entries =:= [] andalso PrevLogIndex =/= LastIndex andalso ?RAFT_COUNT(Table, 'leader.heartbeat.empty'),
-            ?RAFT_GATHER(Table, 'leader.heartbeat.size', length(Entries)),
-            ?SERVER_LOG_DEBUG(leader, State1, "at ~0p sends heartbeat to follower ~0p at ~0p with ~0p entr(ies).",
-                [CommitIndex, FollowerId, FollowerNextIndex, length(Entries)]),
-            % Compute trim index.
-            TrimIndex = lists:min(to_member_list(MatchIndices#{node() => LastIndex}, 0, config(State1))),
-            % Send append entries request.
-            CastResult = send_rpc(Sender, ?APPEND_ENTRIES(PrevLogIndex, PrevLogTerm, Entries, CommitIndex, TrimIndex), State1),
-            NewNextIndices =
-                case CastResult of
-                    ok ->
-                        % pipelining - move NextIndex after sending out logs. If a packet is lost, the follower's AppendEntriesResponse
-                        % will return its correct index
-                        NextIndices#{FollowerId => PrevLogIndex + length(Entries) + 1};
-                    _ ->
-                        NextIndices
-                end,
-            LastFollowerHeartbeatSendTs =/= undefined andalso
-                ?RAFT_GATHER(Table, 'leader.heartbeat.interval_ms', erlang:monotonic_time(millisecond) - LastFollowerHeartbeatSendTs),
-            State1#raft_state{next_indices = NewNextIndices}
-    end.
-
--spec stub_entries_for_witness([wa_raft_log:log_entry() | binary()]) -> [wa_raft_log:log_entry() | binary()].
-stub_entries_for_witness(Entries) ->
-    [stub_entry(E) || E <- Entries].
-
--spec stub_entry(wa_raft_log:log_entry() | binary()) -> wa_raft_log:log_entry() | binary().
-stub_entry(Binary) when is_binary(Binary) ->
-    Binary;
-stub_entry({Term, undefined}) ->
-    {Term, undefined};
-stub_entry({Term, {Key, Cmd}}) ->
-    {Term, {Key, stub_command(Key, Cmd)}};
-stub_entry({Term, {Key, Label, Cmd}}) ->
-    {Term, {Key, Label, stub_command(Key, Cmd)}}.
-
--spec stub_command(wa_raft_acceptor:key(), wa_raft_acceptor:command()) -> wa_raft_acceptor:command().
-stub_command(?READ_OP, noop) -> noop_omitted;
-stub_command(_, noop) -> noop;
-stub_command(_, {config, _} = ConfigCmd) -> ConfigCmd;
-stub_command(_, _) -> noop_omitted.
+%%------------------------------------------------------------------------------
+%% RAFT Server - State Machine Implementation - Leader - Handover
+%%------------------------------------------------------------------------------
 
 -spec get_handover_eligibility_match_cutoff(State :: #raft_state{}) -> wa_raft_log:log_index().
 get_handover_eligibility_match_cutoff(#raft_state{application = App, table = Table, log_view = View}) ->
@@ -3586,7 +3600,7 @@ is_eligible_for_handover_impl(
     end.
 
 %%------------------------------------------------------------------------------
-%% RAFT Server - State Machine Implementation - Configuration Changes
+%% RAFT Server - State Machine Implementation - Leader - Configuration Changes
 %%------------------------------------------------------------------------------
 
 -spec leader_config_change_allowed(
@@ -4149,24 +4163,6 @@ cast(
             ?RAFT_LOG_DEBUG("Cast to ~p error ~100p", [Destination, E]),
             {error, E}
     end.
-
--spec maybe_heartbeat(#raft_state{}) -> #raft_state{}.
-maybe_heartbeat(#raft_state{table = Table} = State) ->
-    case should_heartbeat(State) of
-        true ->
-            ?RAFT_COUNT(Table, 'leader.heartbeat'),
-            append_entries_to_followers(State);
-        false ->
-            State
-    end.
-
--spec should_heartbeat(#raft_state{}) -> boolean().
-should_heartbeat(#raft_state{handover = Handover}) when Handover =/= undefined ->
-    false;
-should_heartbeat(#raft_state{application = App, table = Table, heartbeat_send_ts = HeartbeatSendTs}) ->
-    Latest = lists:max(maps:values(HeartbeatSendTs)),
-    Current = erlang:monotonic_time(millisecond),
-    Current - Latest > ?RAFT_HEARTBEAT_INTERVAL(App, Table).
 
 %% Update the server's current term info in `wa_raft_info`.
 -spec update_current_term_info(
