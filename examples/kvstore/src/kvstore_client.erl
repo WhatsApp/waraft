@@ -3,10 +3,12 @@
 %%% This source code is licensed under the Apache 2.0 license found in
 %%% the LICENSE file in the root directory of this source tree.
 
-%%%
-%%% This module provides APIs for accessing storage.
-%%%
 -module(kvstore_client).
+
+-moduledoc """
+This module provides APIs for accessing storage.
+""".
+
 -compile(warn_missing_spec_all).
 
 -export([

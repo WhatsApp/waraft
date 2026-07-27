@@ -2,14 +2,17 @@
 %%%
 %%% This source code is licensed under the Apache 2.0 license found in
 %%% the LICENSE file in the root directory of this source tree.
-%%%
-%%% This module implements RPC handling for the RAFT consensus protocol. See the
-%%% RAFT spec at https://raft.github.io/. A wa_raft instance is a participant in
-%%% a consensus group. Each participant plays a certain role (follower,
-%%% leader or candidate). The mission of a consensus group is to
-%%% implement a replicated state machine in a distributed cluster.
 
 -module(wa_raft_server).
+
+-moduledoc """
+This module implements RPC handling for the RAFT consensus protocol. See the
+RAFT spec at https://raft.github.io/. A wa_raft instance is a participant in
+a consensus group. Each participant plays a certain role (follower,
+leader or candidate). The mission of a consensus group is to
+implement a replicated state machine in a distributed cluster.
+""".
+
 -compile(warn_missing_spec_all).
 -behaviour(gen_statem).
 -compile({inline, [require_valid_state/1]}).
