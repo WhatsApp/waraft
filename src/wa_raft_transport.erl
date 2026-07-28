@@ -176,6 +176,9 @@
     {continue, NewState :: term()} |
     {stop, Reason :: term(), NewState :: term()}.
 
+%% Optional callback for when a transport has completed.
+-callback transport_complete(ID :: transport_id()) -> ok.
+
 %% Optional callback for performing any shutdown operations.
 -callback transport_terminate(Reason :: term(), State :: term()) -> term().
 
@@ -185,6 +188,7 @@
 -callback transport_accept(Meta :: meta(), IncomingBytes :: non_neg_integer()) -> ok | {error, Reason :: term()}.
 
 -optional_callbacks([
+    transport_complete/1,
     transport_terminate/2,
     transport_accept/2
 ]).
@@ -929,11 +933,31 @@ join_names("", Name) -> Name;
 join_names(Dir, Name) -> [Dir, $/, Name].
 
 -spec maybe_notify_complete(transport_id(), transport_info(), #state{}) -> ok | {error, term()}.
-maybe_notify_complete(_ID, #{type := sender}, _State) ->
+maybe_notify_complete(ID, #{type := receiver, status := completed, module := Module} = Info, State) ->
+    case erlang:function_exported(Module, transport_complete, 1) of
+        true ->
+            try Module:transport_complete(ID) of
+                ok -> ok
+            catch
+                C:R:S ->
+                    ?RAFT_LOG_NOTICE(
+                        "module ~p failed while handing completion for transport ~0p~n~s",
+                        [Module, ID, erl_error:format_exception(C, R, S)]
+                    )
+            end;
+        false ->
+            ok
+    end,
+    maybe_notify_complete_impl(ID, Info, State);
+maybe_notify_complete(ID, Info, State) ->
+    maybe_notify_complete_impl(ID, Info, State).
+
+-spec maybe_notify_complete_impl(transport_id(), transport_info(), #state{}) -> ok | {error, term()}.
+maybe_notify_complete_impl(_ID, #{type := sender}, _State) ->
     ok;
-maybe_notify_complete(_ID, #{status := Status}, _State) when Status =/= completed ->
+maybe_notify_complete_impl(_ID, #{status := Status}, _State) when Status =/= completed ->
     ok;
-maybe_notify_complete(ID, #{type := receiver, root := Root, meta := #{type := snapshot, table := Table, partition := Partition, position := LogPos}}, #state{}) ->
+maybe_notify_complete_impl(ID, #{type := receiver, root := Root, meta := #{type := snapshot, table := Table, partition := Partition, position := LogPos}}, #state{}) ->
     try wa_raft_server:snapshot_available(wa_raft_server:registered_name(Table, Partition), Root, LogPos) of
         ok ->
             ok;
@@ -951,7 +975,7 @@ maybe_notify_complete(ID, #{type := receiver, root := Root, meta := #{type := sn
             ),
             {error, {T, E, S}}
     end;
-maybe_notify_complete(ID, _Info, #state{}) ->
+maybe_notify_complete_impl(ID, _Info, #state{}) ->
     ?RAFT_LOG_NOTICE("wa_raft_transport finished transport ~p but does not know what to do with it", [ID]).
 
 -spec maybe_notify(transport_id(), transport_info()) -> transport_info().
