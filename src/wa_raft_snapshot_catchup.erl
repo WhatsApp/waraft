@@ -144,40 +144,50 @@ handle_cast(?CATCHUP(App, Name, Node, Table, Partition, Witness), State0) ->
     Now = erlang:monotonic_time(millisecond),
     case allowed(Now, Name, Node, State0) of
         {true, #state{transports = Transports, snapshots = Snapshots, overload_backoffs = OverloadBackoffs} = State1} ->
-            try
-                {#raft_log_pos{index = Index, term = Term} = LogPos, Path} = create_snapshot(Table, Partition, Witness),
-                case wa_raft_transport:start_snapshot_transfer(Node, Table, Partition, LogPos, Path, Witness, infinity) of
-                    {error, Reason} when Reason =:= receiver_overloaded; Reason =:= receiver_disk_full ->
-                        ?RAFT_LOG_NOTICE(
-                            "destination node ~0p rejected new transport for ~0p:~0p due to ~0p, try again later",
-                            [Node, Table, Partition, Reason]
-                        ),
-                        NewOverloadBackoff = Now + ?RAFT_SNAPSHOT_CATCHUP_OVERLOADED_BACKOFF_MS(App, Table),
-                        NewOverloadBackoffs = OverloadBackoffs#{Node => NewOverloadBackoff},
-                        {noreply, State1#state{overload_backoffs = NewOverloadBackoffs}};
-                    {ok, ID} ->
-                        ?RAFT_LOG_NOTICE(
-                            "started sending snapshot for ~0p:~0p at ~0p:~0p over transport ~0p",
-                            [Table, Partition, Index, Term, ID]
-                        ),
-                        NewTransport = #transport{
-                            app = App,
-                            table = Table,
-                            partition = Partition,
-                            id = ID,
-                            snapshot = {LogPos, Witness}
-                        },
-                        NewTransports = Transports#{{Name, Node} => NewTransport},
-                        NewSnapshots = maps:update_with({Table, Partition, LogPos, Witness}, fun(V) -> V + 1 end, 1, Snapshots),
-                        {noreply, State1#state{transports = NewTransports, snapshots = NewSnapshots}}
-                end
-            catch
-                _T:_E:S ->
-                    ?RAFT_LOG_ERROR(
-                        "failed to start accepted snapshot transport of ~0p:~0p to ~0p at ~p",
-                        [Table, Partition, Node, S]
+            case precheck(App, Node, Table, Witness) of
+                {error, PrecheckReason} ->
+                    ?RAFT_LOG_NOTICE(
+                        "destination node ~0p declined a transport for ~0p:~0p due to ~0p before snapshot creation, try again later",
+                        [Node, Table, Partition, PrecheckReason]
                     ),
-                    {noreply, State1}
+                    PrecheckBackoff = Now + ?RAFT_SNAPSHOT_CATCHUP_OVERLOADED_BACKOFF_MS(App, Table),
+                    {noreply, State1#state{overload_backoffs = OverloadBackoffs#{Node => PrecheckBackoff}}};
+                ok ->
+                    try
+                        {#raft_log_pos{index = Index, term = Term} = LogPos, Path} = create_snapshot(Table, Partition, Witness),
+                        case wa_raft_transport:start_snapshot_transfer(Node, Table, Partition, LogPos, Path, Witness, infinity) of
+                            {error, Reason} when Reason =:= receiver_overloaded; Reason =:= receiver_disk_full ->
+                                ?RAFT_LOG_NOTICE(
+                                    "destination node ~0p rejected new transport for ~0p:~0p due to ~0p, try again later",
+                                    [Node, Table, Partition, Reason]
+                                ),
+                                NewOverloadBackoff = Now + ?RAFT_SNAPSHOT_CATCHUP_OVERLOADED_BACKOFF_MS(App, Table),
+                                NewOverloadBackoffs = OverloadBackoffs#{Node => NewOverloadBackoff},
+                                {noreply, State1#state{overload_backoffs = NewOverloadBackoffs}};
+                            {ok, ID} ->
+                                ?RAFT_LOG_NOTICE(
+                                    "started sending snapshot for ~0p:~0p at ~0p:~0p over transport ~0p",
+                                    [Table, Partition, Index, Term, ID]
+                                ),
+                                NewTransport = #transport{
+                                    app = App,
+                                    table = Table,
+                                    partition = Partition,
+                                    id = ID,
+                                    snapshot = {LogPos, Witness}
+                                },
+                                NewTransports = Transports#{{Name, Node} => NewTransport},
+                                NewSnapshots = maps:update_with({Table, Partition, LogPos, Witness}, fun(V) -> V + 1 end, 1, Snapshots),
+                                {noreply, State1#state{transports = NewTransports, snapshots = NewSnapshots}}
+                        end
+                    catch
+                        _T:_E:S ->
+                            ?RAFT_LOG_ERROR(
+                                "failed to start accepted snapshot transport of ~0p:~0p to ~0p at ~p",
+                                [Table, Partition, Node, S]
+                            ),
+                            {noreply, State1}
+                    end
             end;
         {false, State1} ->
             {noreply, State1}
@@ -206,6 +216,24 @@ terminate(_Reason, #state{transports = Transports, snapshots = Snapshots}) ->
      || {Table, Partition, LogPos, Witness} := _ <- Snapshots
     ],
     ok.
+
+-spec precheck(App :: atom(), Node :: node(), Table :: wa_raft:table(), Witness :: boolean()) ->
+    ok | {error, Reason :: term()}.
+precheck(App, Node, Table, Witness) ->
+    case ?RAFT_SNAPSHOT_CATCHUP_PRECHECK(App, Table) of
+        false ->
+            ok;
+        true ->
+            case wa_raft_transport:may_accept(Node, Witness, ?RAFT_SNAPSHOT_CATCHUP_PRECHECK_TIMEOUT_MS(App, Table)) of
+                {error, receiver_overloaded} ->
+                    ?RAFT_COUNT(Table, 'snapshot_catchup.precheck.rejected'),
+                    {error, receiver_overloaded};
+                _ ->
+                    % Peers that cannot answer the precheck are treated as accepting so that
+                    % the authoritative check made when the transport is offered still decides.
+                    ok
+            end
+    end.
 
 -spec allowed(Now :: integer(), Name :: atom(), Node :: node(), State :: #state{}) -> {boolean(), #state{}}.
 allowed(Now, Name, Node, #state{transports = Transports, overload_backoffs = OverloadBackoffs, retry_backoffs = RetryBackoffs} = State0) ->

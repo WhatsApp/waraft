@@ -315,6 +315,15 @@
 %% to a follower that previously failed to receive a storage snapshot.
 -define(RAFT_SNAPSHOT_CATCHUP_FAILED_BACKOFF_MS, raft_snapshot_catchup_failed_backoff_ms).
 -define(RAFT_SNAPSHOT_CATCHUP_FAILED_BACKOFF_MS(App, Table), ?RAFT_TABLE_CONFIG(App, Table, ?RAFT_SNAPSHOT_CATCHUP_FAILED_BACKOFF_MS, 10 * 1000)).
+%% Whether leaders should ask a follower whether it can accept a snapshot before
+%% creating the storage snapshot destined for it. The follower still performs the
+%% authoritative check when the transport itself is offered.
+-define(RAFT_SNAPSHOT_CATCHUP_PRECHECK, raft_snapshot_catchup_precheck).
+-define(RAFT_SNAPSHOT_CATCHUP_PRECHECK(App, Table), ?RAFT_TABLE_CONFIG(App, Table, ?RAFT_SNAPSHOT_CATCHUP_PRECHECK, false) =:= true).
+%% Number of milliseconds to wait for a follower to answer the snapshot catchup
+%% precheck before falling back to creating the snapshot.
+-define(RAFT_SNAPSHOT_CATCHUP_PRECHECK_TIMEOUT_MS, raft_snapshot_catchup_precheck_timeout_ms).
+-define(RAFT_SNAPSHOT_CATCHUP_PRECHECK_TIMEOUT_MS(App, Table), ?RAFT_TABLE_CONFIG(App, Table, ?RAFT_SNAPSHOT_CATCHUP_PRECHECK_TIMEOUT_MS, 1000)).
 
 %% Number of omitted log entries to skip actually applying to storage when
 %% operating as a witness.

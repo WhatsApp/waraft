@@ -26,6 +26,7 @@
 
 %% Snapshot Transfer API
 -export([
+    may_accept/3,
     start_snapshot_transfer/6,
     start_snapshot_transfer/7,
     transfer_snapshot/7
@@ -99,6 +100,8 @@
 
 %% Counter - in-flight witness receives
 -define(RAFT_TRANSPORT_COUNTER_ACTIVE_WITNESS_RECEIVES, 2).
+
+-define(MAY_ACCEPT(Witness), {may_accept, Witness}).
 
 -type transport_id() :: pos_integer().
 -type transport_info() :: #{
@@ -241,6 +244,23 @@ transfer(Peer, Table, Partition, Root, Timeout) ->
 %%% ------------------------------------------------------------------------
 %%%  Snapshot Transfer API
 %%%
+
+%% Ask a peer whether it currently has capacity to accept an incoming snapshot
+%% transport. This is advisory and reserves nothing: the peer performs the
+%% authoritative check again when the transport is offered, so a concurrent
+%% sender may still consume the last slot in between. Peers that do not support
+%% the query answer 'unsupported' so that callers fall back to offering the
+%% transport directly.
+-spec may_accept(Peer :: atom(), Witness :: boolean(), Timeout :: timeout()) ->
+    ok | {error, receiver_overloaded} | {error, unsupported}.
+may_accept(Peer, Witness, Timeout) ->
+    try gen_server:call({?MODULE, Peer}, ?MAY_ACCEPT(Witness), Timeout) of
+        ok                                  -> ok;
+        {error, receiver_overloaded}        -> {error, receiver_overloaded};
+        _                                   -> {error, unsupported}
+    catch
+        exit:_ -> {error, unsupported}
+    end.
 
 -spec start_snapshot_transfer(Peer :: atom(), Table :: wa_raft:table(), Partition :: wa_raft:partition(), LogPos :: wa_raft_log:log_pos(), Root :: string(), Witness :: boolean()) -> {ok, ID :: transport_id()} | {error, Reason :: term()}.
 start_snapshot_transfer(Peer, Table, Partition, LogPos, Root, Witness) ->
@@ -464,10 +484,13 @@ init(_) ->
 -spec handle_call(Request, From :: gen_server:from(), State :: #state{}) -> {reply, Reply :: term(), NewState :: #state{}} | {noreply, NewState :: #state{}}
     when
         Request ::
+            {may_accept, Witness :: boolean()} |
             {start, Peer :: node(), Meta :: meta(), Root :: string()} |
             {start_wait, Peer :: node(), Meta :: meta(), Root :: string()} |
             {transport, ID :: transport_id(), Peer :: node(), Module :: module(), Meta :: meta(), Files :: [{file_id(), RelPath :: string(), Size :: integer()}]} |
             {cancel, ID :: transport_id(), Reason :: term()}.
+handle_call(?MAY_ACCEPT(Witness), _From, #state{counters = Counters} = State) ->
+    {reply, check_capacity(Witness, Counters), State};
 handle_call({start, Peer, Meta, Root}, _From, #state{counters = Counters} = State) ->
     {reply, handle_transport_start(undefined, Peer, Meta, Root, Counters), State};
 handle_call({start_wait, Peer, Meta, Root}, From, #state{counters = Counters} = State) ->
@@ -479,15 +502,10 @@ handle_call({transport, ID, Peer, Module, Meta, Files}, From, #state{counters = 
     Table = maps:get(table, Meta, undefined),
     try
         IsWitness = maps:get(witness, Meta, false),
-        {MaxIncomingSnapshotTransfers, NumActiveReceives} = case IsWitness of
-            true  -> {?RAFT_MAX_CONCURRENT_INCOMING_WITNESS_SNAPSHOT_TRANSFERS(), counters:get(Counters, ?RAFT_TRANSPORT_COUNTER_ACTIVE_WITNESS_RECEIVES)};
-            false -> {?RAFT_MAX_CONCURRENT_INCOMING_SNAPSHOT_TRANSFERS(), counters:get(Counters, ?RAFT_TRANSPORT_COUNTER_ACTIVE_RECEIVES)}
-        end,
-        ShouldThrottle = NumActiveReceives >= MaxIncomingSnapshotTransfers,
-        Admission = case ShouldThrottle of
-            true ->
-                {error, receiver_overloaded};
-            false ->
+        Admission = case check_capacity(IsWitness, Counters) of
+            {error, _} = Throttled ->
+                Throttled;
+            ok ->
                 IncomingBytes = lists:sum([Size || {_FileID, _Name, Size} <- Files]),
                 transport_accept(Module, Meta, IncomingBytes)
         end,
@@ -608,7 +626,7 @@ handle_call({cancel, ID, Reason}, _From, #state{counters = Counters} = State) ->
     {reply, Reply, State};
 handle_call(Request, _From, #state{} = State) ->
     ?RAFT_LOG_WARNING("wa_raft_transport received unrecognized call ~p", [Request]),
-    {noreply, State}.
+    {reply, {error, unsupported}, State}.
 
 -spec handle_cast(Request, State :: #state{}) -> {noreply, NewState :: #state{}}
     when Request :: {complete, ID :: transport_id(), FileID :: file_id(), Status :: term()}.
@@ -850,6 +868,22 @@ transport_module(#{table := Table, partition := Partition}) ->
     wa_raft_transport:registered_module(Table, Partition);
 transport_module(_Meta) ->
     ?RAFT_DEFAULT_TRANSPORT_MODULE.
+
+%% Check whether this node is below its limit for concurrent incoming snapshot
+%% transports. Depends only on the witness flag and the active receive counters,
+%% never on the transported files, so it can also answer a precheck from a sender
+%% that has not created its snapshot yet.
+-spec check_capacity(Witness :: boolean(), Counters :: counters:counters_ref()) ->
+    ok | {error, receiver_overloaded}.
+check_capacity(Witness, Counters) ->
+    {MaxIncomingSnapshotTransfers, NumActiveReceives} = case Witness of
+        true  -> {?RAFT_MAX_CONCURRENT_INCOMING_WITNESS_SNAPSHOT_TRANSFERS(), counters:get(Counters, ?RAFT_TRANSPORT_COUNTER_ACTIVE_WITNESS_RECEIVES)};
+        false -> {?RAFT_MAX_CONCURRENT_INCOMING_SNAPSHOT_TRANSFERS(), counters:get(Counters, ?RAFT_TRANSPORT_COUNTER_ACTIVE_RECEIVES)}
+    end,
+    case NumActiveReceives >= MaxIncomingSnapshotTransfers of
+        true  -> {error, receiver_overloaded};
+        false -> ok
+    end.
 
 %% Ask the transport implementation whether it can accept an incoming transport of
 %% IncomingBytes total. Implementations that do not export the optional callback always accept.
