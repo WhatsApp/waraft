@@ -306,7 +306,7 @@
 %% Number of milliseconds to wait before attempting to send a new storage snapshot
 %% to a follower that previously rejected a snapshot due to being overloaded.
 -define(RAFT_SNAPSHOT_CATCHUP_OVERLOADED_BACKOFF_MS, raft_snapshot_catchup_overloaded_backoff_ms).
--define(RAFT_SNAPSHOT_CATCHUP_OVERLOADED_BACKOFF_MS(App, Table), ?RAFT_TABLE_CONFIG(App, Table, ?RAFT_SNAPSHOT_CATCHUP_OVERLOADED_BACKOFF_MS, 1000)).
+-define(RAFT_SNAPSHOT_CATCHUP_OVERLOADED_BACKOFF_MS(App, Table), ?RAFT_TABLE_CONFIG(App, Table, ?RAFT_SNAPSHOT_CATCHUP_OVERLOADED_BACKOFF_MS, 10 * 1000)).
 %% Number of milliseconds to wait before attempting to send a new storage snapshot
 %% to a follower that previously successfully received a storage snapshot.
 -define(RAFT_SNAPSHOT_CATCHUP_COMPLETED_BACKOFF_MS, raft_snapshot_catchup_completed_backoff_ms).
