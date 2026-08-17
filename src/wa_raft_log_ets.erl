@@ -83,15 +83,17 @@ fold(Log, Start, End, SizeLimit, Func, Acc) ->
     Func :: fun((Index :: wa_raft_log:log_index(), Size :: non_neg_integer(), Entry :: wa_raft_log:log_entry(), Acc) -> Acc),
     Acc
 ) -> {ok, Acc}.
+fold_impl(_Log, '$end_of_table', _End, _Size, _SizeLimit, _Func, Acc) ->
+    {ok, Acc};
 fold_impl(_Log, Start, End, Size, SizeLimit, _Func, Acc) when End < Start; Size >= SizeLimit ->
     {ok, Acc};
 fold_impl(#raft_log{name = Name} = Log, Start, End, Size, SizeLimit, Func, Acc) ->
-    case ets:lookup(Name, Start) of
-        [{Start, Entry}] ->
+    case ets:lookup_element(Name, Start, 2, undefined) of
+        undefined ->
+            fold_impl(Log, ets:next(Name, Start), End, Size, SizeLimit, Func, Acc);
+        Entry ->
             EntrySize = erlang:external_size(Entry),
-            fold_impl(Log, ets:next(Name, Start), End, Size + EntrySize, SizeLimit, Func, Func(Start, EntrySize, Entry, Acc));
-        [] ->
-            fold_impl(Log, ets:next(Name, Start), End, Size, SizeLimit, Func, Acc)
+            fold_impl(Log, ets:next(Name, Start), End, Size + EntrySize, SizeLimit, Func, Func(Start, EntrySize, Entry, Acc))
     end.
 
 -spec fold_terms(Log :: wa_raft_log:log(),
@@ -109,21 +111,23 @@ fold_terms(Log, Start, End, Func, Acc) ->
     Func :: fun((Index :: wa_raft_log:log_index(), Term :: wa_raft_log:log_term(), Acc) -> Acc),
     Acc
     ) -> {ok, Acc}.
+fold_terms_impl(_Log, '$end_of_table', _End, _Func, Acc) ->
+    {ok, Acc};
 fold_terms_impl(_Log, Start, End, _Func, Acc) when End < Start ->
     {ok, Acc};
 fold_terms_impl(#raft_log{name = Name} = Log, Start, End, Func, Acc) ->
-    case ets:lookup(Name, Start) of
-        [{Start, {Term, _Op}}] ->
+    case ets:lookup_element(Name, Start, 2, undefined) of
+        {Term, _Op} ->
             fold_terms_impl(Log, ets:next(Name, Start), End, Func, Func(Start, Term, Acc));
-        [] ->
+        undefined ->
             fold_terms_impl(Log, ets:next(Name, Start), End, Func, Acc)
         end.
 
 -spec get(Log :: wa_raft_log:log(), Index :: wa_raft_log:log_index()) -> {ok, Entry :: wa_raft_log:log_entry()} | not_found.
 get(#raft_log{name = Name}, Index) ->
-    case ets:lookup(Name, Index) of
-        [{Index, Entry}] -> {ok, Entry};
-        []               -> not_found
+    case ets:lookup_element(Name, Index, 2, undefined) of
+        undefined -> not_found;
+        Entry -> {ok, Entry}
     end.
 
 -spec term(Log :: wa_raft_log:log(), Index :: wa_raft_log:log_index()) -> {ok, Term :: wa_raft_log:log_term()} | not_found.

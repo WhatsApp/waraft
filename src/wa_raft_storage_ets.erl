@@ -71,16 +71,13 @@ storage_position(#state{storage = Storage}) ->
 
 -spec storage_label(#state{}) -> {ok, Label :: wa_raft_label:label()}.
 storage_label(#state{storage = Storage}) ->
-    case ets:lookup(Storage, ?LABEL_TAG) of
-        [{_, Label}] -> {ok, Label};
-        []           -> {ok, undefined}
-    end.
+    {ok, ets:lookup_element(Storage, ?LABEL_TAG, 2, undefined)}.
 
 -spec storage_config(#state{}) -> {ok, wa_raft_log:log_pos(), wa_raft_server:config()} | undefined.
 storage_config(#state{storage = Storage}) ->
-    case ets:lookup(Storage, {?METADATA_TAG, config}) of
-        [{_, {Version, Value}}] -> {ok, Version, Value};
-        []                      -> undefined
+    case ets:lookup_element(Storage, {?METADATA_TAG, config}, 2, undefined) of
+        {Version, Value} -> {ok, Version, Value};
+        undefined -> undefined
     end.
 
 -spec storage_incomplete(#state{}) -> boolean().
