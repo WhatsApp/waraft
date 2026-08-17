@@ -7,9 +7,6 @@
 -compile(warn_missing_spec_all).
 -behaviour(gen_server).
 
--include_lib("wa_raft/include/wa_raft.hrl").
--include_lib("wa_raft/include/wa_raft_logger.hrl").
-
 %% OTP supervision
 -export([
     child_spec/2,
@@ -24,6 +21,9 @@
     handle_info/2,
     terminate/2
 ]).
+
+-include_lib("wa_raft/include/wa_raft.hrl").
+-include_lib("wa_raft/include/wa_raft_logger.hrl").
 
 -define(CONTINUE_TIMEOUT, 0).
 

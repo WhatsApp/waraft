@@ -14,8 +14,8 @@ implement a replicated state machine in a distributed cluster.
 """.
 
 -compile(warn_missing_spec_all).
--behaviour(gen_statem).
 -compile({inline, [require_valid_state/1]}).
+-behaviour(gen_statem).
 
 %%------------------------------------------------------------------------------
 %% RAFT Server - OTP Supervision
@@ -190,36 +190,6 @@ implement a replicated state machine in a distributed cluster.
 -include_lib("wa_raft/include/wa_raft_rpc.hrl").
 
 %%------------------------------------------------------------------------------
-
-%% Section 5.2. Randomized election timeout for fast election and to avoid split votes
--define(ELECTION_TIMEOUT(State), {state_timeout, random_election_timeout(State), election}).
-
-%% Timeout in milliseconds before the next heartbeat is to be sent by a RAFT leader with no pending log entries
--define(HEARTBEAT_TIMEOUT(State),    {state_timeout, ?RAFT_HEARTBEAT_INTERVAL(State#raft_state.application, State#raft_state.table), heartbeat}).
-%% Timeout in milliseconds before the next heartbeat is to be sent by a RAFT leader with pending log entries
--define(COMMIT_BATCH_TIMEOUT(State), {state_timeout, ?RAFT_COMMIT_BATCH_INTERVAL(State#raft_state.application, State#raft_state.table), batch_commit}).
-
-%%------------------------------------------------------------------------------
-
--define(SERVER_LOG_PREFIX, "Server[~0p, term ~0p, ~0p] ").
--define(SERVER_LOG_FORMAT(Format), ?SERVER_LOG_PREFIX Format).
-
--define(SERVER_LOG_ARGS(State, Data, Args), [(Data)#raft_state.name, (Data)#raft_state.current_term, require_valid_state(State) | Args]).
-
-% elp:ignore W0002 (unused_macro) - Keeping for consistency
--define(SERVER_LOG_ERROR(Data, Format, Args), ?SERVER_LOG_ERROR(?FUNCTION_NAME, Data, Format, Args)).
--define(SERVER_LOG_ERROR(State, Data, Format, Args), ?RAFT_LOG_ERROR(?SERVER_LOG_FORMAT(Format), ?SERVER_LOG_ARGS(State, Data, Args))).
-
--define(SERVER_LOG_WARNING(Data, Format, Args), ?SERVER_LOG_WARNING(?FUNCTION_NAME, Data, Format, Args)).
--define(SERVER_LOG_WARNING(State, Data, Format, Args), ?RAFT_LOG_WARNING(?SERVER_LOG_FORMAT(Format), ?SERVER_LOG_ARGS(State, Data, Args))).
-
--define(SERVER_LOG_NOTICE(Data, Format, Args), ?SERVER_LOG_NOTICE(?FUNCTION_NAME, Data, Format, Args)).
--define(SERVER_LOG_NOTICE(State, Data, Format, Args), ?RAFT_LOG_NOTICE(?SERVER_LOG_FORMAT(Format), ?SERVER_LOG_ARGS(State, Data, Args))).
-
--define(SERVER_LOG_DEBUG(Data, Format, Args), ?SERVER_LOG_DEBUG(?FUNCTION_NAME, Data, Format, Args)).
--define(SERVER_LOG_DEBUG(State, Data, Format, Args), ?RAFT_LOG_DEBUG(?SERVER_LOG_FORMAT(Format), ?SERVER_LOG_ARGS(State, Data, Args))).
-
-%%------------------------------------------------------------------------------
 %% RAFT Server - Public Types
 %%------------------------------------------------------------------------------
 
@@ -358,6 +328,36 @@ implement a replicated state machine in a distributed cluster.
     {demote_to_witness, Peer :: peer()}.
 
 -type config_action() :: refresh_action() | membership_action().
+
+%%------------------------------------------------------------------------------
+
+%% Section 5.2. Randomized election timeout for fast election and to avoid split votes
+-define(ELECTION_TIMEOUT(State), {state_timeout, random_election_timeout(State), election}).
+
+%% Timeout in milliseconds before the next heartbeat is to be sent by a RAFT leader with no pending log entries
+-define(HEARTBEAT_TIMEOUT(State),    {state_timeout, ?RAFT_HEARTBEAT_INTERVAL(State#raft_state.application, State#raft_state.table), heartbeat}).
+%% Timeout in milliseconds before the next heartbeat is to be sent by a RAFT leader with pending log entries
+-define(COMMIT_BATCH_TIMEOUT(State), {state_timeout, ?RAFT_COMMIT_BATCH_INTERVAL(State#raft_state.application, State#raft_state.table), batch_commit}).
+
+%%------------------------------------------------------------------------------
+
+-define(SERVER_LOG_PREFIX, "Server[~0p, term ~0p, ~0p] ").
+-define(SERVER_LOG_FORMAT(Format), ?SERVER_LOG_PREFIX Format).
+
+-define(SERVER_LOG_ARGS(State, Data, Args), [(Data)#raft_state.name, (Data)#raft_state.current_term, require_valid_state(State) | Args]).
+
+% elp:ignore W0002 (unused_macro) - Keeping for consistency
+-define(SERVER_LOG_ERROR(Data, Format, Args), ?SERVER_LOG_ERROR(?FUNCTION_NAME, Data, Format, Args)).
+-define(SERVER_LOG_ERROR(State, Data, Format, Args), ?RAFT_LOG_ERROR(?SERVER_LOG_FORMAT(Format), ?SERVER_LOG_ARGS(State, Data, Args))).
+
+-define(SERVER_LOG_WARNING(Data, Format, Args), ?SERVER_LOG_WARNING(?FUNCTION_NAME, Data, Format, Args)).
+-define(SERVER_LOG_WARNING(State, Data, Format, Args), ?RAFT_LOG_WARNING(?SERVER_LOG_FORMAT(Format), ?SERVER_LOG_ARGS(State, Data, Args))).
+
+-define(SERVER_LOG_NOTICE(Data, Format, Args), ?SERVER_LOG_NOTICE(?FUNCTION_NAME, Data, Format, Args)).
+-define(SERVER_LOG_NOTICE(State, Data, Format, Args), ?RAFT_LOG_NOTICE(?SERVER_LOG_FORMAT(Format), ?SERVER_LOG_ARGS(State, Data, Args))).
+
+-define(SERVER_LOG_DEBUG(Data, Format, Args), ?SERVER_LOG_DEBUG(?FUNCTION_NAME, Data, Format, Args)).
+-define(SERVER_LOG_DEBUG(State, Data, Format, Args), ?RAFT_LOG_DEBUG(?SERVER_LOG_FORMAT(Format), ?SERVER_LOG_ARGS(State, Data, Args))).
 
 %%------------------------------------------------------------------------------
 %% RAFT Server - OTP Supervision

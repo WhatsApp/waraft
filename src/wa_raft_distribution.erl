@@ -16,13 +16,13 @@ distribution.
     cast/3
 ]).
 
--include_lib("wa_raft/include/wa_raft.hrl").
-
--type dest_addr() :: {Name :: atom(), Node :: node()}.
-
 -export_type([
     dest_addr/0
 ]).
+
+-include_lib("wa_raft/include/wa_raft.hrl").
+
+-type dest_addr() :: {Name :: atom(), Node :: node()}.
 
 %%% ------------------------------------------------------------------------
 %%%  Behaviour callbacks

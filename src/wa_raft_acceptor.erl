@@ -77,15 +77,6 @@ This module implements the front-end process for accepting commits / reads
 -include_lib("wa_raft/include/wa_raft.hrl").
 -include_lib("wa_raft/include/wa_raft_logger.hrl").
 
-%% Request type macros
--define(READ_REQUEST(Command, MinIndex), {read, Command, MinIndex}).
--define(COMMIT_REQUEST(Op, Priority), {commit, Op, Priority}).
--define(COMMIT_ASYNC_REQUEST(From, Op, Priority), {commit, From, Op, Priority}).
-
-%% Commit op type macros
--define(OP_DEFAULT(Op), {default, Op}).
--define(OP_ADJUST_CONFIG(Action, Index), {adjust_config, Action, Index}).
-
 -type command() :: noop_command() | noop_omitted_command() | config_command() | dynamic().
 -type noop_command() :: noop.
 -type noop_omitted_command() :: noop_omitted.
@@ -103,22 +94,31 @@ This module implements the front-end process for accepting commits / reads
 -type common_error_type() :: not_supported | not_leader | commit_stalled | {notify_redirect, Peer :: node()}.
 -type common_error() :: {error, common_error_type()}.
 
--type read_request() :: ?READ_REQUEST(Command :: command(), MinIndex :: wa_raft_log:log_index() | undefined).
-
 -type read_error_type() :: read_queue_full | apply_queue_full | common_error_type().
 -type read_error() :: {error, read_error_type()}.
 -type read_result() :: Result :: dynamic() | Error :: read_error() | call_error().
 
--type commit_op() :: default_op() | adjust_config_op().
--type default_op() :: ?OP_DEFAULT(Op :: op()).
--type adjust_config_op() :: ?OP_ADJUST_CONFIG(Action :: wa_raft_server:config_action(), Index :: wa_raft_log:log_index() | undefined).
-
--type commit_request() :: ?COMMIT_REQUEST(Op :: commit_op(), Priority :: priority()).
--type commit_async_request() :: ?COMMIT_ASYNC_REQUEST(From :: from(), Op :: commit_op(), Priority :: priority()).
-
 -type commit_error_type() :: commit_queue_full | apply_queue_full | cancelled | common_error_type().
 -type commit_error() :: {error, commit_error_type()}.
 -type commit_result() :: Result :: dynamic() | Error :: commit_error() | call_error().
+
+%% Request type macros
+-define(READ_REQUEST(Command, MinIndex), {read, Command, MinIndex}).
+-define(COMMIT_REQUEST(Op, Priority), {commit, Op, Priority}).
+-define(COMMIT_ASYNC_REQUEST(From, Op, Priority), {commit, From, Op, Priority}).
+
+%% Commit op type macros
+-define(OP_DEFAULT(Op), {default, Op}).
+-define(OP_ADJUST_CONFIG(Action, Index), {adjust_config, Action, Index}).
+
+-type read_request() :: ?READ_REQUEST(Command :: command(), MinIndex :: wa_raft_log:log_index() | undefined).
+
+-type default_op() :: ?OP_DEFAULT(Op :: op()).
+-type adjust_config_op() :: ?OP_ADJUST_CONFIG(Action :: wa_raft_server:config_action(), Index :: wa_raft_log:log_index() | undefined).
+-type commit_op() :: default_op() | adjust_config_op().
+
+-type commit_request() :: ?COMMIT_REQUEST(Op :: commit_op(), Priority :: priority()).
+-type commit_async_request() :: ?COMMIT_ASYNC_REQUEST(From :: from(), Op :: commit_op(), Priority :: priority()).
 
 %% Acceptor state
 -record(state, {

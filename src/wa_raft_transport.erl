@@ -7,10 +7,6 @@
 -compile(warn_missing_spec_all).
 -behaviour(gen_server).
 
--include_lib("kernel/include/file.hrl").
--include_lib("wa_raft/include/wa_raft.hrl").
--include_lib("wa_raft/include/wa_raft_logger.hrl").
-
 %% OTP supervision
 -export([
     child_spec/0,
@@ -83,25 +79,9 @@
     meta/0
 ]).
 
-%% Name of the ETS table to keep records for transports
--define(TRANSPORT_TABLE, wa_raft_transport_transports).
-%% Name of the ETS table to keep records for files
--define(FILE_TABLE, wa_raft_transport_files).
-
--define(RAFT_TRANSPORT_PARTITION_SUBDIRECTORY, "transport").
-
--define(RAFT_TRANSPORT_SCAN_INTERVAL_SECS, 30).
-
-%% Number of counters
--define(RAFT_TRANSPORT_COUNTERS, 2).
-
-%% Counter - in-flight receives
--define(RAFT_TRANSPORT_COUNTER_ACTIVE_RECEIVES, 1).
-
-%% Counter - in-flight witness receives
--define(RAFT_TRANSPORT_COUNTER_ACTIVE_WITNESS_RECEIVES, 2).
-
--define(MAY_ACCEPT(Witness), {may_accept, Witness}).
+-include_lib("kernel/include/file.hrl").
+-include_lib("wa_raft/include/wa_raft.hrl").
+-include_lib("wa_raft/include/wa_raft_logger.hrl").
 
 -type transport_id() :: pos_integer().
 -type transport_info() :: #{
@@ -161,12 +141,6 @@
 }.
 
 %%% ------------------------------------------------------------------------
-
--record(state, {
-    counters :: counters:counters_ref()
-}).
-
-%%% ------------------------------------------------------------------------
 %%%  Behaviour callbacks
 %%%
 
@@ -195,6 +169,32 @@
     transport_terminate/2,
     transport_accept/2
 ]).
+
+%% Name of the ETS table to keep records for transports
+-define(TRANSPORT_TABLE, wa_raft_transport_transports).
+%% Name of the ETS table to keep records for files
+-define(FILE_TABLE, wa_raft_transport_files).
+
+-define(RAFT_TRANSPORT_PARTITION_SUBDIRECTORY, "transport").
+
+-define(RAFT_TRANSPORT_SCAN_INTERVAL_SECS, 30).
+
+%% Number of counters
+-define(RAFT_TRANSPORT_COUNTERS, 2).
+
+%% Counter - in-flight receives
+-define(RAFT_TRANSPORT_COUNTER_ACTIVE_RECEIVES, 1).
+
+%% Counter - in-flight witness receives
+-define(RAFT_TRANSPORT_COUNTER_ACTIVE_WITNESS_RECEIVES, 2).
+
+-define(MAY_ACCEPT(Witness), {may_accept, Witness}).
+
+%%% ------------------------------------------------------------------------
+
+-record(state, {
+    counters :: counters:counters_ref()
+}).
 
 %%% ------------------------------------------------------------------------
 %%%  OTP supervision callbacks

@@ -81,6 +81,93 @@ storage solutions on top of the RAFT consensus algorithm.
 -include_lib("wa_raft/include/wa_raft_logger.hrl").
 
 %%-----------------------------------------------------------------------------
+%% RAFT Storage - Types
+%%-----------------------------------------------------------------------------
+
+-type metadata() :: config | atom().
+-type storage_handle() :: dynamic().
+-type snapshot_options() :: map().
+
+-type status() :: [status_element()].
+-type status_element() ::
+      {name, atom()}
+    | {table, wa_raft:table()}
+    | {partition, wa_raft:partition()}
+    | {module, module()}
+    | {last_applied, wa_raft_log:log_index()}
+    | ModuleSpecificStatus :: {atom(), term()}.
+
+%%-----------------------------------------------------------------------------
+%% RAFT Storage - Private Types
+%%-----------------------------------------------------------------------------
+
+-define(STATUS_REQUEST, status).
+-define(POSITION_REQUEST, position).
+-define(LABEL_REQUEST, label).
+-define(CONFIG_REQUEST, config).
+
+-define(READ_REQUEST(Command), {read, Command}).
+
+-define(OPEN_REQUEST, open).
+-define(FULFILL_REQUEST(Key, Result), {fulfill, Key, Result}).
+-define(APPLY_REQUEST(From, Record, Size, Priority), {apply, From, Record, Size, Priority}).
+-define(APPLY_READ_REQUEST(From, Command), {apply_read, From, Command}).
+-define(CANCEL_READS_REQUEST(Result), {cancel_reads, Result}).
+
+-define(CREATE_SNAPSHOT_REQUEST(), create_snapshot).
+-define(CREATE_SNAPSHOT_REQUEST(Name), {create_snapshot, Name}).
+-define(CREATE_WITNESS_SNAPSHOT_REQUEST(), create_witness_snapshot).
+-define(CREATE_WITNESS_SNAPSHOT_REQUEST(Name), {create_witness_snapshot, Name}).
+-define(CREATE_SNAPSHOT_REQUEST(Name, Options), {create_snapshot, Name, Options}).
+-define(OPEN_SNAPSHOT_REQUEST(Path, Position), {open_snapshot, Path, Position}).
+-define(DELETE_SNAPSHOT_REQUEST(Name), {delete_snapshot, Name}).
+
+-define(MAKE_EMPTY_SNAPSHOT_REQUEST(Path, Position, Config, Data), {make_empty_snapshot, Path, Position, Config, Data}).
+
+-type call() :: status_request() | position_request() | label_request() | config_request() | read_request() |
+                open_request() | create_snapshot_request() | create_witness_snapshot_request() |
+                open_snapshot_request() | make_empty_snapshot_request().
+-type cast() :: fulfill_request() | apply_request() | apply_read_request() | cancel_reads_request() | delete_snapshot_request().
+
+-type status_request() :: ?STATUS_REQUEST.
+-type position_request() :: ?POSITION_REQUEST.
+-type label_request() :: ?LABEL_REQUEST.
+-type config_request() :: ?CONFIG_REQUEST.
+
+-type read_request() :: ?READ_REQUEST(Command :: wa_raft_acceptor:command()).
+
+-type open_request() :: ?OPEN_REQUEST.
+-type fulfill_request() :: ?FULFILL_REQUEST(Key :: wa_raft_acceptor:key(), Result :: wa_raft_acceptor:commit_result()).
+-type apply_request() :: ?APPLY_REQUEST(From :: gen_server:from() | undefined, Record :: wa_raft_log:log_record(), Size :: non_neg_integer(), Priority :: wa_raft_acceptor:priority()).
+-type apply_read_request() :: ?APPLY_READ_REQUEST(From :: gen_server:from(), Command :: wa_raft_acceptor:command()).
+-type cancel_reads_request() :: ?CANCEL_READS_REQUEST(Result :: wa_raft_acceptor:read_error()).
+
+-type create_snapshot_request() :: ?CREATE_SNAPSHOT_REQUEST() | ?CREATE_SNAPSHOT_REQUEST(Name :: string()) | ?CREATE_SNAPSHOT_REQUEST(Name :: string(), Options :: snapshot_options()).
+-type create_witness_snapshot_request() :: ?CREATE_WITNESS_SNAPSHOT_REQUEST() | ?CREATE_WITNESS_SNAPSHOT_REQUEST(Name :: string()).
+-type open_snapshot_request() :: ?OPEN_SNAPSHOT_REQUEST(Path :: string(), Position :: wa_raft_log:log_pos()).
+-type delete_snapshot_request() :: ?DELETE_SNAPSHOT_REQUEST(Name :: string()).
+
+-type make_empty_snapshot_request() :: ?MAKE_EMPTY_SNAPSHOT_REQUEST(Path :: string(), Position :: wa_raft_log:log_pos(), Config :: wa_raft_server:config(), Data :: dynamic()).
+
+-record(state, {
+    application :: atom(),
+    name :: atom(),
+    table :: wa_raft:table(),
+    partition :: wa_raft:partition(),
+    self :: #raft_identity{},
+    options :: #raft_options{},
+    path :: file:filename(),
+    server :: atom(),
+    queues :: wa_raft_queue:queues(),
+    module :: module(),
+    handle :: storage_handle(),
+    position :: wa_raft_log:log_pos(),
+    config :: undefined | {ok, wa_raft_log:log_pos(), wa_raft_server:config()},
+    witness = false :: boolean(),
+    skipped = 0 :: non_neg_integer()
+}).
+
+%%-----------------------------------------------------------------------------
 %% RAFT Storage
 %%-----------------------------------------------------------------------------
 %% The RAFT consensus algorithm provides sequential consistency guarantees by
@@ -281,93 +368,6 @@ storage solutions on top of the RAFT consensus algorithm.
 %% endpoint, such as the partition bootstrapping API.
 -callback storage_make_empty_snapshot(Options :: #raft_options{}, Path :: file:filename(), Position :: wa_raft_log:log_pos(), Config :: wa_raft_server:config(), Data :: dynamic()) -> ok | {error, Reason :: term()}.
 -optional_callback([storage_make_empty_snapshot/5]).
-
-%%-----------------------------------------------------------------------------
-%% RAFT Storage - Types
-%%-----------------------------------------------------------------------------
-
--type metadata() :: config | atom().
--type storage_handle() :: dynamic().
--type snapshot_options() :: map().
-
--type status() :: [status_element()].
--type status_element() ::
-      {name, atom()}
-    | {table, wa_raft:table()}
-    | {partition, wa_raft:partition()}
-    | {module, module()}
-    | {last_applied, wa_raft_log:log_index()}
-    | ModuleSpecificStatus :: {atom(), term()}.
-
--record(state, {
-    application :: atom(),
-    name :: atom(),
-    table :: wa_raft:table(),
-    partition :: wa_raft:partition(),
-    self :: #raft_identity{},
-    options :: #raft_options{},
-    path :: file:filename(),
-    server :: atom(),
-    queues :: wa_raft_queue:queues(),
-    module :: module(),
-    handle :: storage_handle(),
-    position :: wa_raft_log:log_pos(),
-    config :: undefined | {ok, wa_raft_log:log_pos(), wa_raft_server:config()},
-    witness = false :: boolean(),
-    skipped = 0 :: non_neg_integer()
-}).
-
-%%-----------------------------------------------------------------------------
-%% RAFT Storage - Private Types
-%%-----------------------------------------------------------------------------
-
--define(STATUS_REQUEST, status).
--define(POSITION_REQUEST, position).
--define(LABEL_REQUEST, label).
--define(CONFIG_REQUEST, config).
-
--define(READ_REQUEST(Command), {read, Command}).
-
--define(OPEN_REQUEST, open).
--define(FULFILL_REQUEST(Key, Result), {fulfill, Key, Result}).
--define(APPLY_REQUEST(From, Record, Size, Priority), {apply, From, Record, Size, Priority}).
--define(APPLY_READ_REQUEST(From, Command), {apply_read, From, Command}).
--define(CANCEL_READS_REQUEST(Result), {cancel_reads, Result}).
-
--define(CREATE_SNAPSHOT_REQUEST(), create_snapshot).
--define(CREATE_SNAPSHOT_REQUEST(Name), {create_snapshot, Name}).
--define(CREATE_WITNESS_SNAPSHOT_REQUEST(), create_witness_snapshot).
--define(CREATE_WITNESS_SNAPSHOT_REQUEST(Name), {create_witness_snapshot, Name}).
--define(CREATE_SNAPSHOT_REQUEST(Name, Options), {create_snapshot, Name, Options}).
--define(OPEN_SNAPSHOT_REQUEST(Path, Position), {open_snapshot, Path, Position}).
--define(DELETE_SNAPSHOT_REQUEST(Name), {delete_snapshot, Name}).
-
--define(MAKE_EMPTY_SNAPSHOT_REQUEST(Path, Position, Config, Data), {make_empty_snapshot, Path, Position, Config, Data}).
-
--type call() :: status_request() | position_request() | label_request() | config_request() | read_request() |
-                open_request() | create_snapshot_request() | create_witness_snapshot_request() |
-                open_snapshot_request() | make_empty_snapshot_request().
--type cast() :: fulfill_request() | apply_request() | apply_read_request() | cancel_reads_request() | delete_snapshot_request().
-
--type status_request() :: ?STATUS_REQUEST.
--type position_request() :: ?POSITION_REQUEST.
--type label_request() :: ?LABEL_REQUEST.
--type config_request() :: ?CONFIG_REQUEST.
-
--type read_request() :: ?READ_REQUEST(Command :: wa_raft_acceptor:command()).
-
--type open_request() :: ?OPEN_REQUEST.
--type fulfill_request() :: ?FULFILL_REQUEST(Key :: wa_raft_acceptor:key(), Result :: wa_raft_acceptor:commit_result()).
--type apply_request() :: ?APPLY_REQUEST(From :: gen_server:from() | undefined, Record :: wa_raft_log:log_record(), Size :: non_neg_integer(), Priority :: wa_raft_acceptor:priority()).
--type apply_read_request() :: ?APPLY_READ_REQUEST(From :: gen_server:from(), Command :: wa_raft_acceptor:command()).
--type cancel_reads_request() :: ?CANCEL_READS_REQUEST(Result :: wa_raft_acceptor:read_error()).
-
--type create_snapshot_request() :: ?CREATE_SNAPSHOT_REQUEST() | ?CREATE_SNAPSHOT_REQUEST(Name :: string()) | ?CREATE_SNAPSHOT_REQUEST(Name :: string(), Options :: snapshot_options()).
--type create_witness_snapshot_request() :: ?CREATE_WITNESS_SNAPSHOT_REQUEST() | ?CREATE_WITNESS_SNAPSHOT_REQUEST(Name :: string()).
--type open_snapshot_request() :: ?OPEN_SNAPSHOT_REQUEST(Path :: string(), Position :: wa_raft_log:log_pos()).
--type delete_snapshot_request() :: ?DELETE_SNAPSHOT_REQUEST(Name :: string()).
-
--type make_empty_snapshot_request() :: ?MAKE_EMPTY_SNAPSHOT_REQUEST(Path :: string(), Position :: wa_raft_log:log_pos(), Config :: wa_raft_server:config(), Data :: dynamic()).
 
 %%-----------------------------------------------------------------------------
 %% RAFT Storage - OTP Supervision

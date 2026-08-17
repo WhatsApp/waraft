@@ -7,9 +7,6 @@
 -compile(warn_missing_spec_all).
 -behaviour(gen_server).
 
--include_lib("wa_raft/include/wa_raft.hrl").
--include_lib("wa_raft/include/wa_raft_logger.hrl").
-
 %% OTP supervision
 -export([
     child_spec/1,
@@ -29,6 +26,9 @@
     handle_cast/2,
     handle_info/2
 ]).
+
+-include_lib("wa_raft/include/wa_raft.hrl").
+-include_lib("wa_raft/include/wa_raft_logger.hrl").
 
 -define(RAFT_TRANSPORT_CLEANUP_SCAN_INTERVAL_SECS, 30).
 

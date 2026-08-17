@@ -34,6 +34,13 @@ The default implementation skips metrics logging and does nothing.
 -include_lib("wa_raft/include/wa_raft.hrl").
 
 %%-------------------------------------------------------------------
+%% Public Types
+%%-------------------------------------------------------------------
+
+-type metric() :: atom() | tuple().
+-type value() :: integer().
+
+%%-------------------------------------------------------------------
 %% RAFT Metrics Behaviour
 %%-------------------------------------------------------------------
 
@@ -45,13 +52,6 @@ The default implementation skips metrics logging and does nothing.
 -callback gather(metric(), value()) -> ok.
 %% Report the measured latency of an occurrence of some metric.
 -callback gather_latency(metric(), value()) -> ok.
-
-%%-------------------------------------------------------------------
-%% Public Types
-%%-------------------------------------------------------------------
-
--type metric() :: atom() | tuple().
--type value() :: integer().
 
 %%-------------------------------------------------------------------
 %% Public API

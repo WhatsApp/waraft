@@ -13,9 +13,6 @@ local RAFT partitions.
 -compile(warn_missing_spec_all).
 -behaviour(gen_server).
 
--include_lib("wa_raft/include/wa_raft.hrl").
--include_lib("wa_raft/include/wa_raft_logger.hrl").
-
 %% Supervisor callbacks
 -export([
     child_spec/0,
@@ -46,15 +43,18 @@ local RAFT partitions.
     init_tables/0
 ]).
 
+-include_lib("wa_raft/include/wa_raft.hrl").
+-include_lib("wa_raft/include/wa_raft_logger.hrl").
+
+-type key() :: {Name :: atom(), Node :: node()}.
+-type snapshot_key() :: {Table :: wa_raft:table(), Partition :: wa_raft:partition(), Position :: wa_raft_log:log_pos(), Witness :: boolean()}.
+
 -define(SCAN_EVERY_MS, 500).
 
 -define(PENDING_KEY(Name, Node), {pending, Name, Node}).
 
 -define(WHICH_TRANSPORTS, which_transports).
 -define(CATCHUP(App, Name, Node, Table, Partition, Witness), {catchup, App, Name, Node, Table, Partition, Witness}).
-
--type key() :: {Name :: atom(), Node :: node()}.
--type snapshot_key() :: {Table :: wa_raft:table(), Partition :: wa_raft:partition(), Position :: wa_raft_log:log_pos(), Witness :: boolean()}.
 
 -type which_transports() :: ?WHICH_TRANSPORTS.
 -type call() :: which_transports().

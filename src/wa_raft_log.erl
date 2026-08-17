@@ -97,6 +97,19 @@ required by specific log implementations.
 -include_lib("wa_raft/include/wa_raft.hrl").
 -include_lib("wa_raft/include/wa_raft_logger.hrl").
 
+%% Name of a raft log.
+-type log() :: #raft_log{}.
+-type log_name() :: atom().
+-type log_index() :: non_neg_integer().
+-type log_term() :: non_neg_integer().
+-type log_pos() :: #raft_log_pos{}.
+-type log_op() ::
+    undefined
+    | {wa_raft_acceptor:key(), wa_raft_acceptor:command()}
+    | {wa_raft_acceptor:key(), wa_raft_label:label(), wa_raft_acceptor:command()}.
+-type log_entry() :: {log_term(), log_op()}.
+-type log_record() :: {log_index(), log_entry()}.
+
 %% Atom indicating that the provider has not been opened yet.
 -define(PROVIDER_NOT_OPENED, '$not_opened').
 
@@ -121,19 +134,6 @@ required by specific log implementations.
     log :: log(),
     state = ?PROVIDER_NOT_OPENED :: term()
 }).
-
-%% Name of a raft log.
--type log() :: #raft_log{}.
--type log_name() :: atom().
--type log_index() :: non_neg_integer().
--type log_term() :: non_neg_integer().
--type log_pos() :: #raft_log_pos{}.
--type log_op() ::
-    undefined
-    | {wa_raft_acceptor:key(), wa_raft_acceptor:command()}
-    | {wa_raft_acceptor:key(), wa_raft_label:label(), wa_raft_acceptor:command()}.
--type log_entry() :: {log_term(), log_op()}.
--type log_record() :: {log_index(), log_entry()}.
 
 %% A view of a RAFT log.
 -opaque view() :: #log_view{}.

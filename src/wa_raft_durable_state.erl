@@ -11,14 +11,14 @@ This module implements functions for storing / loading persistent state.
 
 -compile(warn_missing_spec_all).
 
--include_lib("wa_raft/include/wa_raft.hrl").
--include_lib("wa_raft/include/wa_raft_logger.hrl").
-
 -export([
     load/1,
     store/1,
     sync/1
 ]).
+
+-include_lib("wa_raft/include/wa_raft.hrl").
+-include_lib("wa_raft/include/wa_raft_logger.hrl").
 
 -spec load(StateIn :: #raft_state{}) -> {ok, StateOut :: #raft_state{}} | no_state | {error, Reason :: term()}.
 load(#raft_state{name = Name, partition_path = PartitionPath} = State) ->

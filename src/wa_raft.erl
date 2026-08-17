@@ -11,8 +11,6 @@ This file defines dialyzer types.
 
 -compile(warn_missing_spec_all).
 
--include_lib("wa_raft/include/wa_raft.hrl").
-
 %% Public Types
 -export_type([
     table/0,
@@ -20,6 +18,8 @@ This file defines dialyzer types.
     args/0,
     identity/0
 ]).
+
+-include_lib("wa_raft/include/wa_raft.hrl").
 
 -type table() :: atom().
 -type partition() :: pos_integer().

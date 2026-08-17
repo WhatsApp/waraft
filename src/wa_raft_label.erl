@@ -11,9 +11,9 @@ Pluggable module for labeling log entries before adding them to the RAFT log.
 
 -compile(warn_missing_spec_all).
 
-    -type label() :: dynamic().
-
 -export_type([label/0]).
+
+    -type label() :: dynamic().
 
 %%% ------------------------------------------------------------------------
 %%%  Behaviour callbacks

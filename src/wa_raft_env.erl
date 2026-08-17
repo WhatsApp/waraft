@@ -28,12 +28,12 @@ order configured for each RAFT partition.
     get_table_env/4
 ]).
 
+-include_lib("wa_raft/include/wa_raft.hrl").
+
 -type scope() :: Application :: atom() | {Table :: wa_raft:table(), Partition :: wa_raft:partition()} | SearchApps :: [atom()].
 -type key() :: Key :: atom() | {Primary :: atom(), Fallback :: atom()}.
 
 -define(ELECTION_WEIGHT_OVERRIDE(App), {?MODULE, election_weight, App}).
-
--include_lib("wa_raft/include/wa_raft.hrl").
 
 %%-------------------------------------------------------------------
 %% Config API

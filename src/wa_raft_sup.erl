@@ -58,15 +58,15 @@ shutdown.
 
 -include_lib("wa_raft/include/wa_raft.hrl").
 
-%% Key in persistent_term for the application options associated with an
-%% application that has started a RAFT supervisor.
--define(OPTIONS_KEY(Application), {?MODULE, Application}).
-
 %% Options for RAFT client applications
 -type options() :: #{
     % RAFT will search for environment variables from applications in this order
     config_search_apps => [atom()]
 }.
+
+%% Key in persistent_term for the application options associated with an
+%% application that has started a RAFT supervisor.
+-define(OPTIONS_KEY(Application), {?MODULE, Application}).
 
 %%-------------------------------------------------------------------
 %% OTP supervision
