@@ -2827,9 +2827,18 @@ to_member_list(Mapping, Config) ->
 to_member_list(Mapping, Default, Config) ->
     [maps:get(Node, Mapping, Default) || {_, Node} <:- config_membership(Config)].
 
--spec compute_max(Mapping :: #{node() => Value}, Default :: Value, Config :: config()) -> Max :: Value.
-compute_max(Mapping, Default, Config) ->
-    lists:max(to_member_list(Mapping, Default, Config)).
+-spec to_full_member_list(
+    Mapping :: #{node() => Value},
+    Default :: Value,
+    Config :: config()
+) -> Normalized :: [Value].
+to_full_member_list(Mapping, Default, Config) ->
+    FullMembers = config_membership(Config) -- config_witnesses(Config),
+    [maps:get(Node, Mapping, Default) || {_, Node} <:- FullMembers].
+
+-spec compute_full_member_max(Mapping :: #{node() => Value}, Default :: Value, Config :: config()) -> Max :: Value.
+compute_full_member_max(Mapping, Default, Config) ->
+    lists:max([Default | to_full_member_list(Mapping, Default, Config)]).
 
 %%------------------------------------------------------------------------------
 %% RAFT Server - State Machine Implementation - Quorum and Majority
@@ -3363,7 +3372,7 @@ leader_replicate_to_peer(
             Witnesses = config_witnesses(Config),
             Entries = case lists:member({Name, FollowerId}, Witnesses) of
                 true ->
-                    MaxMatchIndex = compute_max(MatchIndices, 0, Config),
+                    MaxMatchIndex = compute_full_member_max(MatchIndices, 0, Config),
                     WitnessCountLimit = min(MaxLogEntries, max(0, MaxMatchIndex - FollowerNextIndex + 1)),
                     {ok, RawEntries} = wa_raft_log:get(View, FollowerNextIndex, WitnessCountLimit, MaxHeartbeatSize),
                     stub_entries_for_witness(RawEntries);
