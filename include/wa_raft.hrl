@@ -245,7 +245,11 @@
 
 %% The maximum time in milliseconds during which a leader can continue to be considered live without
 %% receiving an updated heartbeat response quorum from replicas or during which a follower or witness
-%% can be considered live without receiving a heartbeat from a valid leader of the current term.
+%% can be considered live without receiving a heartbeat from a valid leader of the current term. On a
+%% non-leader replica this period additionally gates staleness reporting: it bounds how long the most
+%% recent first-hand evidence of the leader's commit index (from an AppendEntries reception or a
+%% carried-over prior-tenure quorum) may age before the replica's knowledge of the commit index is
+%% considered untrustworthy for read serving via `wa_raft_info:get_stale/2`.
 -define(RAFT_LIVENESS_GRACE_PERIOD_MS, raft_liveness_grace_period_ms).
 -define(RAFT_LIVENESS_GRACE_PERIOD_MS(App, Table), ?RAFT_TABLE_CONFIG(App, Table, ?RAFT_LIVENESS_GRACE_PERIOD_MS, 30_000)).
 %% The maximum number of log entries that may remain unapplied in a follower's or witness's log
@@ -488,12 +492,26 @@
     cached_config :: undefined | {wa_raft_log:log_index(), wa_raft_server:config()},
     %% [Leader] The label of the last log entry in the current log
     last_label :: undefined | term(),
-    %% The timestamp (milliseconds monotonic clock) of the most recently
-    %% received heartbeat from the leader (follower/candidate/witness) or
-    %% the quorum timestamp computed from heartbeat responses (leader).
-    last_quorum_ts :: undefined | integer(),
+    %% [Leader] The monotonic-clock (milliseconds) quorum timestamp computed
+    %% from heartbeat responses — the instant at which a majority of cluster
+    %% members had acknowledged this leader's heartbeats. Written only by
+    %% `update_quorum_ts/{1,2}` (via `update_heartbeat_reply_ts/2`) and by
+    %% leader `enter_state` entry. Read only by leader-context call sites
+    %% (`leader_eligible/1`, `try_lease_read/2`, and the leader clause of
+    %% `update_status/2`). Not touched on non-leader `enter_state`; a
+    %% recently-stepped-down leader's value survives as commit-index freshness
+    %% evidence for `update_status/2` and `is_leader_missing/1`.
+    leader_quorum_ts :: undefined | integer(),
     %% The most recently seen commit index from a leader heartbeat
     leader_commit_index :: undefined | non_neg_integer(),
+    %% The monotonic-clock (milliseconds) instant at which this replica had
+    %% first-hand evidence that its knowledge of the leader's commit index
+    %% was current. Written by (a) non-leader receipt of AppendEntries from a
+    %% leader (paired with `leader_commit_index`) and (b) leader self-advance
+    %% of `commit_index` in `leader_advance_commit_index/1` (the match-index
+    %% quorum that produced the new commit index is itself the freshness
+    %% evidence). Never advanced by heartbeat *ticks*.
+    leader_commit_index_ts :: undefined | integer(),
 
     %% The largest RAFT term that has been observed in the cluster or reached
     %% by this RAFT replica

@@ -236,6 +236,8 @@ implement a replicated state machine in a distributed cluster.
     | {last_applied, wa_raft_log:log_index()}
     | {leader_name, atom() | undefined}
     | {leader_id, node() | undefined}
+    | {leader_quorum_ts, integer() | undefined}
+    | {leader_commit_index_ts, integer() | undefined}
     | {pending_high, non_neg_integer()}
     | {pending_low, non_neg_integer()}
     | {pending_read, boolean()}
@@ -1040,8 +1042,15 @@ stalled(Type, Event, #raft_state{} = State) when is_tuple(Event), element(1, Eve
     handle_rpc(Type, Event, ?FUNCTION_NAME, State);
 
 %% [AppendEntries RPC] Stalled nodes always discard heartbeats
-stalled(_, ?REMOTE(Sender, ?APPEND_ENTRIES(PrevLogIndex, _, _, _, _)), #raft_state{} = State) ->
-    NewState = State#raft_state{last_quorum_ts = erlang:monotonic_time(millisecond)},
+stalled(_, ?REMOTE(Sender, ?APPEND_ENTRIES(PrevLogIndex, _, _, LeaderCommitIndex, _)), #raft_state{} = State) ->
+    %% Stalled clause rejects the AppendEntries (it cannot adopt log
+    %% entries), but it now records both the leader's commit index and the
+    %% timestamp so that a follower/witness transition inherits fresh
+    %% liveness evidence for `is_leader_missing/1` and the promote-gate.
+    NewState = State#raft_state{
+        leader_commit_index = LeaderCommitIndex,
+        leader_commit_index_ts = erlang:monotonic_time(millisecond)
+    },
     send_rpc(Sender, ?APPEND_ENTRIES_RESPONSE(PrevLogIndex, false, 0, 0), NewState),
     {keep_state, NewState};
 
@@ -1740,15 +1749,15 @@ follower(state_timeout, _, #raft_state{
         table = Table,
         leader = Leader,
         log_view = View,
-        last_quorum_ts = LastQuorumTs
+        leader_commit_index_ts = LeaderCommitIndexTs
     } = State
 ) ->
     ?RAFT_COUNT(Table, 'follower.timeout'),
     case candidate_eligible(State) of
         true ->
-            WaitingMs = case LastQuorumTs of
+            WaitingMs = case LeaderCommitIndexTs of
                 undefined -> undefined;
-                _         -> erlang:monotonic_time(millisecond) - LastQuorumTs
+                _         -> erlang:monotonic_time(millisecond) - LeaderCommitIndexTs
             end,
             ?SERVER_LOG_NOTICE(
                 State,
@@ -2340,6 +2349,8 @@ command(State, {call, From}, ?STATUS_COMMAND, #raft_state{} = Data) ->
         {last_applied, Data#raft_state.last_applied},
         {leader_name, LeaderName},
         {leader_id, LeaderId},
+        {leader_quorum_ts, Data#raft_state.leader_quorum_ts},
+        {leader_commit_index_ts, Data#raft_state.leader_commit_index_ts},
         {pending_high, length(Data#raft_state.pending_high)},
         {pending_low, length(Data#raft_state.pending_low)},
         {pending_read, Data#raft_state.pending_read},
@@ -2405,13 +2416,15 @@ command(
         application = App,
         table = Table,
         current_term = CurrentTerm,
-        last_quorum_ts = LastQuorumTs,
+        leader_quorum_ts = LeaderQuorumTs,
+        leader_commit_index_ts = LeaderCommitIndexTs,
         leader = Leader
     } = Data
 ) when State =/= stalled, State =/= witness, State =/= disabled ->
     Now = erlang:monotonic_time(millisecond),
     Eligible = ?RAFT_LEADER_ELIGIBLE(App),
     HeartbeatGracePeriodMs = ?RAFT_PROMOTION_GRACE_PERIOD(App, Table) * 1000,
+    LastLivenessTs = latest_liveness_ts(LeaderQuorumTs, LeaderCommitIndexTs),
     Term = case TermOrOffset of
         current -> CurrentTerm;
         next -> CurrentTerm + 1;
@@ -2465,9 +2478,9 @@ command(
             invalid_configuration;
         Force ->
             true;
-        LastQuorumTs =:= undefined ->
+        LastLivenessTs =:= undefined ->
             true;
-        Now - LastQuorumTs >= HeartbeatGracePeriodMs ->
+        Now - LastLivenessTs >= HeartbeatGracePeriodMs ->
             true;
         true ->
             ?SERVER_LOG_WARNING(
@@ -2481,35 +2494,9 @@ command(
     case Allowed of
         true ->
             ?SERVER_LOG_NOTICE(State, Data, "is promoting to leader of term ~0p.", [Term]),
-            NewData0 = case Term > CurrentTerm of
+            NewData = case Term > CurrentTerm of
                 true -> advance_term(State, Term, node(), Data);
                 false -> Data
-            end,
-            NewData = case Force of
-                true ->
-                    % Forced promotion skips the candidate vote phase, so
-                    % `heartbeat_reply_ts` is not populated by vote responses
-                    % the way a normally-elected leader's is. Seed
-                    % `last_quorum_ts` to `Now` so that, under
-                    % ?RAFT_LEADER_CHECK_QUORUM, the new leader is granted the
-                    % standard ?RAFT_LIVENESS_GRACE_PERIOD_MS window to receive
-                    % real heartbeat replies from peers; otherwise
-                    % `leader_eligible/1` would see `last_quorum_ts = undefined`
-                    % and force an immediate resignation on the first heartbeat
-                    % tick, defeating the purpose of the forced promotion.
-                    %
-                    % Also clear `heartbeat_reply_ts`: entries left from a
-                    % prior leadership tenure could otherwise form a quorum
-                    % when `update_quorum_ts/2` runs in `enter_state/2` and
-                    % overwrite the seed with a stale `last_quorum_ts`,
-                    % triggering exactly the immediate resignation this seed
-                    % is meant to prevent.
-                    NewData0#raft_state{
-                        last_quorum_ts = Now,
-                        heartbeat_reply_ts = #{}
-                    };
-                false ->
-                    NewData0
             end,
             case State of
                 leader -> {repeat_state, NewData, {reply, From, ok}};
@@ -2990,7 +2977,20 @@ leader_advance_commit_index(
             ),
             Data;
         {quorum, QuorumIndex} when QuorumIndex > CommitIndex ->
-            Data#raft_state{commit_index = QuorumIndex};
+            %% The match-index quorum that produced `QuorumIndex` is itself
+            %% first-hand evidence that this leader's commit index reflects
+            %% cluster state, so bump `leader_commit_index_ts` alongside the
+            %% commit-index advance. `leader_commit_index` is written in the
+            %% same breath to preserve the pairing invariant (see
+            %% include/wa_raft.hrl): without it a leader promoted without ever
+            %% receiving an AppendEntries would step down with
+            %% `leader_commit_index = undefined`, forcing `update_status/2` to
+            %% report the replica stale regardless of timestamp freshness.
+            Data#raft_state{
+                commit_index = QuorumIndex,
+                leader_commit_index = QuorumIndex,
+                leader_commit_index_ts = erlang:monotonic_time(millisecond)
+            };
         _ ->
             Data
     end.
@@ -3131,7 +3131,19 @@ enter_state(State, Data0) ->
     Data1 = Data0#raft_state{state_start_ts = Now},
     Data2 = set_leader_upon_entry(State, Data1),
     Data3 = cancel_pending_upon_entry(State, Data2),
-    Data4 = update_quorum_ts(Now, Data3),
+    %% Leader entry unconditionally seeds `leader_quorum_ts = Now` and clears
+    %% `heartbeat_reply_ts` so that, under CheckQuorum, the new leader gets the
+    %% standard grace window and cannot inherit a stale quorum computation
+    %% built from a prior tenure's ACKs. Non-leader states leave the timestamp
+    %% fields untouched — the values recorded during the prior tenure remain
+    %% valid commit-index freshness evidence until they age out or a new
+    %% leader's heartbeat overwrites `leader_commit_index_ts`.
+    Data4 = case State of
+        leader ->
+            Data3#raft_state{leader_quorum_ts = Now, heartbeat_reply_ts = #{}};
+        _ ->
+            Data3
+    end,
     update_current_term_info(State, Data4),
     update_status(State, Data4),
     Data4.
@@ -3205,7 +3217,7 @@ advance_term(
 %% eligible to be leader. When check quorum is enabled, the leader must also
 %% have received heartbeat responses from a quorum of followers recently.
 -spec leader_eligible(Data :: #raft_state{}) -> eligible | ineligible | stale.
-leader_eligible(#raft_state{application = App, table = Table, last_quorum_ts = LastQuorumTs} = Data) ->
+leader_eligible(#raft_state{application = App, table = Table, leader_quorum_ts = LastQuorumTs} = Data) ->
     case ?RAFT_LEADER_ELIGIBLE(App) andalso is_self_member(Data) of
         false ->
             ineligible;
@@ -3850,7 +3862,7 @@ handle_heartbeat(
             send_rpc(Leader, ?APPEND_ENTRIES_RESPONSE(PrevLogIndex, Accepted, NewMatchIndex, AdjustedLastApplied), Data1),
 
             Data2 = Data1#raft_state{
-                last_quorum_ts = erlang:monotonic_time(millisecond),
+                leader_commit_index_ts = erlang:monotonic_time(millisecond),
                 leader_commit_index = LeaderCommitIndex
             },
             Data3 = case Accepted of
@@ -4234,7 +4246,7 @@ update_quorum_ts(NowTs, #raft_state{self = #raft_identity{node = Node}, heartbea
             %% clears the `pending_reconfirmation` hold. `heartbeat_reply_ts`
             %% was reset on timeout, so any quorum reached here is
             %% structurally post-timeout.
-            NewData = Data#raft_state{last_quorum_ts = QuorumTs},
+            NewData = Data#raft_state{leader_quorum_ts = QuorumTs},
             case NewData#raft_state.handover_lease_state of
                 pending_reconfirmation ->
                     NewData#raft_state{handover_lease_state = unaffected};
@@ -4248,9 +4260,9 @@ update_quorum_ts(NowTs, #raft_state{self = #raft_identity{node = Node}, heartbea
 %% Evaluate whether a strong read may be served via the leader read lease
 %% instead of a fresh log entry. Returns `hit` if all safety invariants are
 %% satisfied, or `{miss, Reason}` describing which invariant blocked the
-%% lease. The lease's freshness signal is `last_quorum_ts` (maintained by
+%% lease. The lease's freshness signal is `leader_quorum_ts` (maintained by
 %% `update_quorum_ts/2`); everything else is a purely local invariant check.
-%% Also records the age of `last_quorum_ts` for sizing observability.
+%% Also records the age of `leader_quorum_ts` for sizing observability.
 -spec try_lease_read(ReadIndex :: wa_raft_log:log_index(), Data :: #raft_state{}) ->
     hit | {miss, handover | pending_reconfirmation | not_current_term | no_quorum_ts | stale | not_applied | disabled}.
 try_lease_read(ReadIndex, #raft_state{
@@ -4260,7 +4272,7 @@ try_lease_read(ReadIndex, #raft_state{
     handover_lease_state = HandoverLeaseState,
     commit_index = CommitIndex,
     last_applied = LastApplied,
-    last_quorum_ts = LastQuorumTs,
+    leader_quorum_ts = LastQuorumTs,
     first_current_term_log_index = FirstCurrentTermLogIndex
 }) ->
     LeaseMs = ?RAFT_LEADER_READ_LEASE_MS(App, Table),
@@ -4319,7 +4331,7 @@ update_status(
         name = Name,
         table = Table,
         partition = Partition,
-        last_quorum_ts = LastQuorumTs
+        leader_quorum_ts = LastQuorumTs
     } = Data
 ) when State =:= leader ->
 
@@ -4368,18 +4380,33 @@ update_status(
         table = Table,
         partition = Partition,
         last_applied = LastApplied,
-        last_quorum_ts = LeaderHeartbeatTs,
+        leader_quorum_ts = LeaderQuorumTs,
+        leader_commit_index_ts = LeaderCommitIndexTs,
         leader_commit_index = LeaderCommitIndex
     } = Data
 ) when State =:= follower; State =:= candidate; State =:= witness ->
     Now = erlang:monotonic_time(millisecond),
+    LivenessGrace = ?RAFT_LIVENESS_GRACE_PERIOD_MS(App, Table),
+    StalenessEntries = ?RAFT_STALE_GRACE_PERIOD_ENTRIES(App, Table),
     NewLive =
-        LeaderHeartbeatTs =/= undefined andalso
-            LeaderHeartbeatTs + ?RAFT_LIVENESS_GRACE_PERIOD_MS(App, Table) >= Now,
+        LeaderCommitIndexTs =/= undefined andalso
+            LeaderCommitIndexTs + LivenessGrace >= Now,
+    %% Freshness = latest instant at which this replica's `LeaderCommitIndex`
+    %% was known to match cluster state. Two independent writers contribute:
+    %% the non-leader AppendEntries handler (which co-writes
+    %% `leader_commit_index_ts` alongside `leader_commit_index`) and, when
+    %% carried over from a prior tenure, the leader-side commit-advance in
+    %% `leader_advance_commit_index/1` (which bumps `leader_commit_index_ts`)
+    %% and the peer-ACK-driven `leader_quorum_ts`. Take the max because
+    %% either signal alone is sufficient evidence of freshness.
+    FreshTs = latest_liveness_ts(LeaderQuorumTs, LeaderCommitIndexTs),
+    DataUnknown =
+        FreshTs =:= undefined orelse
+            FreshTs + LivenessGrace < Now,
     NewLagging =
-        not NewLive orelse
+        DataUnknown orelse
             LeaderCommitIndex =:= undefined orelse
-            LeaderCommitIndex - LastApplied >= ?RAFT_STALE_GRACE_PERIOD_ENTRIES(App, Table),
+            LeaderCommitIndex >= LastApplied + StalenessEntries,
     NewStale = NewLagging orelse State =:= witness,
 
     % Status should always exist while server is running
@@ -4389,30 +4416,40 @@ update_status(
         CachedLive ->
             ok;
         true ->
-            ?SERVER_LOG_NOTICE(State, Data, "is live", []);
+            ?SERVER_LOG_NOTICE(
+                State,
+                Data,
+                "is now live after commit index is updated ~0p ms ago (=< ~0p ms).",
+                [elapsed_since(Now, LeaderCommitIndexTs), LivenessGrace]
+            );
         false ->
             ?SERVER_LOG_NOTICE(
                 State,
                 Data,
-                "is no longer live after receiving leader heartbeat at ~0p",
-                [LeaderHeartbeatTs]
+                "is no longer live as commit index was last updated ~0p ms ago (> ~0p ms).",
+                [elapsed_since(Now, LeaderCommitIndexTs), LivenessGrace]
             )
     end,
 
     case NewLagging of
         CachedLagging ->
             ok;
-        true when LeaderCommitIndex =:= undefined ->
-            ok;
+        true when DataUnknown ->
+            ?SERVER_LOG_NOTICE(
+                State,
+                Data,
+                "is stale as commit index is not up to date with updated quorum ~0p ms ago and commit index ~0p ms ago (> ~0p ms).",
+                [elapsed_since(Now, LeaderQuorumTs), elapsed_since(Now, LeaderCommitIndexTs), LivenessGrace]
+            );
         true ->
             ?SERVER_LOG_NOTICE(
                 State,
                 Data,
-                "is stale as last applied at ~0p is ~0p behind leader's commit at ~0p.",
-                [LastApplied, LeaderCommitIndex - LastApplied, LeaderCommitIndex]
+                "is stale as last applied at ~0p is ~0p behind leader's commit index of ~0p (> ~0p).",
+                [LastApplied, elapsed_since(LeaderCommitIndex, LastApplied), LeaderCommitIndex, StalenessEntries]
             );
         false ->
-            ?SERVER_LOG_NOTICE(State, Data, "catches up.", [])
+            ?SERVER_LOG_NOTICE(State, Data, "is no longer stale.", [])
     end,
 
     State =:= CachedState andalso NewLive =:= CachedLive andalso NewLagging =:= CachedLagging andalso NewStale =:= CachedStale orelse
@@ -4420,15 +4457,31 @@ update_status(
     wa_raft_info:refresh_message_queue_length(Name),
     ok.
 
+-spec elapsed_since(Now :: integer() | undefined, Then :: integer() | undefined) -> unknown | integer().
+elapsed_since(undefined, _) -> unknown;
+elapsed_since(_, undefined) -> unknown;
+elapsed_since(Now, Then) -> Now - Then.
+
 %% Check if the leader has not been seen for at least the minimum election timeout.
 -spec is_leader_missing(Data :: #raft_state{}) -> {Missing :: boolean(), Delay :: infinity | integer(), AllowedDelay :: integer()}.
-is_leader_missing(#raft_state{application = App, table = Table, last_quorum_ts = LastQuorumTs}) ->
+is_leader_missing(#raft_state{application = App, table = Table, leader_quorum_ts = LeaderQuorumTs, leader_commit_index_ts = LeaderCommitIndexTs}) ->
     AllowedDelay = ?RAFT_ELECTION_TIMEOUT_MIN(App, Table),
-    Delay = case LastQuorumTs of
+    LastLivenessTs = latest_liveness_ts(LeaderQuorumTs, LeaderCommitIndexTs),
+    Delay = case LastLivenessTs of
         undefined -> infinity;
-        _         -> erlang:monotonic_time(millisecond) - LastQuorumTs
+        _         -> erlang:monotonic_time(millisecond) - LastLivenessTs
     end,
     {Delay > AllowedDelay, Delay, AllowedDelay}.
+
+%% Return the more recent of the two liveness timestamps, treating `undefined`
+%% as `-infinity`. If both are `undefined`, returns `undefined`. Used by call
+%% sites that want to answer "was a leader recently active from this replica's
+%% perspective" from either heartbeat reception or self-advance evidence.
+-spec latest_liveness_ts(undefined | integer(), undefined | integer()) -> undefined | integer().
+latest_liveness_ts(undefined, undefined) -> undefined;
+latest_liveness_ts(undefined, Ts)        -> Ts;
+latest_liveness_ts(Ts, undefined)        -> Ts;
+latest_liveness_ts(Ts1, Ts2)             -> max(Ts1, Ts2).
 
 %% Check if the leader should send a storage snapshot to this follower and request
 %% if necessary.
