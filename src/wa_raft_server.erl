@@ -2803,17 +2803,6 @@ maybe_update_config(_, _, _, State) ->
 to_member_list(Mapping, Config) ->
     [Value || {_, Node} <:- config_membership(Config), {ok, Value} <- [maps:find(Node, Mapping)]].
 
-%% Convert a mapping of peers to values to a list of values for all members of the
-%% cluster, using the provided default value for any members that are not
-%% represented in the mapping.
--spec to_member_list(
-    Mapping :: #{node() => Value},
-    Default :: Value,
-    Config :: config()
-) -> Normalized :: [Value].
-to_member_list(Mapping, Default, Config) ->
-    [maps:get(Node, Mapping, Default) || {_, Node} <:- config_membership(Config)].
-
 -spec to_full_member_list(
     Mapping :: #{node() => Value},
     Default :: Value,
@@ -2826,6 +2815,23 @@ to_full_member_list(Mapping, Default, Config) ->
 -spec compute_full_member_max(Mapping :: #{node() => Value}, Default :: Value, Config :: config()) -> Max :: Value.
 compute_full_member_max(Mapping, Default, Config) ->
     lists:max([Default | to_full_member_list(Mapping, Default, Config)]).
+
+%% Convert a mapping of peers to values to a list of values for all participants
+%% of the cluster, using the provided default value for any participants that are
+%% not represented in the mapping. Unlike the membership list, this includes
+%% non-voting participants that have been added but not yet promoted to voting
+%% members. Used when computing the log trim index so that such participants
+%% exert back-pressure on trimming and can catch up from the log rather than
+%% being forced onto snapshot catchup. Participants that never make progress
+%% cannot pin the log indefinitely because trimming is separately bounded by
+%% the maximum retained entries.
+-spec to_participant_list(
+    Mapping :: #{node() => Value},
+    Default :: Value,
+    Config :: config()
+) -> Normalized :: [Value].
+to_participant_list(Mapping, Default, Config) ->
+    [maps:get(Node, Mapping, Default) || {_, Node} <:- config_participants(Config)].
 
 %%------------------------------------------------------------------------------
 %% RAFT Server - State Machine Implementation - Quorum and Majority
@@ -3002,7 +3008,7 @@ leader_apply_log(
         match_indices = MatchIndices
     } = Data
 ) ->
-    TrimIndex = lists:min(to_member_list(MatchIndices#{node() => LastApplied}, 0, config(Data))),
+    TrimIndex = lists:min(to_participant_list(MatchIndices#{node() => LastApplied}, 0, config(Data))),
     apply_log(leader, TrimIndex, Data).
 
 -spec apply_log(
@@ -3399,7 +3405,7 @@ leader_replicate_to_peer(
             ?SERVER_LOG_DEBUG(leader, State1, "at ~0p sends heartbeat to follower ~0p at ~0p with ~0p entr(ies).",
                 [CommitIndex, FollowerId, FollowerNextIndex, length(Entries)]),
             % Compute trim index.
-            TrimIndex = lists:min(to_member_list(MatchIndices#{node() => LastIndex}, 0, config(State1))),
+            TrimIndex = lists:min(to_participant_list(MatchIndices#{node() => LastIndex}, 0, config(State1))),
             % Send append entries request.
             CastResult = send_rpc(Sender, ?APPEND_ENTRIES(PrevLogIndex, PrevLogTerm, Entries, CommitIndex, TrimIndex), State1),
             NewNextIndices =
