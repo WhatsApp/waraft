@@ -30,18 +30,31 @@
 
 %% Transport API
 -export([
-    cancel/2,
-    complete/3
+    cancel/2
+]).
+
+%% Transport Status
+-export([
+    transports/0,
+    transport_info/1,
+    transport_info/2
+]).
+
+%% File Status
+-export([
+    file_info/2
+]).
+
+%% Transport Implementation APIs
+-export([
+    start_file/2,
+    advance_file/3,
+    complete_file/3
 ]).
 
 %% ETS API
 -export([
-    setup_tables/0,
-    transports/0,
-    transport_info/1,
-    transport_info/2,
-    file_info/2,
-    update_file_info/3
+    setup_tables/0
 ]).
 
 %% Internal API - Configuration
@@ -53,7 +66,7 @@
 
 %% Internal API - Transport Workers
 -export([
-    pop_file/1
+    next_file/1
 ]).
 
 %% gen_server callbacks
@@ -83,28 +96,57 @@
 -include_lib("wa_raft/include/wa_raft.hrl").
 -include_lib("wa_raft/include/wa_raft_logger.hrl").
 
+%%------------------------------------------------------------------------------
+%% Public and Internal Types - Transport
+%%------------------------------------------------------------------------------
+
+-type side() :: sender | receiver.
+-type status() :: requested | running | completed | failed.
+
+-define(STATUS_REQUESTED, 0).
+-define(STATUS_RUNNING, 1).
+-define(STATUS_COMPLETED, 2).
+-define(STATUS_FAILED, 4).
+
 -type transport_id() :: pos_integer().
 -type transport_info() :: #{
-    type := sender | receiver,
-    status := requested | running | completed | cancelled | timed_out | failed,
-    atomics := atomics:atomics_ref(),
+    type := side(),
+    status := status(),
+    error => term(),
 
     peer := atom(),
     module := module(),
     meta := meta(),
-    notify => gen_server:from(),
 
     root := string(),
 
     start_ts := Millis :: integer(),
     end_ts => Millis :: integer(),
+    updated_ts := Millis :: integer(),
 
     total_files := non_neg_integer(),
     completed_files := non_neg_integer(),
-    queue => ets:table(),
-
-    error => term()
+    current_file := non_neg_integer()
 }.
+
+-type transport_record() :: #{
+    type := side(),
+    peer := atom(),
+    module := module(),
+    meta := meta(),
+    root := string()
+}.
+-type transport_row() ::
+    {ID :: transport_id(), Record :: transport_record(), Error :: term(), TransportAtomics :: atomics:atomics_ref()}.
+
+-define(TRANSPORT_STATUS_IDX, 1).
+-define(TRANSPORT_START_TS_IDX, 2).
+-define(TRANSPORT_END_TS_IDX, 3).
+-define(TRANSPORT_UPDATED_TS_IDX, 4).
+-define(TRANSPORT_TOTAL_FILES_IDX, 5).
+-define(TRANSPORT_COMPLETED_FILES_IDX, 6).
+-define(TRANSPORT_CURRENT_FILE_IDX, 7).
+-define(TRANSPORT_ATOMICS_COUNT, 7).
 
 -type meta() :: meta_transfer() | meta_snapshot().
 -type meta_transfer() :: #{
@@ -120,25 +162,55 @@
     witness := boolean()
 }.
 
+%%------------------------------------------------------------------------------
+%% Public and Internal Types - File
+%%------------------------------------------------------------------------------
+
 -type file_id() :: pos_integer().
 -type file_info() :: #{
-    status := requested | sending | receiving | completed | cancelled | failed,
-    atomics := {Transport :: atomics:atomics_ref(), File :: atomics:atomics_ref()},
+    type := side(),
+    status := status(),
+    error => term(),
 
     name := string(),
     path := string(),
+    meta => map(),
     mtime => integer(),
 
+    retries := non_neg_integer(),
     start_ts => Millis :: integer(),
     end_ts => Millis :: integer(),
-    retries => non_neg_integer(),
+    updated_ts => Millis :: integer(),
 
     total_bytes := non_neg_integer(),
-    completed_bytes := non_neg_integer(),
-
-    meta => map(),
-    error => Reason :: term()
+    completed_bytes := non_neg_integer()
 }.
+
+-type file_record() :: #{
+    type := side(),
+    name := string(),
+    path := string(),
+    meta => map(),
+    mtime => integer()
+}.
+-type file_key() :: {ID :: transport_id(), FileID :: file_id()}.
+-type file_row() ::
+    {
+        Key :: file_key(),
+        Record :: file_record(),
+        Error :: term(),
+        TransportAtomics :: atomics:atomics_ref(),
+        FileAtomics :: atomics:atomics_ref()
+    }.
+
+-define(FILE_STATUS_IDX, 1).
+-define(FILE_RETRIES_IDX, 2).
+-define(FILE_START_TS_IDX, 3).
+-define(FILE_END_TS_IDX, 4).
+-define(FILE_UPDATED_TS_IDX, 5).
+-define(FILE_TOTAL_BYTES_IDX, 6).
+-define(FILE_COMPLETED_BYTES_IDX, 7).
+-define(FILE_ATOMICS_COUNT, 7).
 
 %%% ------------------------------------------------------------------------
 %%%  Behaviour callbacks
@@ -179,21 +251,20 @@
 
 -define(RAFT_TRANSPORT_SCAN_INTERVAL_SECS, 30).
 
-%% Number of counters
--define(RAFT_TRANSPORT_COUNTERS, 2).
+-define(GLOBAL_ACTIVE_INCOMING_IDX, 1).
+-define(GLOBAL_ACTIVE_INCOMING_WITNESS_IDX, 2).
+-define(GLOBAL_ATOMICS_COUNT, 2).
 
-%% Counter - in-flight receives
--define(RAFT_TRANSPORT_COUNTER_ACTIVE_RECEIVES, 1).
-
-%% Counter - in-flight witness receives
--define(RAFT_TRANSPORT_COUNTER_ACTIVE_WITNESS_RECEIVES, 2).
+%% Minimum signed value allowed in atomics field
+-define(EMPTY_TIMESTAMP, -16#8000000000000000).
 
 -define(MAY_ACCEPT(Witness), {may_accept, Witness}).
 
 %%% ------------------------------------------------------------------------
 
 -record(state, {
-    counters :: counters:counters_ref()
+    global_atomics :: atomics:atomics_ref(),
+    pending_notify = #{} :: #{transport_id() => gen_server:from()}
 }).
 
 %%% ------------------------------------------------------------------------
@@ -286,26 +357,36 @@ cancel(ID, Reason) ->
 complete(ID, FileID, Status) ->
     gen_server:cast(?MODULE, {complete, ID, FileID, Status}).
 
-%%% ------------------------------------------------------------------------
-%%%  ETS table helper functions
-%%%
-
--spec setup_tables() -> ok.
-setup_tables() ->
-    ?TRANSPORT_TABLE = ets:new(?TRANSPORT_TABLE, [named_table, set, public]),
-    ?FILE_TABLE = ets:new(?FILE_TABLE, [named_table, set, public]),
-    ok.
+%%------------------------------------------------------------------------------
+%% Public API - Transport Status
+%%------------------------------------------------------------------------------
 
 -spec transports() -> [transport_id()].
 transports() ->
-    ets:select(?TRANSPORT_TABLE, [{{'$1', '_'}, [], ['$1']}]).
+    ets:select(?TRANSPORT_TABLE, [{{'$1', '_', '_', '_'}, [], ['$1']}]).
 
 -spec transport_info(ID :: transport_id()) -> {ok, Info :: transport_info()} | not_found.
 transport_info(ID) ->
-    case ets:lookup_element(?TRANSPORT_TABLE, ID, 2, not_found) of
-        not_found -> not_found;
-        Info      -> {ok, Info}
+    case transport_lookup(ID) of
+        [] ->
+            not_found;
+        [{_, Record, Error, TransportAtomics}] ->
+            Info0 = maybe_add_error(Error, Record),
+            Info1 = Info0#{
+                status => decode_status(atomics:get(TransportAtomics, ?TRANSPORT_STATUS_IDX)),
+                start_ts => atomics:get(TransportAtomics, ?TRANSPORT_START_TS_IDX),
+                updated_ts => atomics:get(TransportAtomics, ?TRANSPORT_UPDATED_TS_IDX),
+                total_files => atomics:get(TransportAtomics, ?TRANSPORT_TOTAL_FILES_IDX),
+                completed_files => atomics:get(TransportAtomics, ?TRANSPORT_COMPLETED_FILES_IDX),
+                current_file => atomics:get(TransportAtomics, ?TRANSPORT_CURRENT_FILE_IDX)
+            },
+            Info2 = maybe_add_timestamp(end_ts, TransportAtomics, ?TRANSPORT_END_TS_IDX, Info1),
+            {ok, Info2}
     end.
+
+-spec transport_lookup(ID :: transport_id()) -> [transport_row()].
+transport_lookup(ID) ->
+    ets:lookup(?TRANSPORT_TABLE, ID).
 
 -spec transport_info(ID :: transport_id(), Item :: atom()) -> Info :: term() | undefined.
 transport_info(ID, Item) ->
@@ -314,101 +395,331 @@ transport_info(ID, Item) ->
         _                      -> undefined
     end.
 
-% This function should only be called from the "gen_server" process since it does not
-% provide any atomicity guarantees.
--spec set_transport_info(ID :: transport_id(), Info :: transport_info(), Counters :: counters:counters_ref()) -> ok.
-set_transport_info(ID, #{atomics := TransportAtomics} = Info, Counters) ->
-    true = ets:insert(?TRANSPORT_TABLE, {ID, Info}),
-    maybe_update_active_inbound_transport_counts(undefined, Info, Counters),
-    ok = atomics:put(TransportAtomics, ?RAFT_TRANSPORT_ATOMICS_UPDATED_TS, erlang:system_time(millisecond)).
-
-% This function should only be called from the "gen_server" process since it does not
-% provide any atomicity guarantees.
--spec update_and_get_transport_info(
-    ID :: transport_id(),
-    Fun :: fun((Info :: transport_info()) -> NewInfo :: transport_info()),
-    Counters :: counters:counters_ref()
-) -> {ok, NewOrExistingInfo :: transport_info()} | not_found.
-update_and_get_transport_info(ID, Fun, Counters) ->
-    case transport_info(ID) of
-        {ok, #{atomics := TransportAtomics} = Info} ->
-            case Fun(Info) of
-                Info ->
-                    {ok, Info};
-                NewInfo ->
-                    true = ets:insert(?TRANSPORT_TABLE, {ID, NewInfo}),
-                    ok = atomics:put(TransportAtomics, ?RAFT_TRANSPORT_ATOMICS_UPDATED_TS, erlang:system_time(millisecond)),
-                    ok = maybe_update_active_inbound_transport_counts(Info, NewInfo, Counters),
-                    {ok, NewInfo}
-            end;
-        not_found ->
-            not_found
-    end.
-
--spec delete_transport_info(ID :: transport_id()) -> ok | not_found.
-delete_transport_info(ID) ->
-    case transport_info(ID) of
-        {ok, #{total_files := TotalFiles} = Info} ->
-            lists:foreach(fun (FileID) -> delete_file_info(ID, FileID) end, lists:seq(1, TotalFiles)),
-            ets:delete(?TRANSPORT_TABLE, ID),
-            Queue = maps:get(queue, Info, undefined),
-            Queue =/= undefined andalso (try ets:delete(Queue) catch _:_ -> ok end),
-            ok;
-        not_found ->
-            not_found
-    end.
+%%------------------------------------------------------------------------------
+%% Public API - File Status
+%%------------------------------------------------------------------------------
 
 -spec file_info(ID :: transport_id(), FileID :: file_id()) -> {ok, Info :: file_info()} | not_found.
 file_info(ID, FileID) ->
-    case ets:lookup_element(?FILE_TABLE, {ID, FileID}, 2, not_found) of
-        not_found -> not_found;
-        Info      -> {ok, Info}
+    case file_lookup(ID, FileID) of
+        [] ->
+            not_found;
+        [{_, Record, Error, _, FileAtomics}] ->
+            Info0 = maybe_add_error(Error, Record),
+            Info1 = Info0#{
+                status => decode_status(atomics:get(FileAtomics, ?FILE_STATUS_IDX)),
+                retries => atomics:get(FileAtomics, ?FILE_RETRIES_IDX),
+                total_bytes => atomics:get(FileAtomics, ?FILE_TOTAL_BYTES_IDX),
+                completed_bytes => atomics:get(FileAtomics, ?FILE_COMPLETED_BYTES_IDX)
+            },
+            Info2 = maybe_add_timestamp(start_ts, FileAtomics, ?FILE_START_TS_IDX, Info1),
+            Info3 = maybe_add_timestamp(end_ts, FileAtomics, ?FILE_END_TS_IDX, Info2),
+            Info4 = maybe_add_timestamp(updated_ts, FileAtomics, ?FILE_UPDATED_TS_IDX, Info3),
+            {ok, Info4}
     end.
 
--spec maybe_update_active_inbound_transport_counts(OldInfo :: transport_info() | undefined, NewInfo :: transport_info(), Counters :: counters:counters_ref()) -> ok.
-maybe_update_active_inbound_transport_counts(OldInfo, #{meta := #{witness := true}} = NewInfo, Counters) ->
-    maybe_update_active_inbound_transport_counts_impl(OldInfo, NewInfo, ?RAFT_TRANSPORT_COUNTER_ACTIVE_WITNESS_RECEIVES, Counters);
-maybe_update_active_inbound_transport_counts(OldInfo, NewInfo, Counters) ->
-    maybe_update_active_inbound_transport_counts_impl(OldInfo, NewInfo, ?RAFT_TRANSPORT_COUNTER_ACTIVE_RECEIVES, Counters).
+-spec file_lookup(ID :: transport_id(), FileID :: file_id()) -> [file_row()].
+file_lookup(ID, FileID) ->
+    ets:lookup(?FILE_TABLE, {ID, FileID}).
 
--spec maybe_update_active_inbound_transport_counts_impl(OldInfo :: transport_info() | undefined, NewInfo :: transport_info(), Counter :: non_neg_integer(), Counters :: counters:counters_ref()) -> ok.
-maybe_update_active_inbound_transport_counts_impl(undefined, #{type := receiver, status := running}, Counter, Counters) ->
-    counters:add(Counters, Counter, 1);
-maybe_update_active_inbound_transport_counts_impl(#{type := receiver, status := OldStatus}, #{status := running}, Counter, Counters) when OldStatus =/= running ->
-    counters:add(Counters, Counter, 1);
-maybe_update_active_inbound_transport_counts_impl(#{type := receiver, status := running}, #{status := NewStatus}, Counter, Counters) when NewStatus =/= running ->
-    counters:sub(Counters, Counter, 1);
-maybe_update_active_inbound_transport_counts_impl(_, _, _, _) ->
+-spec maybe_add_error(Error :: term(), Map :: #{Keys => Values}) -> #{Keys => Values, error => term()}.
+maybe_add_error(undefined, Map) ->
+    Map;
+maybe_add_error(Error, Map) ->
+    Map#{error => Error}.
+
+-spec maybe_add_timestamp(
+    Key :: atom(),
+    Atomics :: atomics:atomics_ref(),
+    Index :: pos_integer(),
+    Map :: map()
+) -> map().
+maybe_add_timestamp(Key, Atomics, Index, Map) ->
+    case atomics:get(Atomics, Index) of
+        ?EMPTY_TIMESTAMP -> Map;
+        Timestamp -> Map#{Key => Timestamp}
+    end.
+
+%%------------------------------------------------------------------------------
+%% Public API - Transport Implementation APIs
+%%------------------------------------------------------------------------------
+
+-spec start_file(ID :: transport_id(), FileID :: file_id()) -> ok.
+start_file(ID, FileID) ->
+    case file_lookup(ID, FileID) of
+        [] ->
+            ok;
+        [{_, _, _, TransportAtomics, FileAtomics}] ->
+            case atomics:get(FileAtomics, ?FILE_STATUS_IDX) of
+                ?STATUS_REQUESTED ->
+                    atomics:put(FileAtomics, ?FILE_STATUS_IDX, ?STATUS_RUNNING),
+                    atomics:put(FileAtomics, ?FILE_START_TS_IDX, erlang:system_time(millisecond)),
+                    update_file_updated_ts(FileAtomics),
+                    update_transport_updated_ts(TransportAtomics),
+                    ok;
+                _ ->
+                    ok
+            end
+    end.
+
+-spec advance_file(ID :: transport_id(), FileID :: file_id(), NewCompleted :: non_neg_integer()) ->
+    Prev :: non_neg_integer().
+advance_file(ID, FileID, NewCompleted) ->
+    case file_lookup(ID, FileID) of
+        [] ->
+            0;
+        [{_, _, _, TransportAtomics, FileAtomics}] ->
+            Prev = atomics:exchange(FileAtomics, ?FILE_COMPLETED_BYTES_IDX, NewCompleted),
+            update_file_updated_ts(FileAtomics),
+            update_transport_updated_ts(TransportAtomics),
+            Prev
+    end.
+
+-spec complete_file(ID :: transport_id(), FileID :: file_id(), Status :: term()) -> ok.
+complete_file(ID, FileID, Status) ->
+    complete(ID, FileID, Status),
     ok.
 
-% This function should only be called from the "worker" process responsible for the
-% transport of the specified file since it does not provide any atomicity guarantees.
--spec set_file_info(ID :: transport_id(), FileID :: file_id(), Info :: file_info()) -> ok.
-set_file_info(ID, FileID, #{atomics := {TransportAtomics, FileAtomics}} = Info) ->
-    true = ets:insert(?FILE_TABLE, {{ID, FileID}, Info}),
-    NowMillis = erlang:system_time(millisecond),
-    ok = atomics:put(TransportAtomics, ?RAFT_TRANSPORT_ATOMICS_UPDATED_TS, NowMillis),
-    ok = atomics:put(FileAtomics, ?RAFT_TRANSPORT_ATOMICS_UPDATED_TS, NowMillis).
+%%------------------------------------------------------------------------------
+%% Internal API - ETS Tables
+%%------------------------------------------------------------------------------
 
-% This function should only be called from the "worker" process responsible for the
-% transport of the specified file since it does not provide any atomicity guarantees.
--spec update_file_info(ID :: transport_id(), FileID :: file_id(), Fun :: fun((Info :: file_info()) -> NewInfo :: file_info())) -> ok | not_found.
-update_file_info(ID, FileID, Fun) ->
-    case file_info(ID, FileID) of
-        {ok, #{atomics := {TransportAtomics, FileAtomics}} = Info} ->
-            case Fun(Info) of
-                Info ->
-                    ok;
-                NewInfo ->
-                    true = ets:insert(?FILE_TABLE, {{ID, FileID}, NewInfo}),
-                    NowMillis = erlang:system_time(millisecond),
-                    ok = atomics:put(TransportAtomics, ?RAFT_TRANSPORT_ATOMICS_UPDATED_TS, NowMillis),
-                    ok = atomics:put(FileAtomics, ?RAFT_TRANSPORT_ATOMICS_UPDATED_TS, NowMillis),
-                    ok
-            end;
-        not_found ->
+-spec setup_tables() -> ok.
+setup_tables() ->
+    ?TRANSPORT_TABLE = ets:new(?TRANSPORT_TABLE, [named_table, set, public]),
+    ?FILE_TABLE = ets:new(?FILE_TABLE, [named_table, set, public]),
+    ok.
+
+-spec decode_status(Encoded :: integer()) -> Status :: status().
+decode_status(?STATUS_REQUESTED) -> requested;
+decode_status(?STATUS_RUNNING) -> running;
+decode_status(?STATUS_COMPLETED) -> completed;
+decode_status(?STATUS_FAILED) -> failed.
+
+-spec update_global_active_incoming(
+    Record :: transport_record(),
+    PrevStatus :: status() | undefined,
+    NewStatus :: status(),
+    State :: #state{}
+) -> ok.
+update_global_active_incoming(#{type := sender}, _, _, _) ->
+    ok;
+update_global_active_incoming(_, Status, Status, _) ->
+    ok;
+update_global_active_incoming(Record, _, running, #state{global_atomics = GlobalAtomics}) ->
+    atomics:add(GlobalAtomics, global_active_incoming_idx(Record), 1);
+update_global_active_incoming(Record, running, _, #state{global_atomics = GlobalAtomics}) ->
+    atomics:sub(GlobalAtomics, global_active_incoming_idx(Record), 1).
+
+-spec global_active_incoming_idx(Record :: transport_record()) -> pos_integer().
+global_active_incoming_idx(#{meta := #{witness := true}}) -> ?GLOBAL_ACTIVE_INCOMING_WITNESS_IDX;
+global_active_incoming_idx(_) -> ?GLOBAL_ACTIVE_INCOMING_IDX.
+
+-spec register_transport(
+    ID :: transport_id(),
+    Record :: transport_record(),
+    TotalFiles :: non_neg_integer(),
+    State :: #state{}
+) -> {ok, TransportAtomics :: atomics:atomics_ref()}.
+register_transport(ID, Record, TotalFiles, State) ->
+    % atomics always start with value 0
+    TransportAtomics = atomics:new(?TRANSPORT_ATOMICS_COUNT, [{signed, true}]),
+    atomics:put(TransportAtomics, ?TRANSPORT_STATUS_IDX, ?STATUS_RUNNING),
+    atomics:put(TransportAtomics, ?TRANSPORT_START_TS_IDX, erlang:system_time(millisecond)),
+    atomics:put(TransportAtomics, ?TRANSPORT_END_TS_IDX, ?EMPTY_TIMESTAMP),
+    update_transport_updated_ts(TransportAtomics),
+    atomics:put(TransportAtomics, ?TRANSPORT_TOTAL_FILES_IDX, TotalFiles),
+    ets:insert(?TRANSPORT_TABLE, {ID, Record, undefined, TransportAtomics}),
+    update_global_active_incoming(Record, undefined, running, State),
+    {ok, TransportAtomics}.
+
+-spec transport_is_running(TransportAtomics :: atomics:atomics_ref()) -> boolean().
+transport_is_running(TransportAtomics) ->
+    atomics:get(TransportAtomics, ?TRANSPORT_STATUS_IDX) =:= ?STATUS_RUNNING.
+
+-spec increment_transport_completed_files(ID :: transport_id(), State :: #state{}) -> #state{}.
+increment_transport_completed_files(ID, State) ->
+    case transport_lookup(ID) of
+        [] ->
+            State;
+        [{_, Record, _, TransportAtomics}] ->
+            case transport_is_running(TransportAtomics) of
+                true ->
+                    TotalFiles = atomics:get(TransportAtomics, ?TRANSPORT_TOTAL_FILES_IDX),
+                    case atomics:add_get(TransportAtomics, ?TRANSPORT_COMPLETED_FILES_IDX, 1) of
+                        TotalFiles -> complete_transport_impl(ID, Record, TransportAtomics, State);
+                        _ -> State
+                    end;
+                false ->
+                    State
+            end
+    end.
+
+-spec complete_transport(ID :: transport_id(), State :: #state{}) -> #state{}.
+complete_transport(ID, State) ->
+    case transport_lookup(ID) of
+        [] ->
+            State;
+        [{_, Record, _, TransportAtomics}] ->
+            case transport_is_running(TransportAtomics) of
+                true  -> complete_transport_impl(ID, Record, TransportAtomics, State);
+                false -> State
+            end
+    end.
+
+-spec complete_transport_impl(
+    ID :: transport_id(),
+    Record :: transport_record(),
+    TransportAtomics :: atomics:atomics_ref(),
+    State :: #state{}
+) -> #state{}.
+complete_transport_impl(ID, Record, TransportAtomics, State) ->
+    update_transport_updated_ts(TransportAtomics),
+    NewStatus =
+        case maybe_notify_complete(ID, Record, State) of
+            ok ->
+                update_transport_status(TransportAtomics, ?STATUS_COMPLETED),
+                completed;
+            {error, Reason} ->
+                update_transport_error(ID, {notify_failed, Reason}),
+                update_transport_status(TransportAtomics, ?STATUS_FAILED),
+                failed
+        end,
+    set_transport_end_ts(TransportAtomics),
+    update_global_active_incoming(Record, running, NewStatus, State),
+    maybe_notify(ID, Record, TransportAtomics, State).
+
+-spec fail_transport(ID :: transport_id(), Error :: term(), State :: #state{}) -> {boolean(), #state{}}.
+fail_transport(ID, Error, State) ->
+    case transport_lookup(ID) of
+        [] ->
+            {false, State};
+        [{_, Record, _, TransportAtomics}] ->
+            case atomics:get(TransportAtomics, ?TRANSPORT_STATUS_IDX) of
+                ?STATUS_RUNNING ->
+                    {true, fail_transport_impl(ID, Record, TransportAtomics, Error, State)};
+                _ ->
+                    {false, State}
+            end
+    end.
+
+-spec fail_transport_impl(
+    ID :: transport_id(),
+    Record :: transport_record(),
+    TransportAtomics :: atomics:atomics_ref(),
+    Error :: term(),
+    State :: #state{}
+) -> #state{}.
+fail_transport_impl(ID, Record, TransportAtomics, Error, State) ->
+    update_transport_updated_ts(TransportAtomics),
+    update_transport_error(ID, Error),
+    update_transport_status(TransportAtomics, ?STATUS_FAILED),
+    set_transport_end_ts(TransportAtomics),
+    update_global_active_incoming(Record, running, failed, State),
+    maybe_notify(ID, Record, TransportAtomics, State).
+
+-spec update_transport_error(ID :: transport_id(), Error :: term()) -> ok.
+update_transport_error(ID, Error) ->
+    ets:update_element(?TRANSPORT_TABLE, ID, {3, Error}),
+    ok.
+
+-spec update_transport_status(TransportAtomics :: atomics:atomics_ref(), Status :: non_neg_integer()) -> ok.
+update_transport_status(TransportAtomics, Status) ->
+    atomics:put(TransportAtomics, ?TRANSPORT_STATUS_IDX, Status).
+
+-spec set_transport_end_ts(TransportAtomics :: atomics:atomics_ref()) -> ok.
+set_transport_end_ts(TransportAtomics) ->
+    atomics:put(TransportAtomics, ?TRANSPORT_END_TS_IDX, erlang:system_time(millisecond)).
+
+-spec update_transport_updated_ts(TransportAtomics :: atomics:atomics_ref()) -> ok.
+update_transport_updated_ts(TransportAtomics) ->
+    atomics:put(TransportAtomics, ?TRANSPORT_UPDATED_TS_IDX, erlang:system_time(millisecond)).
+
+-spec delete_transport_info(ID :: transport_id()) -> ok | not_found.
+delete_transport_info(ID) ->
+    case transport_lookup(ID) of
+        [{_, _, _, TransportAtomics}] ->
+            TotalFiles = atomics:get(TransportAtomics, ?TRANSPORT_TOTAL_FILES_IDX),
+            lists:foreach(fun (FileID) -> delete_file_info(ID, FileID) end, lists:seq(1, TotalFiles)),
+            ets:delete(?TRANSPORT_TABLE, ID),
+            ok;
+        [] ->
             not_found
     end.
+
+-spec register_file(
+    ID :: transport_id(),
+    FileID :: file_id(),
+    Record :: file_record(),
+    TransportAtomics :: atomics:atomics_ref(),
+    TotalBytes :: non_neg_integer()
+) -> ok.
+register_file(ID, FileID, Record, TransportAtomics, TotalBytes) ->
+    % atomics always start with value zero
+    FileAtomics = atomics:new(?FILE_ATOMICS_COUNT, [{signed, true}]),
+    atomics:put(FileAtomics, ?FILE_START_TS_IDX, ?EMPTY_TIMESTAMP),
+    atomics:put(FileAtomics, ?FILE_END_TS_IDX, ?EMPTY_TIMESTAMP),
+    atomics:put(FileAtomics, ?FILE_UPDATED_TS_IDX, ?EMPTY_TIMESTAMP),
+    atomics:put(FileAtomics, ?FILE_TOTAL_BYTES_IDX, TotalBytes),
+    ets:insert(?FILE_TABLE, {{ID, FileID}, Record, undefined, TransportAtomics, FileAtomics}),
+    ok.
+
+-spec complete_or_fail_file(
+    Table :: wa_raft:table(),
+    ID :: transport_id(),
+    FileID :: file_id(),
+    Status :: term(),
+    State :: #state{}
+) -> {boolean(), #state{}}.
+complete_or_fail_file(Table, ID, FileID, Status, State) ->
+    case file_lookup(ID, FileID) of
+        [] ->
+            {false, State};
+        [{_, _, _, TransportAtomics, FileAtomics}] ->
+            % A file may complete directly from "requested" when its transport never
+            % transitioned it to "running" (e.g. the dist receiver path, or a zero-byte
+            % file that carries no data chunk). Terminal states are rejected so a
+            % duplicate completion reports "completed twice" rather than double-counting.
+            case atomics:get(FileAtomics, ?FILE_STATUS_IDX) of
+                Encoded when Encoded =:= ?STATUS_REQUESTED; Encoded =:= ?STATUS_RUNNING ->
+                    StartMillis = atomics:get(FileAtomics, ?FILE_START_TS_IDX),
+                    StartMillis =/= ?EMPTY_TIMESTAMP andalso
+                        ?RAFT_GATHER_LATENCY(Table, {'transport.file.send.latency_ms', Status}, erlang:system_time(millisecond) - StartMillis),
+                    update_file_updated_ts(FileAtomics),
+                    NewState = case Status of
+                        ok ->
+                            update_file_status(FileAtomics, ?STATUS_COMPLETED),
+                            increment_transport_completed_files(ID, State);
+                        _ ->
+                            update_file_error(ID, FileID, Status),
+                            update_file_status(FileAtomics, ?STATUS_FAILED),
+                            {_, State1} = fail_transport(ID, {file, FileID, Status}, State),
+                            State1
+                    end,
+                    set_file_end_ts(FileAtomics),
+                    update_transport_updated_ts(TransportAtomics),
+                    {true, NewState};
+                _ ->
+                    {false, State}
+            end
+    end.
+
+-spec update_file_error(ID :: transport_id(), FileID :: file_id(), Error :: term()) -> ok.
+update_file_error(ID, FileID, Error) ->
+    ets:update_element(?FILE_TABLE, {ID, FileID}, {3, Error}),
+    ok.
+
+-spec update_file_status(FileAtomics :: atomics:atomics_ref(), Status :: non_neg_integer()) -> ok.
+update_file_status(FileAtomics, Status) ->
+    atomics:put(FileAtomics, ?FILE_STATUS_IDX, Status).
+
+-spec set_file_end_ts(FileAtomics :: atomics:atomics_ref()) -> ok.
+set_file_end_ts(FileAtomics) ->
+    atomics:put(FileAtomics, ?FILE_END_TS_IDX, erlang:system_time(millisecond)).
+
+-spec update_file_updated_ts(FileAtomics :: atomics:atomics_ref()) -> ok.
+update_file_updated_ts(FileAtomics) ->
+    atomics:put(FileAtomics, ?FILE_UPDATED_TS_IDX, erlang:system_time(millisecond)).
 
 -spec delete_file_info(ID :: transport_id(), FileID :: file_id()) -> ok.
 delete_file_info(ID, FileID) ->
@@ -447,27 +758,23 @@ registered_module(Table, Partition) ->
 %% Internal API - Transport Workers
 %%-------------------------------------------------------------------
 
--spec pop_file(ID :: transport_id()) -> {ok, FileID :: file_id()} | empty | not_found.
-pop_file(ID) ->
-    case transport_info(ID) of
-        {ok, #{queue := Queue}} -> try_pop_file(Queue);
-        _Other                  -> not_found
-    end.
-
--spec try_pop_file(Queue :: ets:table()) -> {ok, FileID :: file_id()} | empty | not_found.
-try_pop_file(Queue) ->
-    try ets:first(Queue) of
-        '$end_of_table' ->
-            empty;
-        FileID ->
-            try ets:select_delete(Queue, [{{FileID}, [], [true]}]) of
-                0 -> try_pop_file(Queue);
-                1 -> {ok, FileID}
-            catch
-                error:badarg -> not_found
+-spec next_file(ID :: transport_id()) -> {ok, FileID :: file_id()} | empty | not_found.
+next_file(ID) ->
+    case transport_lookup(ID) of
+        [] ->
+            not_found;
+        [{_, _, _, TransportAtomics}] ->
+            case transport_is_running(TransportAtomics) of
+                false ->
+                    empty;
+                true ->
+                    TotalFiles = atomics:get(TransportAtomics, ?TRANSPORT_TOTAL_FILES_IDX),
+                    Next = atomics:add_get(TransportAtomics, ?TRANSPORT_CURRENT_FILE_IDX, 1),
+                    case Next =< TotalFiles andalso Next > 0 of
+                        true -> {ok, Next};
+                        false -> empty
+                    end
             end
-    catch
-        error:badarg -> not_found
     end.
 
 %%% ------------------------------------------------------------------------
@@ -477,9 +784,9 @@ try_pop_file(Queue) ->
 -spec init(Args :: []) -> {ok, State :: #state{}}.
 init(_) ->
     process_flag(trap_exit, true),
-    Counters = counters:new(?RAFT_TRANSPORT_COUNTERS, [atomics]),
+    GlobalAtomics = atomics:new(?GLOBAL_ATOMICS_COUNT, []),
     schedule_scan(),
-    {ok, #state{counters = Counters}}.
+    {ok, #state{global_atomics = GlobalAtomics}}.
 
 -spec handle_call(Request, From :: gen_server:from(), State :: #state{}) -> {reply, Reply :: term(), NewState :: #state{}} | {noreply, NewState :: #state{}}
     when
@@ -489,20 +796,21 @@ init(_) ->
             {start_wait, Peer :: node(), Meta :: meta(), Root :: string()} |
             {transport, ID :: transport_id(), Peer :: node(), Module :: module(), Meta :: meta(), Files :: [{file_id(), RelPath :: string(), Size :: integer()}]} |
             {cancel, ID :: transport_id(), Reason :: term()}.
-handle_call(?MAY_ACCEPT(Witness), _From, #state{counters = Counters} = State) ->
-    {reply, check_capacity(Witness, Counters), State};
-handle_call({start, Peer, Meta, Root}, _From, #state{counters = Counters} = State) ->
-    {reply, handle_transport_start(undefined, Peer, Meta, Root, Counters), State};
-handle_call({start_wait, Peer, Meta, Root}, From, #state{counters = Counters} = State) ->
-    case handle_transport_start(From, Peer, Meta, Root, Counters) of
-        {ok, _ID}       -> {noreply, State};
-        {error, Reason} -> {reply, {error, Reason}, State}
+handle_call(?MAY_ACCEPT(Witness), _From, State) ->
+    {reply, check_capacity(Witness, State), State};
+handle_call({start, Peer, Meta, Root}, _From, State) ->
+    {Result, NewState} = handle_transport_start(undefined, Peer, Meta, Root, State),
+    {reply, Result, NewState};
+handle_call({start_wait, Peer, Meta, Root}, From, State) ->
+    case handle_transport_start(From, Peer, Meta, Root, State) of
+        {{ok, _ID}, NewState}       -> {noreply, NewState};
+        {{error, Reason}, NewState} -> {reply, {error, Reason}, NewState}
     end;
-handle_call({transport, ID, Peer, Module, Meta, Files}, From, #state{counters = Counters} = State) ->
+handle_call({transport, ID, Peer, Module, Meta, Files}, From, State) ->
     Table = maps:get(table, Meta, undefined),
     try
         IsWitness = maps:get(witness, Meta, false),
-        Admission = case check_capacity(IsWitness, Counters) of
+        Admission = case check_capacity(IsWitness, State) of
             {error, _} = Throttled ->
                 Throttled;
             ok ->
@@ -526,58 +834,40 @@ handle_call({transport, ID, Peer, Module, Meta, Files}, From, #state{counters = 
                         ?RAFT_COUNT(Table, 'transport.receive'),
                         ?RAFT_LOG_NOTICE("wa_raft_transport starting transport receive for ~p", [ID]),
 
-                        TransportAtomics = atomics:new(?RAFT_TRANSPORT_TRANSPORT_ATOMICS_COUNT, []),
-                        NowMillis = erlang:system_time(millisecond),
                         TotalFiles = length(Files),
 
                         % Force the receiving directory to always exist
                         try filelib:ensure_dir([RootDir, $/]) catch _:_ -> ok end,
 
                         % Setup overall transport info
-                        set_transport_info(ID, #{
+                        TransportRecord = #{
                             type => receiver,
-                            status => running,
-                            atomics => TransportAtomics,
                             peer => Peer,
                             module => Module,
                             meta => Meta,
-                            root => RootDir,
-                            start_ts => NowMillis,
-                            total_files => TotalFiles,
-                            completed_files => 0
-                        }, Counters),
+                            root => RootDir
+                        },
+                        {ok, TransportAtomics} = register_transport(ID, TransportRecord, TotalFiles, State),
 
                         % Setup file info for each file
                         [
                             begin
-                                FileAtomics = atomics:new(?RAFT_TRANSPORT_FILE_ATOMICS_COUNT, []),
-                                set_file_info(ID, FileID, #{
-                                    status => requested,
-                                    atomics => {TransportAtomics, FileAtomics},
+                                FileRecord = #{
+                                    type => receiver,
                                     name => RelativePath,
-                                    path => Path,
-                                    total_bytes => Size,
-                                    completed_bytes => 0
-                                })
+                                    path => Path
+                                },
+                                register_file(ID, FileID, FileRecord, TransportAtomics, Size)
                             end || {FileID, RelativePath, Path, Size} <- ResolvedFiles
                         ],
 
                         % If the transport is empty, then immediately complete it
-                        TotalFiles =:= 0 andalso
-                            update_and_get_transport_info(
-                                ID,
-                                fun (Info0) ->
-                                    Info1 = Info0#{status => completed, end_ts => NowMillis},
-                                    Info2 = case maybe_notify_complete(ID, Info1, State) of
-                                        ok              -> Info1;
-                                        {error, Reason} -> Info1#{status => failed, error => {notify_failed, Reason}}
-                                    end,
-                                    maybe_notify(ID, Info2)
-                                end,
-                                Counters
-                            ),
+                        NewState = case TotalFiles of
+                            0 -> complete_transport(ID, State);
+                            _ -> State
+                        end,
 
-                        {reply, ok, State};
+                        {reply, ok, NewState};
                     {error, invalid_file_path} ->
                         ?RAFT_COUNT(Table, 'transport.receive.rejected'),
                         ?RAFT_LOG_WARNING(
@@ -590,109 +880,39 @@ handle_call({transport, ID, Peer, Module, Meta, Files}, From, #state{counters = 
     catch
         T:E:S ->
             ?RAFT_COUNT(Table, 'transport.receive.error'),
-            ?RAFT_LOG_WARNING("wa_raft_transport failed to accept transport ~p due to ~p ~p: ~n~p", [ID, T, E, S]),
-            update_and_get_transport_info(
-                ID,
-                fun (Info) ->
-                    Info#{
-                        status => failed,
-                        end_ts => erlang:system_time(millisecond),
-                        error => {receive_failed, {T, E, S}}
-                    }
-                end,
-                Counters
-            ),
-            {reply, {error, failed}, State}
+            ?RAFT_LOG_WARNING("wa_raft_transport failed to accept transport ~0p~n~s", [ID, erl_error:format_exception(T, E, S)]),
+            {_, FailedState} = fail_transport(ID, {receive_failed, {T, E, S}}, State),
+            {reply, {error, failed}, FailedState}
     end;
-handle_call({cancel, ID, Reason}, _From, #state{counters = Counters} = State) ->
-    ?RAFT_LOG_NOTICE("wa_raft_transport got cancellation request for ~p for reason ~p", [ID, Reason]),
-    Reply =
-        case
-            update_and_get_transport_info(
-                ID,
-                fun
-                    (#{status := running} = Info) ->
-                        NowMillis = erlang:system_time(millisecond),
-                        Info#{status := cancelled, end_ts => NowMillis, error => {cancelled, Reason}};
-                    (Info) ->
-                        Info
-                end,
-                Counters
-            )
-        of
-            {ok, _Info} -> ok;
-            not_found   -> {error, not_found}
-        end,
-    {reply, Reply, State};
-handle_call(Request, _From, #state{} = State) ->
-    ?RAFT_LOG_WARNING("wa_raft_transport received unrecognized call ~p", [Request]),
+handle_call({cancel, ID, Reason}, _, State) ->
+    ?RAFT_LOG_NOTICE("cancelling transport ~0p for reason ~0P", [ID, Reason, 20]),
+    case fail_transport(ID, {cancelled, Reason}, State) of
+        {true, NewState}  -> {reply, ok, NewState};
+        {false, NewState} -> {reply, {error, not_found}, NewState}
+    end;
+handle_call(Request, From, #state{} = State) ->
+    ?RAFT_LOG_WARNING("received unrecognized call ~0P from ~0p", [Request, 20, From]),
     {reply, {error, unsupported}, State}.
 
 -spec handle_cast(Request, State :: #state{}) -> {noreply, NewState :: #state{}}
     when Request :: {complete, ID :: transport_id(), FileID :: file_id(), Status :: term()}.
-handle_cast({complete, ID, FileID, Status}, #state{counters = Counters} = State) ->
-    NowMillis = erlang:system_time(millisecond),
+handle_cast({complete, ID, FileID, Status}, State) ->
     Table = case transport_info(ID) of
         {ok, #{meta := Meta}} -> maps:get(table, Meta, undefined);
         _                     -> undefined
     end,
     ?RAFT_COUNT(Table, {'transport.file.send', normalize_status(Status)}),
-    Result0 = update_file_info(ID, FileID,
-        fun (Info) ->
-            case Info of
-                #{start_ts := StartMillis} ->
-                    ?RAFT_GATHER_LATENCY(Table, {'transport.file.send.latency_ms', Status}, NowMillis - StartMillis);
-                _ ->
-                    ok
-            end,
-            case Status of
-                ok -> Info#{status => completed, end_ts => NowMillis};
-                _  -> Info#{status => failed, end_ts => NowMillis, error => Status}
-            end
-        end),
-    Result0 =:= not_found andalso
-        ?RAFT_LOG_WARNING("wa_raft_transport got complete report for unknown file ~p:~p", [ID, FileID]),
-    Result1 =
-        update_and_get_transport_info(
-            ID,
-            fun
-                (#{status := running, completed_files := CompletedFiles, total_files := TotalFiles} = Info0) ->
-                    Info1 = Info0#{completed_files => CompletedFiles + 1},
-                    Info2 = case CompletedFiles + 1 of
-                        TotalFiles -> Info1#{status => completed, end_ts => NowMillis};
-                        _          -> Info1
-                    end,
-                    Info3 = case Status of
-                        ok -> Info2;
-                        _  -> Info2#{status => failed, end_ts => NowMillis, error => {file, FileID, Status}}
-                    end,
-                    Info4 = case maybe_notify_complete(ID, Info3, State) of
-                        ok              -> Info3;
-                        {error, Reason} -> Info3#{status => failed, error => {notify_failed, Reason}}
-                    end,
-                    maybe_notify(ID, Info4);
-                (Info) ->
-                    Info
-            end,
-            Counters
-        ),
-    Result1 =:= not_found andalso
-        ?RAFT_LOG_WARNING("wa_raft_transport got complete report for unknown transfer ~p", [ID]),
-    {noreply, State};
+    {Handled, NewState} = complete_or_fail_file(Table, ID, FileID, Status, State),
+    Handled orelse
+        ?RAFT_LOG_WARNING("for transport ~0p, file ~0p completed twice or is missing file or transport record", [ID, FileID]),
+    {noreply, NewState};
 handle_cast(Request, State) ->
-    ?RAFT_LOG_NOTICE("wa_raft_transport got unrecognized cast ~p", [Request]),
+    ?RAFT_LOG_NOTICE("received unrecognized cast ~0P", [Request, 20]),
     {noreply, State}.
 
 -spec handle_info(Info :: term(), State :: #state{}) -> {noreply, NewState :: #state{}}.
-handle_info(scan, #state{counters = Counters} = State) ->
-    InactiveTransports =
-        lists:filter(
-            fun (ID) ->
-                case update_and_get_transport_info(ID, fun (Info) -> scan_transport(ID, Info) end, Counters) of
-                    {ok, #{status := Status}} -> Status =/= requested andalso Status =/= running;
-                    not_found                 -> false
-                end
-            end, transports()),
+handle_info(scan, State) ->
+    {InactiveTransports, NewState} = scan_transports(State),
     ExcessTransports = length(InactiveTransports) - ?RAFT_TRANSPORT_INACTIVE_INFO_LIMIT(),
     ExcessTransports > 0 andalso begin
         ExcessTransportIDs = lists:sublist(lists:sort(InactiveTransports), ExcessTransports),
@@ -700,7 +920,7 @@ handle_info(scan, #state{counters = Counters} = State) ->
     end,
 
     schedule_scan(),
-    {noreply, State};
+    {noreply, NewState};
 handle_info(Info, State) ->
     ?RAFT_LOG_NOTICE("wa_raft_transport got unrecognized info ~p", [Info]),
     {noreply, State}.
@@ -718,150 +938,89 @@ make_id() ->
         not_found   -> ID
     end.
 
--spec handle_transport_start(From :: gen_server:from() | undefined, Peer :: node(), Meta :: meta(), Root :: string(), Counters :: counters:counters_ref()) -> {ok, ID :: transport_id()} | {error, Reason :: term()}.
-handle_transport_start(From, Peer, Meta, Root, Counters) ->
+-spec handle_transport_start(From :: gen_server:from() | undefined, Peer :: node(), Meta :: meta(), Root :: string(), State :: #state{}) ->
+    {{ok, ID :: transport_id()} | {error, Reason :: term()}, NewState :: #state{}}.
+handle_transport_start(From, Peer, Meta, Root, State) ->
     ID = make_id(),
     Table = maps:get(table, Meta, undefined),
 
     ?RAFT_COUNT(Table, 'transport.start'),
-    ?RAFT_LOG_NOTICE(
-        "wa_raft_transport starting transport ~p of ~p to ~p with metadata ~p",
-        [ID, Root, Peer, Meta]
-    ),
+    ?RAFT_LOG_NOTICE("starting transport ~0p of ~0p to ~0p with metadata ~0P", [ID, Root, Peer, Meta, 20]),
 
     try
         Files = collect_files(Root),
-        TransportAtomics = atomics:new(?RAFT_TRANSPORT_TRANSPORT_ATOMICS_COUNT, []),
         Module = transport_module(Meta),
         TotalFiles = length(Files),
-        NowMillis = erlang:system_time(millisecond),
-        Queue = ets:new(?MODULE, [ordered_set, public]),
-
-        % Setup overall transport info
-        set_transport_info(ID, #{
-            type => sender,
-            status => requested,
-            atomics => TransportAtomics,
-            peer => Peer,
-            module => Module,
-            meta => Meta,
-            root => Root,
-            start_ts => NowMillis,
-            total_files => TotalFiles,
-            completed_files => 0,
-            queue => Queue
-        }, Counters),
-
-        % Setup file info for each file
-        [
-            begin
-                FileAtomics = atomics:new(?RAFT_TRANSPORT_FILE_ATOMICS_COUNT, []),
-                set_file_info(ID, FileID, #{
-                    status => requested,
-                    atomics => {TransportAtomics, FileAtomics},
-                    name => Filename,
-                    path => Path,
-                    mtime => MTime,
-                    total_bytes => Size,
-                    completed_bytes => 0
-                })
-            end || {FileID, Filename, Path, MTime, Size} <- Files
-        ],
 
         % Notify peer node of incoming transport
         FileData = [{FileID, Filename, Size} || {FileID, Filename, _, _, Size} <- Files],
         case gen_server:call({?MODULE, Peer}, {transport, ID, node(), Module, Meta, FileData}, ?RAFT_RPC_CALL_TIMEOUT()) of
             ok ->
-                % Add all files to the queue
-                ets:insert(Queue, [{FileID} || {FileID, _, _, _, _} <- Files]),
+                % Setup overall transport info
+                TransportRecord = #{
+                    type => sender,
+                    peer => Peer,
+                    module => Module,
+                    meta => Meta,
+                    root => Root
+                },
+                {ok, TransportAtomics} = register_transport(ID, TransportRecord, TotalFiles, State),
 
-                % Start workers
-                update_and_get_transport_info(
-                    ID,
-                    fun (Info0) ->
-                        Info1 = case From of
-                            undefined -> Info0;
-                            _         -> Info0#{notify => From}
-                        end,
-                        case TotalFiles of
-                            0 ->
-                                Info2 = Info1#{status => completed, end_ts => NowMillis},
-                                maybe_notify(ID, Info2);
-                            _ ->
-                                Sup = wa_raft_transport_sup:get_or_start(Peer),
-                                [gen_server:cast(Pid, {notify, ID, Table}) || {_Id, Pid, _Type, _Modules} <- supervisor:which_children(Sup), is_pid(Pid)],
-                                Info1#{status => running}
-                        end
-                    end,
-                    Counters
-                ),
-                {ok, ID};
+                % Setup file info for each file
+                [
+                    begin
+                        FileRecord = #{
+                            type => sender,
+                            name => Filename,
+                            path => Path,
+                            mtime => MTime
+                        },
+                        register_file(ID, FileID, FileRecord, TransportAtomics, Size)
+                    end || {FileID, Filename, Path, MTime, Size} <- Files
+                ],
+
+                % Complete transport if empty or start workers. The pending reply is
+                % registered only once the transport has been fully handed off (workers
+                % started, or the empty transport completed), so a failure before this
+                % point falls through to the catch clause and replies {error, failed}
+                % via handle_call instead of a spurious {ok, ID}.
+                case TotalFiles of
+                    0 ->
+                        {{ok, ID}, complete_transport(ID, add_pending_notify(ID, From, State))};
+                    _ ->
+                        Sup = wa_raft_transport_sup:get_or_start(Peer),
+                        [gen_server:cast(Pid, {notify, ID, Table}) || {_Id, Pid, _Type, _Modules} <- supervisor:which_children(Sup), is_pid(Pid)],
+                        {{ok, ID}, add_pending_notify(ID, From, State)}
+                end;
             {error, receiver_overloaded} ->
                 ?RAFT_COUNT(Table, 'transport.rejected.receiver_overloaded'),
                 ?RAFT_LOG_WARNING("wa_raft_transport peer ~p rejected transport ~p because of overload", [Peer, ID]),
-                update_and_get_transport_info(
-                    ID,
-                    fun (Info) ->
-                        Info#{
-                            status => failed,
-                            end_ts => NowMillis,
-                            error => {rejected, receiver_overloaded}
-                        }
-                    end,
-                    Counters
-                ),
-                {error, receiver_overloaded};
+                {{error, receiver_overloaded}, State};
             {error, receiver_disk_full} ->
                 ?RAFT_COUNT(Table, 'transport.rejected.receiver_disk_full'),
                 ?RAFT_LOG_WARNING("wa_raft_transport peer ~p rejected transport ~p because of disk pressure", [Peer, ID]),
-                update_and_get_transport_info(
-                    ID,
-                    fun (Info) ->
-                        Info#{
-                            status => failed,
-                            end_ts => NowMillis,
-                            error => {rejected, receiver_disk_full}
-                        }
-                    end,
-                    Counters
-                ),
-                {error, receiver_disk_full};
+                {{error, receiver_disk_full}, State};
             Error ->
                 ?RAFT_COUNT(Table, 'transport.rejected'),
                 ?RAFT_LOG_WARNING("wa_raft_transport peer ~p rejected transport ~p with error ~p", [Peer, ID, Error]),
-                update_and_get_transport_info(
-                    ID,
-                    fun (Info) ->
-                        Info#{
-                            status => failed,
-                            end_ts => NowMillis,
-                            error => {rejected, Error}
-                        }
-                    end,
-                    Counters
-                ),
-                {error, Error}
+                {{error, Error}, State}
         end
     catch
         T:E:S ->
             ?RAFT_COUNT(Table, 'transport.start.error'),
             ?RAFT_LOG_WARNING(
-                "wa_raft_transport failed to start transport ~p due to ~p ~p: ~n~p",
-                [ID, T, E, S]
+                "wa_raft_transport failed to start transport ~0p~n~s",
+                [ID, erl_error:format_exception(T, E, S)]
             ),
-            update_and_get_transport_info(
-                ID,
-                fun (Info) ->
-                    Info#{
-                        status => failed,
-                        end_ts => erlang:system_time(millisecond),
-                        error => {start, {T, E, S}}
-                    }
-                end,
-                Counters
-            ),
-            {error, failed}
+            {_, NewState} = fail_transport(ID, {start, {T, E, S}}, State),
+            {{error, failed}, NewState}
     end.
+
+-spec add_pending_notify(ID :: transport_id(), From :: gen_server:from() | undefined, State :: #state{}) -> #state{}.
+add_pending_notify(_ID, undefined, State) ->
+    State;
+add_pending_notify(ID, From, #state{pending_notify = PendingNotify} = State) ->
+    State#state{pending_notify = PendingNotify#{ID => From}}.
 
 -spec transport_module(Meta :: meta()) -> module().
 transport_module(#{table := Table, partition := Partition}) ->
@@ -873,13 +1032,17 @@ transport_module(_Meta) ->
 %% transports. Depends only on the witness flag and the active receive counters,
 %% never on the transported files, so it can also answer a precheck from a sender
 %% that has not created its snapshot yet.
--spec check_capacity(Witness :: boolean(), Counters :: counters:counters_ref()) ->
-    ok | {error, receiver_overloaded}.
-check_capacity(Witness, Counters) ->
-    {MaxIncomingSnapshotTransfers, NumActiveReceives} = case Witness of
-        true  -> {?RAFT_MAX_CONCURRENT_INCOMING_WITNESS_SNAPSHOT_TRANSFERS(), counters:get(Counters, ?RAFT_TRANSPORT_COUNTER_ACTIVE_WITNESS_RECEIVES)};
-        false -> {?RAFT_MAX_CONCURRENT_INCOMING_SNAPSHOT_TRANSFERS(), counters:get(Counters, ?RAFT_TRANSPORT_COUNTER_ACTIVE_RECEIVES)}
+-spec check_capacity(Witness :: boolean(), State :: #state{}) -> ok | {error, receiver_overloaded}.
+check_capacity(Witness, #state{global_atomics = GlobalAtomics}) ->
+    MaxIncomingSnapshotTransfers = case Witness of
+        true  -> ?RAFT_MAX_CONCURRENT_INCOMING_WITNESS_SNAPSHOT_TRANSFERS();
+        false -> ?RAFT_MAX_CONCURRENT_INCOMING_SNAPSHOT_TRANSFERS()
     end,
+    GlobalActiveIncomingIdx = case Witness of
+        true  -> ?GLOBAL_ACTIVE_INCOMING_WITNESS_IDX;
+        false -> ?GLOBAL_ACTIVE_INCOMING_IDX
+    end,
+    NumActiveReceives = atomics:get(GlobalAtomics, GlobalActiveIncomingIdx),
     case NumActiveReceives >= MaxIncomingSnapshotTransfers of
         true  -> {error, receiver_overloaded};
         false -> ok
@@ -966,8 +1129,8 @@ collect_files_impl(Root, [Filename | Queue], Fun, Acc0) ->
 join_names("", Name) -> Name;
 join_names(Dir, Name) -> [Dir, $/, Name].
 
--spec maybe_notify_complete(transport_id(), transport_info(), #state{}) -> ok | {error, term()}.
-maybe_notify_complete(ID, #{type := receiver, status := completed, module := Module} = Info, State) ->
+-spec maybe_notify_complete(ID :: transport_id(), Record :: transport_record(), State :: #state{}) -> ok | {error, term()}.
+maybe_notify_complete(ID, #{type := receiver, module := Module} = Record, State) ->
     case erlang:function_exported(Module, transport_complete, 1) of
         true ->
             try Module:transport_complete(ID) of
@@ -982,14 +1145,12 @@ maybe_notify_complete(ID, #{type := receiver, status := completed, module := Mod
         false ->
             ok
     end,
-    maybe_notify_complete_impl(ID, Info, State);
-maybe_notify_complete(ID, Info, State) ->
-    maybe_notify_complete_impl(ID, Info, State).
+    maybe_notify_complete_impl(ID, Record, State);
+maybe_notify_complete(ID, Record, State) ->
+    maybe_notify_complete_impl(ID, Record, State).
 
--spec maybe_notify_complete_impl(transport_id(), transport_info(), #state{}) -> ok | {error, term()}.
+-spec maybe_notify_complete_impl(ID :: transport_id(), Record :: transport_record(), State :: #state{}) -> ok | {error, term()}.
 maybe_notify_complete_impl(_ID, #{type := sender}, _State) ->
-    ok;
-maybe_notify_complete_impl(_ID, #{status := Status}, _State) when Status =/= completed ->
     ok;
 maybe_notify_complete_impl(ID, #{type := receiver, root := Root, meta := #{type := snapshot, table := Table, partition := Partition, position := LogPos}}, #state{}) ->
     try wa_raft_server:snapshot_available(wa_raft_server:registered_name(Table, Partition), Root, LogPos) of
@@ -1012,26 +1173,48 @@ maybe_notify_complete_impl(ID, #{type := receiver, root := Root, meta := #{type 
 maybe_notify_complete_impl(ID, _Info, #state{}) ->
     ?RAFT_LOG_NOTICE("wa_raft_transport finished transport ~p but does not know what to do with it", [ID]).
 
--spec maybe_notify(transport_id(), transport_info()) -> transport_info().
-maybe_notify(ID, #{status := Status, notify := Notify, start_ts := Start, end_ts := End} = Info) when Status =/= requested, Status =/= running ->
-    Table = maps:get(table, maps:get(meta, Info, #{}), undefined),
+-spec maybe_notify(ID :: transport_id(), Record :: transport_record(), TransportAtomics :: atomics:atomics_ref(), State :: #state{}) -> #state{}.
+maybe_notify(ID, Record, TransportAtomics, #state{pending_notify = PendingNotify} = State) ->
+    Table = maps:get(table, maps:get(meta, Record, #{}), undefined),
+    Status = decode_status(atomics:get(TransportAtomics, ?TRANSPORT_STATUS_IDX)),
+    Start = atomics:get(TransportAtomics, ?TRANSPORT_START_TS_IDX),
+    End = atomics:get(TransportAtomics, ?TRANSPORT_END_TS_IDX),
     ?RAFT_COUNT(Table, {'transport', Status}),
-    ?RAFT_GATHER_LATENCY(Table, {'transport.latency_ms', Status}, End - Start),
-    gen_server:reply(Notify, {ok, ID}),
-    maps:remove(notify, Info);
-maybe_notify(_ID, Info) ->
-    Info.
+    End =/= ?EMPTY_TIMESTAMP andalso ?RAFT_GATHER_LATENCY(Table, {'transport.latency_ms', Status}, End - Start),
+    case PendingNotify of
+        #{ID := Notify} ->
+            gen_server:reply(Notify, {ok, ID}),
+            State#state{pending_notify = maps:remove(ID, PendingNotify)};
+        _ ->
+            State
+    end.
 
--spec scan_transport(ID :: transport_id(), Info :: transport_info()) -> NewInfo :: transport_info().
-scan_transport(ID, #{status := running, atomics := TransportAtomics} = Info) ->
-    LastUpdateTs = atomics:get(TransportAtomics, ?RAFT_TRANSPORT_ATOMICS_UPDATED_TS),
-    NowMillis = erlang:system_time(millisecond),
-    case NowMillis - LastUpdateTs >= ?RAFT_TRANSPORT_IDLE_TIMEOUT() * 1000 of
-        true  -> maybe_notify(ID, Info#{status := timed_out, end_ts => NowMillis});
-        false -> Info
-    end;
-scan_transport(_ID, Info) ->
-    Info.
+-spec scan_transports(State :: #state{}) -> {Inactive :: [transport_id()], NewState :: #state{}}.
+scan_transports(State) ->
+    scan_transports(ets:first_lookup(?TRANSPORT_TABLE), [], State).
+
+-spec scan_transports(
+    {ID :: transport_id(), Rows :: [transport_row()]} | '$end_of_table',
+    Acc :: [transport_id()],
+    State :: #state{}
+) -> {Inactive :: [transport_id()], NewState :: #state{}}.
+scan_transports('$end_of_table', Acc, State) ->
+    {Acc, State};
+scan_transports({ID, [{_, Record, _, TransportAtomics}]}, Acc, State) ->
+    {NewAcc, NewState} = case transport_is_running(TransportAtomics) of
+        true ->
+            NowTs = erlang:system_time(millisecond),
+            UpdatedTs = atomics:get(TransportAtomics, ?TRANSPORT_UPDATED_TS_IDX),
+            case NowTs - UpdatedTs >= ?RAFT_TRANSPORT_IDLE_TIMEOUT() * 1000 of
+                true ->
+                    {[ID | Acc], fail_transport_impl(ID, Record, TransportAtomics, timed_out, State)};
+                false ->
+                    {Acc, State}
+            end;
+        false ->
+            {[ID | Acc], State}
+    end,
+    scan_transports(ets:next_lookup(?TRANSPORT_TABLE, ID), NewAcc, NewState).
 
 -spec schedule_scan() -> reference().
 schedule_scan() ->

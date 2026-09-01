@@ -94,11 +94,10 @@ handle_info(timeout, #state{number = Number, jobs = Jobs, states = States} = Sta
         {empty, NewJobs} ->
             {noreply, State#state{jobs = NewJobs}, hibernate};
         {{value, #transport{id = ID, table = Table}}, NewJobs} ->
-            case wa_raft_transport:pop_file(ID) of
+            case wa_raft_transport:next_file(ID) of
                 {ok, FileID} ->
                     ?RAFT_COUNT(Table, 'transport.file.send'),
-                    wa_raft_transport:update_file_info(ID, FileID,
-                        fun (Info) -> Info#{status => sending, start_ts => erlang:system_time(millisecond)} end),
+                    wa_raft_transport:start_file(ID, FileID),
                     NewJob = #file{id = ID, table = Table, file = FileID},
                     {noreply, State#state{jobs = queue:in(NewJob, NewJobs)}, ?CONTINUE_TIMEOUT};
                 _Other ->
@@ -142,7 +141,7 @@ handle_info(timeout, #state{number = Number, jobs = Jobs, states = States} = Sta
                 true ->
                     {noreply, NewState#state{jobs = queue:in(Job, NewJobs)}, ?CONTINUE_TIMEOUT};
                 false ->
-                    wa_raft_transport:complete(ID, FileID, Result),
+                    wa_raft_transport:complete_file(ID, FileID, Result),
                     {noreply, NewState#state{jobs = queue:in(#transport{id = ID}, NewJobs)}, ?CONTINUE_TIMEOUT}
             end
     end;

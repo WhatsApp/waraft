@@ -140,10 +140,7 @@ transport_send_loop(ID, FileID, Fd, Offset, Peer, Chunks, ChunkSize, MaxInflight
     case prim_file:read(Fd, ChunkSize) of
         {ok, Data} ->
             RequestId = gen_server:send_request({?MODULE, Peer}, {chunk, ID, FileID, Offset, Data}),
-            wa_raft_transport:update_file_info(ID, FileID,
-                fun (#{completed_bytes := Completed} = Info) ->
-                    Info#{completed_bytes := Completed + byte_size(Data)}
-                end),
+            wa_raft_transport:advance_file(ID, FileID, Offset + byte_size(Data)),
             transport_send_loop(ID, FileID, Fd, Offset + byte_size(Data), Peer, Chunks ++ [RequestId], ChunkSize, MaxInflight, State);
         eof ->
             transport_send_loop(ID, FileID, Fd, eof, Peer, Chunks, ChunkSize, MaxInflight, State);
@@ -165,11 +162,7 @@ handle_call({chunk, ID, FileID, Offset, Data}, _From, #receiver_state{} = State0
         {ok, Fd, State1} ->
             case prim_file:pwrite(Fd, Offset, Data) of
                 ok ->
-                    wa_raft_transport:update_file_info(ID, FileID,
-                        fun (#{completed_bytes := Completed} = Info) ->
-                            Info#{completed_bytes := Completed + byte_size(Data)}
-                        end),
-
+                    wa_raft_transport:advance_file(ID, FileID, Offset + byte_size(Data)),
                     {ok, State1};
                 {error, Reason} ->
                     ?RAFT_LOG_WARNING(
@@ -196,7 +189,7 @@ handle_cast({complete, ID, FileID}, #receiver_state{} = State0) ->
     case open_file(ID, FileID, State0) of
         {ok, _Fd, State1} ->
             {ok, State2} = close_file(ID, FileID, State1),
-            wa_raft_transport:complete(ID, FileID, ok),
+            wa_raft_transport:complete_file(ID, FileID, ok),
             {noreply, State2};
         {error, Reason, State1} ->
             ?RAFT_LOG_WARNING(
