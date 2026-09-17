@@ -1070,14 +1070,26 @@ handle_truncate(Index, #log_view{last = Last} = View0, #log_state{log = #raft_lo
     {ok, NewState :: #log_state{}} | {error, Reason :: term()}.
 handle_trim(_Index, #log_state{state = ?PROVIDER_NOT_OPENED}) ->
     {error, not_open};
-handle_trim(Index, #log_state{log = #raft_log{table = Table} = Log, state = ProviderState} = State) ->
+handle_trim(Index, #log_state{log = #raft_log{table = Table, partition = Partition} = Log, state = ProviderState} = State) ->
     ?RAFT_COUNT(Table, 'log.trim'),
-    ?RAFT_LOG_DEBUG("[~p] trimming log to ~p", [log_name(Log), Index]),
+    TrimIndex = durable_trim_index(Table, Partition, Index),
+    ?RAFT_LOG_DEBUG("[~p] trimming log to ~p", [log_name(Log), TrimIndex]),
     Provider = provider(Log),
-    case Provider:trim(Log, Index, ProviderState) of
+    case Provider:trim(Log, TrimIndex, ProviderState) of
         {ok, NewProviderState} ->
             {ok, State#log_state{state = NewProviderState}};
         {error, Reason} ->
             ?RAFT_COUNT(Table, 'log.trim.error'),
             {error, Reason}
+    end.
+
+-spec durable_trim_index(Table :: wa_raft:table(), Partition :: wa_raft:partition(), Index :: log_index()) -> log_index().
+durable_trim_index(Table, Partition, Index) ->
+    case wa_raft_storage:durable_position(Table, Partition) of
+        unbounded ->
+            Index;
+        #raft_log_pos{index = DurableIndex} ->
+            DurableIndex < Index andalso ?RAFT_COUNT(Table, 'log.trim.limited'),
+            DurableIndex =:= 0 andalso ?RAFT_COUNT(Table, 'log.trim.zero_durable_position'),
+            min(Index, DurableIndex)
     end.

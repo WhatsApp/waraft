@@ -19,6 +19,7 @@ purposes only and should not be used in actual applications.
     storage_close/1,
     storage_label/1,
     storage_position/1,
+    storage_durable_position/2,
     storage_config/1,
     storage_apply/3,
     storage_apply/4,
@@ -68,6 +69,10 @@ storage_close(#state{storage = Storage}) ->
 -spec storage_position(#state{}) -> wa_raft_log:log_pos().
 storage_position(#state{storage = Storage}) ->
     ets:lookup_element(Storage, ?POSITION_TAG, 2, #raft_log_pos{}).
+
+-spec storage_durable_position(Table :: wa_raft:table(), Partition :: wa_raft:partition()) -> unbounded.
+storage_durable_position(_Table, _Partition) ->
+    unbounded.
 
 -spec storage_label(#state{}) -> {ok, Label :: wa_raft_label:label()}.
 storage_label(#state{storage = Storage}) ->

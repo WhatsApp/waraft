@@ -24,6 +24,7 @@ storage solutions on top of the RAFT consensus algorithm.
 -export([
     status/1,
     position/1,
+    durable_position/2,
     label/1,
     config/1,
     read/2
@@ -221,6 +222,13 @@ storage solutions on top of the RAFT consensus algorithm.
 %% Issue a read command to get the position of the current storage state.
 -callback storage_position(Handle :: storage_handle()) -> Position :: wa_raft_log:log_pos().
 
+%% Called synchronously from the log server trim path, this callback may block on
+%% provider-owned I/O but must not call either RAFT server; return `unbounded`
+%% only when recovery requires no retained log entries, otherwise return a
+%% restart-safe applied position or `#raft_log_pos{}` when unknown.
+-callback storage_durable_position(Table :: wa_raft:table(), Partition :: wa_raft:partition()) ->
+    Position :: wa_raft_log:log_pos() | unbounded.
+
 %% Issue a read command to get the label associated with the most
 %% recent command that was applied with a label. See the optional
 %% callback `storage_apply/4` for details.
@@ -304,8 +312,9 @@ storage solutions on top of the RAFT consensus algorithm.
 %% of other read commands already inserted) would not affect the result
 %% returned by any other command or the results of any future commands.
 %%
-%% Implicitly, use of the `storage_position/1` callback is non-synchronized
-%% access of the storage state and should be considered to be read commands.
+%% Implicitly, use of the `storage_position/1` and
+%% `storage_durable_position/2` callbacks is non-synchronized access of the
+%% storage state and should be considered read commands.
 %%
 %% Not exhaustively, the RAFT implementation uses read commands to access
 %% metadata stored in the storage state on behalf of the RAFT implementation
@@ -398,6 +407,13 @@ status(Storage) ->
 -spec position(Storage :: gen_server:server_ref()) -> Position :: wa_raft_log:log_pos().
 position(Storage) ->
     gen_server:call(Storage, ?POSITION_REQUEST, ?RAFT_STORAGE_CALL_TIMEOUT()).
+
+-spec durable_position(Table :: wa_raft:table(), Partition :: wa_raft:partition()) -> wa_raft_log:log_pos() | unbounded.
+durable_position(Table, Partition) ->
+    case wa_raft_part_sup:options(Table, Partition) of
+        #raft_options{storage_module = Module} -> Module:storage_durable_position(Table, Partition);
+        undefined -> #raft_log_pos{}
+    end.
 
 -spec label(Storage :: gen_server:server_ref()) -> {ok, Label :: wa_raft_label:label()} | {error, Reason :: term()}.
 label(Storage) ->
