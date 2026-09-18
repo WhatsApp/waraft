@@ -1,3 +1,4 @@
+% @format
 %% Copyright (c) Meta Platforms, Inc. and affiliates. All rights reserved.
 %%
 %% This source code is licensed under the Apache 2.0 license found in
@@ -102,7 +103,10 @@ basic_snapshot(Config) ->
     Storage1 = wa_raft_storage:registered_name(Table, 1),
 
     % Advance storage by applying 100 log entries
-    [ok = wa_raft_storage:apply(Storage1, undefined, {I, {2, {I, undefined, noop}}}, 1, high) || I <- lists:seq(1, 100)],
+    [
+        ok = wa_raft_storage:apply(Storage1, undefined, {I, {2, {I, undefined, noop}}}, 1, high)
+     || I <- lists:seq(1, 100)
+    ],
     Status1 = wa_raft_storage:status(Storage1),
     ?assertEqual(100, proplists:get_value(last_applied, Status1)),
 
@@ -160,7 +164,9 @@ config_snapshot(Config) ->
 
     % Apply a log entry that changes the configuration
     Config0 = wa_raft_server:make_config([Node1]),
-    ?assertEqual(ok, wa_raft_storage:apply(Storage1, undefined, {1, {1, {make_ref(), undefined, {config, Config0}}}}, 1, high)),
+    ?assertEqual(
+        ok, wa_raft_storage:apply(Storage1, undefined, {1, {1, {make_ref(), undefined, {config, Config0}}}}, 1, high)
+    ),
     ?assertEqual({ok, #raft_log_pos{index = 1, term = 1}, Config0}, wa_raft_storage:config(Storage1)),
 
     % Apply another log entry that changes the configuration yet again

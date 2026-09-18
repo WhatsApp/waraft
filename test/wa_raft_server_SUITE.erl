@@ -1,3 +1,4 @@
+% @format
 %% Copyright (c) Meta Platforms, Inc. and affiliates. All rights reserved.
 %%
 %% This source code is licensed under the Apache 2.0 license found in
@@ -145,8 +146,8 @@ end_per_suite(Config) ->
 
 -spec init_per_group(Group :: atom(), Config :: ct_suite:ct_config()) -> ct_suite:ct_config().
 init_per_group(Group, Config0) ->
+    Config1 = wa_raft_test_helper:setup_group([{group, Group} | Config0]),
     ok = application:set_env(?RAFT_APPLICATION, use_trim_index, true),
-    Config1 = [{group, Group} | Config0],
     case Group of
         unit -> unit_init_per_group(Config1);
         server -> server_init_per_group(Config1);
@@ -154,8 +155,14 @@ init_per_group(Group, Config0) ->
     end.
 
 -spec end_per_group(Group :: atom(), Config :: ct_suite:ct_config()) -> ok.
-end_per_group(_, _) ->
-    ok.
+end_per_group(_, Config) ->
+    ok = wa_raft_test_helper:teardown_group(Config),
+    wa_raft_test_helper:unload_mocks([
+        wa_raft_server,
+        wa_raft_test_distribution,
+        wa_raft_test_label,
+        wa_raft_storage
+    ]).
 
 -spec init_per_testcase(Testcase :: atom(), Config :: ct_suite:ct_config()) -> ct_suite:ct_config().
 init_per_testcase(Testcase, Config0) ->
@@ -168,7 +175,7 @@ init_per_testcase(Testcase, Config0) ->
 
 -spec end_per_testcase(Testcase :: atom(), Config :: ct_suite:ct_config()) -> ok.
 end_per_testcase(_, _) ->
-    ok.
+    wa_raft_test_helper:unload_mocks([wa_raft_log, wa_raft_snapshot_catchup]).
 
 -spec all() -> [ct_suite:ct_test_def()].
 all() ->
@@ -200,38 +207,79 @@ server_groups() ->
     [
         % Server unit tests test RAFT server behavior when handling events
         {server, [
-            init, init_witness, init_empty,
-            advance_term, advance_term_vote, advance_term_witness,
-            stale_rpc, stale_rpc_witness,
-            election, election_three_members, election_four_members,
-            request_vote, request_vote_drop,
-            append_entries, append_entries_witness, append_entries_witness_match_cap,
+            init,
+            init_witness,
+            init_empty,
+            advance_term,
+            advance_term_vote,
+            advance_term_witness,
+            stale_rpc,
+            stale_rpc_witness,
+            election,
+            election_three_members,
+            election_four_members,
+            request_vote,
+            request_vote_drop,
+            append_entries,
+            append_entries_witness,
+            append_entries_witness_match_cap,
             append_entries_two_witness_full_member_cap,
-            heartbeat, heartbeat_three_members, heartbeat_four_members,
+            heartbeat,
+            heartbeat_three_members,
+            heartbeat_four_members,
             replication_index,
-            commit, commit_label, commit_witness, commit_follower,
+            commit,
+            commit_label,
+            commit_witness,
+            commit_follower,
             commit_cancelled_truncate,
             snapshot_leader_witness,
-            commit_two_witness, commit_one_witness,
-            commit_three_members, commit_four_members,
-            commit_candidate, commit_cancelled_candidate,
-            read, read_after, read_candidate, read_after_candidate,
-            read_lease_hit, read_lease_miss_disabled, read_lease_miss_stale,
-            read_lease_miss_not_current_term, read_lease_miss_no_quorum_ts,
-            read_lease_miss_not_applied, read_lease_miss_handover_in_progress,
-            read_lease_handover_failed_rearms, read_lease_handover_timeout_rearms,
+            commit_two_witness,
+            commit_one_witness,
+            commit_three_members,
+            commit_four_members,
+            commit_candidate,
+            commit_cancelled_candidate,
+            read,
+            read_after,
+            read_candidate,
+            read_after_candidate,
+            read_lease_hit,
+            read_lease_miss_disabled,
+            read_lease_miss_stale,
+            read_lease_miss_not_current_term,
+            read_lease_miss_no_quorum_ts,
+            read_lease_miss_not_applied,
+            read_lease_miss_handover_in_progress,
+            read_lease_handover_failed_rearms,
+            read_lease_handover_timeout_rearms,
             truncate,
-            update_info, update_info_witness,
-            promote, promote_witness,
+            update_info,
+            update_info_witness,
+            promote,
+            promote_witness,
             resign,
             witness,
-            disable, disable_leader, disable_follower, disable_candidate, disable_witness,
-            handover, handover_follower, handover_witness,
-            add_member, add_member_follower,
-            remove_member, remove_member_follower,
-            persist_state, config, adjust_config,
-            get_current_config, get_current_config_different_states,
-            pre_vote_election, pre_vote_rejected, pre_vote_request
+            disable,
+            disable_leader,
+            disable_follower,
+            disable_candidate,
+            disable_witness,
+            handover,
+            handover_follower,
+            handover_witness,
+            add_member,
+            add_member_follower,
+            remove_member,
+            remove_member_follower,
+            persist_state,
+            config,
+            adjust_config,
+            get_current_config,
+            get_current_config_different_states,
+            pre_vote_election,
+            pre_vote_rejected,
+            pre_vote_request
         ]},
         % Server unit tests that affect global state and should be run sequentially
         {server_sequential, [
@@ -303,7 +351,10 @@ compute_quorum(_Config) ->
         #raft_identity{name = a, node = f5}
     ]),
     % With all members, quorum is the largest value that a majority (3) have reached
-    ?assertEqual({quorum, 200}, wa_raft_server:compute_member_quorum(#{f1 => 100, f2 => 150, f3 => 200, f4 => 250, f5 => 300}, C5)),
+    ?assertEqual(
+        {quorum, 200},
+        wa_raft_server:compute_member_quorum(#{f1 => 100, f2 => 150, f3 => 200, f4 => 250, f5 => 300}, C5)
+    ),
     % With 3 of 5 present (majority), quorum is computed from those values
     ?assertEqual({quorum, 100}, wa_raft_server:compute_member_quorum(#{f1 => 100, f2 => 150, f3 => 200}, C5)),
     % With 2 of 5 present (minority), quorum is none
@@ -312,7 +363,7 @@ compute_quorum(_Config) ->
 -spec max_index_to_apply(_Config) -> ok.
 max_index_to_apply(_Config) ->
     F =
-        fun (MI, LI) ->
+        fun(MI, LI) ->
             % Create a config with the members: leader + each node in the map
             Ns = [node() | maps:keys(MI)],
             Ms = [#raft_identity{name = server, node = N} || N <- Ns],
@@ -356,13 +407,13 @@ max_index_to_apply(_Config) ->
 persist_state(Config) ->
     {_, RaftState} = server_start(Config),
     PrivDir = filename:join(proplists:get_value(priv_dir, Config), ?FUNCTION_NAME),
-    FPath = fun (Table, Partition) ->
+    FPath = fun(Table, Partition) ->
         wa_raft_part_sup:default_partition_path(PrivDir, Table, Partition)
     end,
-    FState = fun (Table, Partition) ->
+    FState = fun(Table, Partition) ->
         RaftState#raft_state{partition_path = FPath(Table, Partition)}
     end,
-    FCycle = fun (Table, Partition, CurrentTerm, VotedFor) ->
+    FCycle = fun(Table, Partition, CurrentTerm, VotedFor) ->
         State = FState(Table, Partition),
         StateFile = filename:join(FPath(Table, Partition), ?STATE_FILE_NAME),
         SaveState = State#raft_state{
@@ -400,7 +451,10 @@ persist_state(Config) ->
     ?assertEqual({error, {invalid, voted_for}}, wa_raft_durable_state:load(FState(fail, 1))),
 
     ok = prim_file:write_file(StateFile, "{crc, 1422789693}.\n{current_term, 1}.\n{voted_for, undefined}.\n"),
-    ?assertMatch({ok, #raft_state{current_term = 1, voted_for = undefined, disable_reason = undefined}}, wa_raft_durable_state:load(FState(fail, 1))),
+    ?assertMatch(
+        {ok, #raft_state{current_term = 1, voted_for = undefined, disable_reason = undefined}},
+        wa_raft_durable_state:load(FState(fail, 1))
+    ),
 
     ?assertEqual(ok, FCycle(test, 1, 10, peer1)),
     ?assertEqual(ok, FCycle(test, 1, 12, peer1)),
@@ -442,8 +496,12 @@ config(Config) ->
     ok = meck:expect(wa_raft_log, config, fun(_) -> {ok, 2, LogConfig0} end),
     ?assertEqual(LogConfig0, wa_raft_server:config(RaftState#raft_state{cached_config = {1, CachedConfig0}})),
 
-    CachedConfig1 = wa_raft_server:make_config([#raft_identity{name = config, node = Node}], [#raft_identity{name = config, node = WitnessNode}]),
-    LogConfig1 = wa_raft_server:make_config([#raft_identity{name = log, node = Node}], [#raft_identity{name = config, node = WitnessNode}]),
+    CachedConfig1 = wa_raft_server:make_config([#raft_identity{name = config, node = Node}], [
+        #raft_identity{name = config, node = WitnessNode}
+    ]),
+    LogConfig1 = wa_raft_server:make_config([#raft_identity{name = log, node = Node}], [
+        #raft_identity{name = config, node = WitnessNode}
+    ]),
 
     % No cached config + no config in log -> fallback config
     ok = meck:expect(wa_raft_log, config, fun(_) -> not_found end),
@@ -505,7 +563,10 @@ adjust_config(_) ->
 
     % Try to add an existing non-member witness
     Config3 = wa_raft_server:make_config([Node1, Node2], [Node3]),
-    ?assertEqual({error, already_witness}, wa_raft_server:leader_adjust_config({add, Peer3}, State#raft_state{cached_config = {0, Config3}})),
+    ?assertEqual(
+        {error, already_witness},
+        wa_raft_server:leader_adjust_config({add, Peer3}, State#raft_state{cached_config = {0, Config3}})
+    ),
 
     % Add a new witness member
     Config4 = wa_raft_server:make_config([Node4], [Node1, Node2, Node3, Node5], [Node3, Node5]),
@@ -514,7 +575,10 @@ adjust_config(_) ->
     % Promote a witness participant to a witness member
     Config5 = wa_raft_server:make_config([Node3], [Node1, Node2], [Node3]),
     Config6 = wa_raft_server:make_config([Node1, Node2, Node3], [Node3]),
-    ?assertEqual({ok, Config6}, wa_raft_server:leader_adjust_config({add_witness, Peer3}, State#raft_state{cached_config = {0, Config5}})),
+    ?assertEqual(
+        {ok, Config6},
+        wa_raft_server:leader_adjust_config({add_witness, Peer3}, State#raft_state{cached_config = {0, Config5}})
+    ),
 
     % Try to add an existing member as a witness
     ?assertEqual({error, already_member}, wa_raft_server:leader_adjust_config({add_witness, Peer2}, State)),
@@ -530,7 +594,10 @@ adjust_config(_) ->
     ?assertEqual({error, already_member}, wa_raft_server:leader_adjust_config({add_participant, Peer3}, State)),
 
     % Try to add an existing non-member witness
-    ?assertEqual({error, already_witness}, wa_raft_server:leader_adjust_config({add_participant, Peer3}, State#raft_state{cached_config = {0, Config3}})),
+    ?assertEqual(
+        {error, already_witness},
+        wa_raft_server:leader_adjust_config({add_participant, Peer3}, State#raft_state{cached_config = {0, Config3}})
+    ),
 
     % Try to add an existing participant
     ?assertEqual({error, already_participating}, wa_raft_server:leader_adjust_config({add_participant, Peer4}, State)),
@@ -602,7 +669,9 @@ adjust_config(_) ->
     % add_witness_participant: add a new peer as a non-voting witness
     % participant (in participants and witness, not in membership).
     AddWitnessParticipantConfig = wa_raft_server:make_config([Node4, Node5], [Node1, Node2, Node3], [Node3, Node5]),
-    ?assertEqual({ok, AddWitnessParticipantConfig}, wa_raft_server:leader_adjust_config({add_witness_participant, Peer5}, State)),
+    ?assertEqual(
+        {ok, AddWitnessParticipantConfig}, wa_raft_server:leader_adjust_config({add_witness_participant, Peer5}, State)
+    ),
 
     % add_witness_participant: adding an existing member fails.
     ?assertEqual({error, already_member}, wa_raft_server:leader_adjust_config({add_witness_participant, Peer2}, State)),
@@ -613,7 +682,9 @@ adjust_config(_) ->
 
     % add_witness_participant: adding an existing non-voting participant
     % fails.
-    ?assertEqual({error, already_participating}, wa_raft_server:leader_adjust_config({add_witness_participant, Peer4}, State)),
+    ?assertEqual(
+        {error, already_participating}, wa_raft_server:leader_adjust_config({add_witness_participant, Peer4}, State)
+    ),
 
     % promote_participant_if_ready: promoting an existing non-voting
     % witness participant produces a voting witness member (peer in
@@ -743,18 +814,21 @@ server_filter_return(Other) ->
 server_filter_actions(Actions) when is_list(Actions) ->
     {FilteredActions, TimeoutActions} =
         lists:partition(
-            fun (infinity) -> false;
+            fun
+                (infinity) -> false;
                 (Timeout) when is_integer(Timeout) -> false;
-                ({timeout, _})                     -> false;
-                ({timeout, _, _})                  -> false;
-                ({timeout, _, _, _})               -> false;
-                ({{timeout, _}, _, _})             -> false;
-                ({{timeout, _}, _, _, _})          -> false;
-                ({state_timeout, _})               -> false;
-                ({state_timeout, _, _})            -> false;
-                ({state_timeout, _, _, _})         -> false;
-                (_Other)                           -> true
-            end, Actions),
+                ({timeout, _}) -> false;
+                ({timeout, _, _}) -> false;
+                ({timeout, _, _, _}) -> false;
+                ({{timeout, _}, _, _}) -> false;
+                ({{timeout, _}, _, _, _}) -> false;
+                ({state_timeout, _}) -> false;
+                ({state_timeout, _, _}) -> false;
+                ({state_timeout, _, _, _}) -> false;
+                (_Other) -> true
+            end,
+            Actions
+        ),
     Host = host(),
     [server_notify(Host, set_timeout, Timeout) || Timeout <- TimeoutActions],
     FilteredActions;
@@ -769,11 +843,14 @@ server_init_per_group(Config) ->
     ok = application:set_env(?RAFT_APPLICATION, raft_storage_module, StorageModule),
 
     ok = meck:new(wa_raft_server, [passthrough, no_link]),
-    ok = meck:expect(wa_raft_server, init,
-        fun (#raft_options{table = Table, partition = Partition} = Options) ->
+    ok = meck:expect(
+        wa_raft_server,
+        init,
+        fun(#raft_options{table = Table, partition = Partition} = Options) ->
             put(?MODULE, {Table, Partition}),
             meck:passthrough([Options])
-        end),
+        end
+    ),
     ok = meck:expect(wa_raft_server, stalled, fun server_callback_mock/3),
     ok = meck:expect(wa_raft_server, leader, fun server_callback_mock/3),
     ok = meck:expect(wa_raft_server, follower, fun server_callback_mock/3),
@@ -781,34 +858,47 @@ server_init_per_group(Config) ->
     ok = meck:expect(wa_raft_server, disabled, fun server_callback_mock/3),
 
     ok = meck:new(wa_raft_test_distribution, [non_strict, no_link]),
-    ok = meck:expect(wa_raft_test_distribution, cast,
-        fun ({Name, Node}, _Identifier, Message) ->
+    ok = meck:expect(
+        wa_raft_test_distribution,
+        cast,
+        fun({Name, Node}, _Identifier, Message) ->
             server_notify(host(), cast, {Name, Node, Message}),
             ok
-        end),
+        end
+    ),
     ok = meck:new(wa_raft_test_label, [non_strict, no_link]),
-    ok = meck:expect(wa_raft_test_label, new_label,
-        fun (undefined, _Command)    -> 1;
+    ok = meck:expect(
+        wa_raft_test_label,
+        new_label,
+        fun
+            (undefined, _Command) -> 1;
             (LastLogLabel, _Command) -> LastLogLabel + 1
-        end),
+        end
+    ),
 
     ok = meck:new(wa_raft_storage, [passthrough, no_link]),
-    ok = meck:expect(wa_raft_storage, init,
-        fun (#raft_options{table = Table, partition = Partition} = Options) ->
+    ok = meck:expect(
+        wa_raft_storage,
+        init,
+        fun(#raft_options{table = Table, partition = Partition} = Options) ->
             put(?MODULE, {Table, Partition}),
             meck:passthrough([Options])
-        end),
-    ok = meck:expect(wa_raft_storage, apply,
-        fun (Storage, From, Record, Size, Priority) ->
+        end
+    ),
+    ok = meck:expect(
+        wa_raft_storage,
+        apply,
+        fun(Storage, From, Record, Size, Priority) ->
             server_notify(host(), applied, {From, Record}),
             Result = meck:passthrough([Storage, From, Record, Size, Priority]),
             % Force synchronization against the storage server to avoid timing races.
             sys:get_state(Storage),
             Result
-        end),
+        end
+    ),
 
     wa_raft_test_helper:start_sentinel(
-        fun () ->
+        fun() ->
             wa_raft_info:init_tables(),
             wa_raft_snapshot_catchup:init_tables(),
 
@@ -816,7 +906,8 @@ server_init_per_group(Config) ->
             % which testcase host process to send notify information to.
             ?MODULE = ets:new(?MODULE, [set, public, named_table]),
             ok
-        end, Config
+        end,
+        Config
     ).
 
 -spec server_init_per_testcase(Config :: ct_suite:ct_config()) -> Config :: ct_suite:ct_config().
@@ -845,7 +936,6 @@ server_init_per_testcase(Config) ->
 
     [{table, Table}, {partition, Partition}, {options, Options} | Config].
 
-
 -define(SERVER_PID, server_pid).
 -define(SERVER_NAME, server_name).
 
@@ -856,7 +946,8 @@ server_init_per_testcase(Config) ->
 -define(SERVER_QUEUES(Config), wa_raft_queue:queues(?SERVER_TABLE(Config), ?SERVER_PARTITION(Config))).
 
 -define(SERVER_SINGLE_CONFIG(Config),
-    wa_raft_server:make_config([#raft_identity{name = ?SERVER_NAME(Config), node = node()}])).
+    wa_raft_server:make_config([#raft_identity{name = ?SERVER_NAME(Config), node = node()}])
+).
 -define(SERVER_CLUSTER_CONFIG(Config),
     wa_raft_server:make_config([
         #raft_identity{name = ?SERVER_NAME(Config), node = node()},
@@ -864,34 +955,40 @@ server_init_per_testcase(Config) ->
         #raft_identity{name = ?SERVER_NAME(Config), node = node3},
         #raft_identity{name = ?SERVER_NAME(Config), node = node4},
         #raft_identity{name = ?SERVER_NAME(Config), node = node5}
-    ])).
+    ])
+).
 
 -define(SERVER_CLUSTER_CONFIG_WITH_WITNESS(Config),
-    wa_raft_server:make_config([
-        #raft_identity{name = ?SERVER_NAME(Config), node = node()},
-        #raft_identity{name = ?SERVER_NAME(Config), node = node2},
-        #raft_identity{name = ?SERVER_NAME(Config), node = node3},
-        #raft_identity{name = ?SERVER_NAME(Config), node = node4},
-        #raft_identity{name = ?SERVER_NAME(Config), node = node5}
-    ],
-    [
-        #raft_identity{name = ?SERVER_NAME(Config), node = node4},
-        #raft_identity{name = ?SERVER_NAME(Config), node = node5}
-    ])).
+    wa_raft_server:make_config(
+        [
+            #raft_identity{name = ?SERVER_NAME(Config), node = node()},
+            #raft_identity{name = ?SERVER_NAME(Config), node = node2},
+            #raft_identity{name = ?SERVER_NAME(Config), node = node3},
+            #raft_identity{name = ?SERVER_NAME(Config), node = node4},
+            #raft_identity{name = ?SERVER_NAME(Config), node = node5}
+        ],
+        [
+            #raft_identity{name = ?SERVER_NAME(Config), node = node4},
+            #raft_identity{name = ?SERVER_NAME(Config), node = node5}
+        ]
+    )
+).
 
 -define(SERVER_CLUSTER_CONFIG_WITH_SELF_WITNESS(Config),
-    wa_raft_server:make_config([
-        #raft_identity{name = ?SERVER_NAME(Config), node = node()},
-        #raft_identity{name = ?SERVER_NAME(Config), node = node2},
-        #raft_identity{name = ?SERVER_NAME(Config), node = node3},
-        #raft_identity{name = ?SERVER_NAME(Config), node = node4},
-        #raft_identity{name = ?SERVER_NAME(Config), node = node5}
-    ],
-    [
-        #raft_identity{name = ?SERVER_NAME(Config), node = node()},
-        #raft_identity{name = ?SERVER_NAME(Config), node = node5}
-      ])).
-
+    wa_raft_server:make_config(
+        [
+            #raft_identity{name = ?SERVER_NAME(Config), node = node()},
+            #raft_identity{name = ?SERVER_NAME(Config), node = node2},
+            #raft_identity{name = ?SERVER_NAME(Config), node = node3},
+            #raft_identity{name = ?SERVER_NAME(Config), node = node4},
+            #raft_identity{name = ?SERVER_NAME(Config), node = node5}
+        ],
+        [
+            #raft_identity{name = ?SERVER_NAME(Config), node = node()},
+            #raft_identity{name = ?SERVER_NAME(Config), node = node5}
+        ]
+    )
+).
 
 %% Trigger an arbitrary event on the RAFT server and return the
 %% server state afterwards.
@@ -951,13 +1048,21 @@ server_start(Config) ->
 -spec server_start_and_bootstrap(Config :: ct_suite:ct_config()) -> {atom(), #raft_state{}}.
 server_start_and_bootstrap(Config) ->
     server_start_and_bootstrap(?SERVER_CLUSTER_CONFIG(Config), Config).
--spec server_start_and_bootstrap(ClusterConfig :: wa_raft_server:config(), Config :: ct_suite:ct_config()) -> {atom(), #raft_state{}}.
+-spec server_start_and_bootstrap(ClusterConfig :: wa_raft_server:config(), Config :: ct_suite:ct_config()) ->
+    {atom(), #raft_state{}}.
 server_start_and_bootstrap(ClusterConfig, Config) ->
     server_start_and_bootstrap(0, 0, ClusterConfig, Config).
--spec server_start_and_bootstrap(Index :: wa_raft_log:log_index(), Term :: wa_raft_log:log_term(), Config :: ct_suite:ct_config()) -> {atom(), #raft_state{}}.
+-spec server_start_and_bootstrap(
+    Index :: wa_raft_log:log_index(), Term :: wa_raft_log:log_term(), Config :: ct_suite:ct_config()
+) -> {atom(), #raft_state{}}.
 server_start_and_bootstrap(Index, Term, Config) ->
     server_start_and_bootstrap(Index, Term, ?SERVER_CLUSTER_CONFIG(Config), Config).
--spec server_start_and_bootstrap(Index :: wa_raft_log:log_index(), Term :: wa_raft_log:log_term(), ClusterConfig :: wa_raft_server:config(), Config :: ct_suite:ct_config()) -> {atom(), #raft_state{}}.
+-spec server_start_and_bootstrap(
+    Index :: wa_raft_log:log_index(),
+    Term :: wa_raft_log:log_term(),
+    ClusterConfig :: wa_raft_server:config(),
+    Config :: ct_suite:ct_config()
+) -> {atom(), #raft_state{}}.
 server_start_and_bootstrap(Index, Term, ClusterConfig, Config) ->
     {stalled, _} = server_start(Config),
     {State, Data, ok} = server_call(?BOOTSTRAP_COMMAND(#raft_log_pos{index = Index, term = Term}, ClusterConfig, #{})),
@@ -967,10 +1072,16 @@ server_start_and_bootstrap(Index, Term, ClusterConfig, Config) ->
 -spec server_start_witness_and_bootstrap(Config :: ct_suite:ct_config()) -> {atom(), #raft_state{}}.
 server_start_witness_and_bootstrap(Config) ->
     server_start_witness_and_bootstrap(0, 0, Config).
--spec server_start_witness_and_bootstrap(Index :: wa_raft_log:log_index(), Term :: wa_raft_log:log_term(), Config :: ct_suite:ct_config()) -> {atom(), #raft_state{}}.
+-spec server_start_witness_and_bootstrap(
+    Index :: wa_raft_log:log_index(), Term :: wa_raft_log:log_term(), Config :: ct_suite:ct_config()
+) -> {atom(), #raft_state{}}.
 server_start_witness_and_bootstrap(Index, Term, Config) ->
     {stalled, _} = server_start(Config),
-    {witness, Data, ok} = server_call(?BOOTSTRAP_COMMAND(#raft_log_pos{index = Index, term = Term}, ?SERVER_CLUSTER_CONFIG_WITH_SELF_WITNESS(Config), #{})),
+    {witness, Data, ok} = server_call(
+        ?BOOTSTRAP_COMMAND(
+            #raft_log_pos{index = Index, term = Term}, ?SERVER_CLUSTER_CONFIG_WITH_SELF_WITNESS(Config), #{}
+        )
+    ),
     clear_message_queue(),
     {witness, Data}.
 
@@ -1024,32 +1135,34 @@ server_stop(Reason) ->
 
 %% Execute a sys:replace_state against the RAFT server and return the
 %% state afterwards.
--spec server_replace_state(Func :: fun(({atom(), #raft_state{}}) -> {atom(), #raft_state{}})) -> {atom(), #raft_state{}}.
+-spec server_replace_state(Func :: fun(({atom(), #raft_state{}}) -> {atom(), #raft_state{}})) ->
+    {atom(), #raft_state{}}.
 server_replace_state(Func) ->
     Pid = get(?SERVER_PID),
     sys:replace_state(Pid, Func).
 
-
 -define(assertReceive(MessagePattern), ?assertReceive(MessagePattern, 2000)).
 
 -define(assertReceive(Pattern, Timeout),
-    (fun () ->
+    (fun() ->
         __Ret__ =
             receive
                 Pattern = __Message__ -> __Message__
-            after
-                Timeout ->
-                    error({assertReceive, [
+            after Timeout ->
+                error(
+                    {assertReceive, [
                         {module, ?MODULE},
                         {line, ?LINE},
                         {reason, "expected message was not received within timeout"},
                         {pattern, ??Pattern},
                         {timeout, Timeout},
                         {messages_in_queue, process_info(self(), messages)}
-                    ]})
+                    ]}
+                )
             end,
         __Ret__
-    end)()).
+    end)()
+).
 
 %% Assert that a matching notify event message was received by the
 %% current testcase process within the provided timeout. Notify events
@@ -1057,52 +1170,63 @@ server_replace_state(Func) ->
 %% setting timeouts, casting to peers, or making certain requests to
 %% storage.
 -define(assertNotify(TypePattern, EventPattern, Timeout),
-    (fun () ->
+    (fun() ->
         __Ret__ =
             receive
                 {'$notify', TypePattern = __Type__, EventPattern = __Event__} -> {__Type__, __Event__}
-            after
-                Timeout ->
-                    error({assertReceive, [
+            after Timeout ->
+                error(
+                    {assertReceive, [
                         {module, ?MODULE},
                         {line, ?LINE},
                         {reason, "expected " ??TypePattern " was not received within timeout"},
                         {pattern, ??EventPattern},
                         {timeout, Timeout},
                         {messages_in_queue, process_info(self(), messages)}
-                    ]})
+                    ]}
+                )
             end,
         __Ret__
-    end)()).
+    end)()
+).
 
 %% Assert that a cast with the specified message to the specified destination peer was made.
--define(assertCast(NamePattern, NodePattern, MessagePattern), ?assertCast(NamePattern, NodePattern, MessagePattern, 250)).
--define(assertCast(NamePattern, NodePattern, MessagePattern, Timeout), ?assertNotify(cast, {NamePattern, NodePattern, MessagePattern}, Timeout)).
+-define(assertCast(NamePattern, NodePattern, MessagePattern),
+    ?assertCast(NamePattern, NodePattern, MessagePattern, 250)
+).
+-define(assertCast(NamePattern, NodePattern, MessagePattern, Timeout),
+    ?assertNotify(cast, {NamePattern, NodePattern, MessagePattern}, Timeout)
+).
 
 %% Assert that a cast with the specified message to the specified destination peer was not made.
--define(assertNotCast(NamePattern, NodePattern, MessagePattern), ?assertNotCast(NamePattern, NodePattern, MessagePattern, 250)).
+-define(assertNotCast(NamePattern, NodePattern, MessagePattern),
+    ?assertNotCast(NamePattern, NodePattern, MessagePattern, 250)
+).
 -define(assertNotCast(NamePattern, NodePattern, MessagePattern, Timeout),
-    (fun () ->
+    (fun() ->
         try (?assertCast(NamePattern, NodePattern, MessagePattern, Timeout)) of
             {_, {__Name__, __Node__, __Message__}} ->
-                error({assertNotCast, [
-                    {module, ?MODULE},
-                    {line, ?LINE},
-                    {reason, "unexpected cast was sent"},
-                    {name, __Name__},
-                    {node, __Node__},
-                    {message, __Message__},
-                    {name_pattern, ??NamePattern},
-                    {node_pattern, ??NodePattern},
-                    {message_pattern, ??MessagePattern},
-                    {timeout, Timeout},
-                    {messages_in_queue, process_info(self(), messages)}
-                ]})
+                error(
+                    {assertNotCast, [
+                        {module, ?MODULE},
+                        {line, ?LINE},
+                        {reason, "unexpected cast was sent"},
+                        {name, __Name__},
+                        {node, __Node__},
+                        {message, __Message__},
+                        {name_pattern, ??NamePattern},
+                        {node_pattern, ??NodePattern},
+                        {message_pattern, ??MessagePattern},
+                        {timeout, Timeout},
+                        {messages_in_queue, process_info(self(), messages)}
+                    ]}
+                )
         catch
             error:{assertReceive, _} ->
                 ok
         end
-    end)()).
+    end)()
+).
 
 %% Assert that a matching timeout was set by some RAFT server event callback.
 -define(assertSetTimeout(TimeoutPattern), ?assertSetTimeout(TimeoutPattern, 250)).
@@ -1110,7 +1234,9 @@ server_replace_state(Func) ->
 
 %% Assert that the RAFT server requested storage to apply the specified op.
 -define(assertApplyOp(FromPattern, RecordPattern), ?assertApplyOp(FromPattern, RecordPattern, 250)).
--define(assertApplyOp(FromPattern, RecordPattern, Timeout), ?assertNotify(applied, {FromPattern, RecordPattern}, Timeout)).
+-define(assertApplyOp(FromPattern, RecordPattern, Timeout),
+    ?assertNotify(applied, {FromPattern, RecordPattern}, Timeout)
+).
 
 %% Clear any messages in the queue. This is usually used to
 %% clear any notify events from the RAFT server produced by prior
@@ -1119,32 +1245,44 @@ server_replace_state(Func) ->
 clear_message_queue() ->
     receive
         _ -> clear_message_queue()
-    after
-        0 -> ok
+    after 0 -> ok
     end.
 
 -define(APPEND_ENTRIES_RPC(Term, SenderName, SenderNode, PrevLogIndex, PrevLogTerm, Entries, CommitIndex, TrimIndex),
-    ?RAFT_NAMED_RPC(append_entries, Term, SenderName, SenderNode, {PrevLogIndex, PrevLogTerm, Entries, CommitIndex, TrimIndex})).
+    ?RAFT_NAMED_RPC(
+        append_entries, Term, SenderName, SenderNode, {PrevLogIndex, PrevLogTerm, Entries, CommitIndex, TrimIndex}
+    )
+).
 -define(APPEND_ENTRIES_RESPONSE_RPC(Term, SenderName, SenderNode, PrevLogIndex, Success, MatchIndex, LastAppliedIndex),
-    ?RAFT_NAMED_RPC(append_entries_response, Term, SenderName, SenderNode, {PrevLogIndex, Success, MatchIndex, LastAppliedIndex})).
+    ?RAFT_NAMED_RPC(
+        append_entries_response, Term, SenderName, SenderNode, {PrevLogIndex, Success, MatchIndex, LastAppliedIndex}
+    )
+).
 
 -define(REQUEST_VOTE_RPC(Term, SenderName, SenderNode, ElectionType, LastLogIndex, LastLogTerm),
-    ?RAFT_NAMED_RPC(request_vote, Term, SenderName, SenderNode, {ElectionType, LastLogIndex, LastLogTerm})).
+    ?RAFT_NAMED_RPC(request_vote, Term, SenderName, SenderNode, {ElectionType, LastLogIndex, LastLogTerm})
+).
 -define(VOTE_RPC(Term, SenderName, SenderNode, Vote),
-    ?RAFT_NAMED_RPC(vote, Term, SenderName, SenderNode, {Vote})).
+    ?RAFT_NAMED_RPC(vote, Term, SenderName, SenderNode, {Vote})
+).
 
 -define(REQUEST_PRE_VOTE_RPC(Term, SenderName, SenderNode, Ref),
-    ?RAFT_NAMED_RPC(request_pre_vote, Term, SenderName, SenderNode, {Ref})).
+    ?RAFT_NAMED_RPC(request_pre_vote, Term, SenderName, SenderNode, {Ref})
+).
 -define(PRE_VOTE_RPC(Term, SenderName, SenderNode, Ref, Vote, LastLogIndex, LastLogTerm),
-    ?RAFT_NAMED_RPC(pre_vote, Term, SenderName, SenderNode, {Ref, Vote, LastLogIndex, LastLogTerm})).
+    ?RAFT_NAMED_RPC(pre_vote, Term, SenderName, SenderNode, {Ref, Vote, LastLogIndex, LastLogTerm})
+).
 
 -define(HANDOVER_RPC(Term, SenderName, SenderNode, Ref, PrevLogIndex, PrevLogTerm, Entries),
-    ?RAFT_NAMED_RPC(handover, Term, SenderName, SenderNode, {Ref, PrevLogIndex, PrevLogTerm, Entries})).
+    ?RAFT_NAMED_RPC(handover, Term, SenderName, SenderNode, {Ref, PrevLogIndex, PrevLogTerm, Entries})
+).
 -define(HANDOVER_FAILED_RPC(Term, SenderName, SenderNode, Ref),
-    ?RAFT_NAMED_RPC(handover_failed, Term, SenderName, SenderNode, {Ref})).
+    ?RAFT_NAMED_RPC(handover_failed, Term, SenderName, SenderNode, {Ref})
+).
 
 -define(NOTIFY_TERM_RPC(Term, SenderName, SenderNode),
-    ?RAFT_NAMED_RPC(notify_term, Term, SenderName, SenderNode, undefined)).
+    ?RAFT_NAMED_RPC(notify_term, Term, SenderName, SenderNode, undefined)
+).
 
 -spec init(Config :: ct_suite:ct_config()) -> ok.
 init(Config) ->
@@ -1197,7 +1335,9 @@ init_empty(Config) ->
     {stalled, _} = server_restart(Config),
 
     % Bootstrap server so it has data
-    {leader, _, ok} = server_call(?BOOTSTRAP_COMMAND(#raft_log_pos{index = 1, term = 1}, ?SERVER_SINGLE_CONFIG(Config), #{})),
+    {leader, _, ok} = server_call(
+        ?BOOTSTRAP_COMMAND(#raft_log_pos{index = 1, term = 1}, ?SERVER_SINGLE_CONFIG(Config), #{})
+    ),
     ok = server_stop_only_server(),
 
     % Start and stop server with data and durable state
@@ -1330,7 +1470,7 @@ stale_rpc(Config) ->
     {candidate, _} = server_cast(?VOTE_RPC(5, Name, Node, true)),
     {candidate, _} = server_cast(?VOTE_RPC(5, Name, node2, true)),
     {leader, _} = server_cast(?VOTE_RPC(5, Name, node3, true)),
-    {leader, State2} = server_replace_state(fun ({SN, S}) -> {SN, S#raft_state{leader_quorum_ts = undefined}} end),
+    {leader, State2} = server_replace_state(fun({SN, S}) -> {SN, S#raft_state{leader_quorum_ts = undefined}} end),
     ok = clear_message_queue(),
     ?assertEqual({leader, State2}, server_cast(?APPEND_ENTRIES_RPC(2, Name, node2, 20, 2, [], 20, 0))),
     ?assertCast(Name, node2, ?NOTIFY_TERM_RPC(5, Name, Node)),
@@ -1449,15 +1589,21 @@ election(Config) ->
     % Votes come in for election
     %  * Candidate should wait until it gets a quorum of votes
     %  * Once it gets a quorum, it should make itself leader
-    {candidate, State3} = server_cast(?VOTE_RPC(3, Name, Node, true)), % vote yes to self
+
+    % vote yes to self
+    {candidate, State3} = server_cast(?VOTE_RPC(3, Name, Node, true)),
     ?assertEqual(#{Node => true}, State3#raft_state.votes),
-    {candidate, State4} = server_cast(?VOTE_RPC(3, Name, node2, true)), % node2 votes yes
+    % node2 votes yes
+    {candidate, State4} = server_cast(?VOTE_RPC(3, Name, node2, true)),
     ?assertEqual(#{Node => true, node2 => true}, State4#raft_state.votes),
-    {candidate, State5} = server_cast(?VOTE_RPC(3, Name, node2, true)), % node2 votes yes again
+    % node2 votes yes again
+    {candidate, State5} = server_cast(?VOTE_RPC(3, Name, node2, true)),
     ?assertEqual(#{Node => true, node2 => true}, State5#raft_state.votes),
-    {candidate, State6} = server_cast(?VOTE_RPC(3, Name, node3, false)), % node3 votes false
+    % node3 votes false
+    {candidate, State6} = server_cast(?VOTE_RPC(3, Name, node3, false)),
     ?assertEqual(#{Node => true, node2 => true, node3 => false}, State6#raft_state.votes),
-    {leader, State7} = server_cast(?VOTE_RPC(3, Name, node4, true)), % node4 votes true (quorum reached)
+    % node4 votes true (quorum reached)
+    {leader, State7} = server_cast(?VOTE_RPC(3, Name, node4, true)),
     ?assertEqual(#{Node => true, node2 => true, node3 => false, node4 => true}, State7#raft_state.votes),
 
     % Add a few uncommitted log entries and then immediately advance to a later term
@@ -1465,7 +1611,8 @@ election(Config) ->
     {leader, _} = server_cast(?COMMIT_COMMAND(?FROM(), {make_ref(), noop}, high)),
     {leader, _} = server_cast(?COMMIT_COMMAND(?FROM(), {make_ref(), noop}, high)),
     {leader, _} = server_cast(?COMMIT_COMMAND(?FROM(), {make_ref(), noop}, high)),
-    {leader, _} = server_invoke(state_timeout, heartbeat), % sync
+    % sync
+    {leader, _} = server_invoke(state_timeout, heartbeat),
     {follower, _} = server_cast(?NOTIFY_TERM_RPC(4, Name, node2)),
 
     % Become leader for the new term with uncommitted log entries
@@ -1494,7 +1641,6 @@ election(Config) ->
 
     % Stop server
     ok = server_stop().
-
 
 -spec election_three_members(Config :: ct_suite:ct_config()) -> ok.
 election_three_members(Config) ->
@@ -1610,7 +1756,7 @@ request_vote(Config) ->
 request_vote_drop(Config) ->
     Name = ?SERVER_NAME(Config),
     Node = node(),
-    SetHeartbeat = fun ({SN, S}) -> {SN, S#raft_state{leader_commit_index_ts = erlang:monotonic_time(millisecond)}} end,
+    SetHeartbeat = fun({SN, S}) -> {SN, S#raft_state{leader_commit_index_ts = erlang:monotonic_time(millisecond)}} end,
 
     % Followers should reject normal vote requests when leader is active
     {follower, _} = server_start_and_bootstrap(Config),
@@ -1662,9 +1808,12 @@ append_entries(Config) ->
     {follower, State1} = server_cast(?APPEND_ENTRIES_RPC(2, Name, node2, 100, 2, [{2, {ref, noop}}], 101, 0)),
     ?assertSetTimeout({state_timeout, _, election}),
     ?assertCast(Name, node2, ?APPEND_ENTRIES_RESPONSE_RPC(2, Name, Node, 100, true, 101, 100)),
-    ?assertEqual(101, wa_raft_log:last_index(State1#raft_state.log_view)), % log index updated
-    ?assertEqual(101, State1#raft_state.commit_index), % commit index is updated
-    ?assertEqual(101, State1#raft_state.last_applied), % last_applied is updated
+    % log index updated
+    ?assertEqual(101, wa_raft_log:last_index(State1#raft_state.log_view)),
+    % commit index is updated
+    ?assertEqual(101, State1#raft_state.commit_index),
+    % last_applied is updated
+    ?assertEqual(101, State1#raft_state.last_applied),
 
     % Follower gets a heartbeat from a leader in a new term
     %  * Follower should advance to the new term as well as reset the
@@ -1679,10 +1828,14 @@ append_entries(Config) ->
     {follower, State2} = server_cast(?APPEND_ENTRIES_RPC(3, Name, node2, 101, 2, [{2, {ref, noop}}], 102, 0)),
     ?assertSetTimeout({state_timeout, _, election}),
     ?assertCast(Name, node2, ?APPEND_ENTRIES_RESPONSE_RPC(3, Name, Node, 101, true, 102, 101)),
-    ?assertEqual(3, State2#raft_state.current_term), % current term advanced
-    ?assertEqual(102, wa_raft_log:last_index(State2#raft_state.log_view)), % log entry is appended
-    ?assertEqual(102, State2#raft_state.commit_index), % commit index is updated
-    ?assertEqual(102, State2#raft_state.last_applied), % log entry is applied
+    % current term advanced
+    ?assertEqual(3, State2#raft_state.current_term),
+    % log entry is appended
+    ?assertEqual(102, wa_raft_log:last_index(State2#raft_state.log_view)),
+    % commit index is updated
+    ?assertEqual(102, State2#raft_state.commit_index),
+    % log entry is applied
+    ?assertEqual(102, State2#raft_state.last_applied),
 
     % Follower gets a heartbeat but it does not have the previous log entry
     %  * Previous log entry does not exist so the append fails
@@ -1691,22 +1844,31 @@ append_entries(Config) ->
     {follower, State3} = server_cast(?APPEND_ENTRIES_RPC(3, Name, node2, 105, 2, [{2, {ref, noop}}], 102, 0)),
     ?assertSetTimeout({state_timeout, _, election}),
     ?assertCast(Name, node2, ?APPEND_ENTRIES_RESPONSE_RPC(3, Name, Node, 105, false, 102, 102)),
-    ?assertEqual(3, State3#raft_state.current_term), % current term preserved
-    ?assertEqual(102, wa_raft_log:last_index(State3#raft_state.log_view)), % log entries preserved
-    ?assertEqual(102, State2#raft_state.commit_index), % commit index is unchanged
-    ?assertEqual(102, State3#raft_state.last_applied), % no new applies
+    % current term preserved
+    ?assertEqual(3, State3#raft_state.current_term),
+    % log entries preserved
+    ?assertEqual(102, wa_raft_log:last_index(State3#raft_state.log_view)),
+    % commit index is unchanged
+    ?assertEqual(102, State2#raft_state.commit_index),
+    % no new applies
+    ?assertEqual(102, State3#raft_state.last_applied),
 
     % Follower gets a heartbeat with a duplicate log entry
     %  * Index and term of previous log index matches, and the terms of the
     %    new log entries match, so follower should append successfully
     %  * Commit index is unchanged so follower should not apply
     clear_message_queue(),
-    {follower, State4} = server_cast(?APPEND_ENTRIES_RPC(3, Name, node2, 101, 2, [{2, {ref, noop}}, {2, {ref, noop}}], 102, 0)),
+    {follower, State4} = server_cast(
+        ?APPEND_ENTRIES_RPC(3, Name, node2, 101, 2, [{2, {ref, noop}}, {2, {ref, noop}}], 102, 0)
+    ),
     ?assertSetTimeout({state_timeout, _, election}),
     ?assertCast(Name, node2, ?APPEND_ENTRIES_RESPONSE_RPC(3, Name, Node, 101, true, 103, 102)),
-    ?assertEqual(103, wa_raft_log:last_index(State4#raft_state.log_view)), % only append 1
-    ?assertEqual(102, State4#raft_state.commit_index), % commit index is unchanged
-    ?assertEqual(102, State4#raft_state.last_applied), % last_applied is not updated - commit index is not changed
+    % only append 1
+    ?assertEqual(103, wa_raft_log:last_index(State4#raft_state.log_view)),
+    % commit index is unchanged
+    ?assertEqual(102, State4#raft_state.commit_index),
+    % last_applied is not updated - commit index is not changed
+    ?assertEqual(102, State4#raft_state.last_applied),
 
     % Follower gets an empty heartbeat with a new commit index
     %  * Index and term of previous log index matches so follower
@@ -1718,9 +1880,12 @@ append_entries(Config) ->
     {follower, State5} = server_cast(?APPEND_ENTRIES_RPC(3, Name, node2, 103, 2, [], 103, 0)),
     ?assertSetTimeout({state_timeout, _, election}),
     ?assertCast(Name, node2, ?APPEND_ENTRIES_RESPONSE_RPC(3, Name, Node, 103, true, 103, 102)),
-    ?assertEqual(103, wa_raft_log:last_index(State5#raft_state.log_view)), % nothing is appended
-    ?assertEqual(103, State5#raft_state.commit_index), % commit index is updated
-    ?assertEqual(103, State5#raft_state.last_applied), % last applied is updated
+    % nothing is appended
+    ?assertEqual(103, wa_raft_log:last_index(State5#raft_state.log_view)),
+    % commit index is updated
+    ?assertEqual(103, State5#raft_state.commit_index),
+    % last applied is updated
+    ?assertEqual(103, State5#raft_state.last_applied),
 
     % Follower gets an empty heartbeat with a commit index past the end of the log
     %  * Index and term of previous log index matches so follower
@@ -1730,9 +1895,12 @@ append_entries(Config) ->
     {follower, State6} = server_cast(?APPEND_ENTRIES_RPC(3, Name, node2, 103, 2, [], 105, 0)),
     ?assertSetTimeout({state_timeout, _, election}),
     ?assertCast(Name, node2, ?APPEND_ENTRIES_RESPONSE_RPC(3, Name, Node, 103, true, 103, 103)),
-    ?assertEqual(103, wa_raft_log:last_index(State6#raft_state.log_view)), % nothing is appended
-    ?assertEqual(103, State6#raft_state.commit_index), % commit index is not changed
-    ?assertEqual(103, State6#raft_state.last_applied), % last applied is not changed
+    % nothing is appended
+    ?assertEqual(103, wa_raft_log:last_index(State6#raft_state.log_view)),
+    % commit index is not changed
+    ?assertEqual(103, State6#raft_state.commit_index),
+    % last applied is not changed
+    ?assertEqual(103, State6#raft_state.last_applied),
 
     % Stop server
     ok = server_stop().
@@ -1749,9 +1917,12 @@ append_entries_witness(Config) ->
     clear_message_queue(),
     {witness, State1} = server_cast(?APPEND_ENTRIES_RPC(2, Name, node2, 100, 2, [{2, {ref, noop}}], 101, 0)),
     ?assertCast(Name, node2, ?APPEND_ENTRIES_RESPONSE_RPC(2, Name, Node, 100, true, 101, 100)),
-    ?assertEqual(101, wa_raft_log:last_index(State1#raft_state.log_view)), % log index updated
-    ?assertEqual(101, State1#raft_state.commit_index), % commit index is updated
-    ?assertEqual(101, State1#raft_state.last_applied), % last_applied is updated
+    % log index updated
+    ?assertEqual(101, wa_raft_log:last_index(State1#raft_state.log_view)),
+    % commit index is updated
+    ?assertEqual(101, State1#raft_state.commit_index),
+    % last_applied is updated
+    ?assertEqual(101, State1#raft_state.last_applied),
 
     clear_message_queue(),
     {witness, _} = server_cast(?APPEND_ENTRIES_RPC(2, Name, node2, 101, 2, [], 101, 0)),
@@ -1777,7 +1948,7 @@ append_entries_witness_match_cap(Config) ->
     % single heartbeat flushes all batched commits into the log.
     LastLogIndex = 6,
     ok = lists:foreach(
-        fun (_) -> server_cast(?COMMIT_COMMAND(?FROM(), {make_ref(), noop}, high)) end,
+        fun(_) -> server_cast(?COMMIT_COMMAND(?FROM(), {make_ref(), noop}, high)) end,
         lists:seq(1, 5)
     ),
     {leader, SeededState} = server_invoke(state_timeout, heartbeat),
@@ -1791,7 +1962,7 @@ append_entries_witness_match_cap(Config) ->
     MaxMatchIndex = 4,
     ReplicateFrom = 2,
     {leader, _} = server_replace_state(
-        fun ({leader, State}) ->
+        fun({leader, State}) ->
             {leader, State#raft_state{
                 match_indices = #{node2 => MaxMatchIndex, node3 => 3, node4 => 2, node5 => 2},
                 next_indices = (State#raft_state.next_indices)#{node2 => ReplicateFrom, node4 => ReplicateFrom}
@@ -1812,12 +1983,12 @@ append_entries_witness_match_cap(Config) ->
     % The witness still replicates the acknowledged tail (a real heartbeat, not a
     % degenerate empty one).
     ?assertNotEqual([], WitnessEntries),
-    ?assertLessThanOrEqual(
-        WitnessMaxIndex, MaxMatchIndex,
+    ?assert(
+        WitnessMaxIndex =< MaxMatchIndex,
         "witness must not be sent entries past the max follower match index"
     ),
-    ?assertLessThan(
-        WitnessMaxIndex, LastLogIndex,
+    ?assert(
+        WitnessMaxIndex < LastLogIndex,
         "witness cap must fall short of the leader's log end"
     ),
 
@@ -1826,8 +1997,8 @@ append_entries_witness_match_cap(Config) ->
     {cast, {_, _, ?APPEND_ENTRIES_RPC(1, Name, Node, FullPrevLogIndex, _, FullEntries, _, _)}} =
         ?assertCast(Name, node2, ?APPEND_ENTRIES_RPC(1, Name, Node, _, _, _, _, _)),
     FullMaxIndex = FullPrevLogIndex + length(FullEntries),
-    ?assertGreaterThan(
-        FullMaxIndex, MaxMatchIndex,
+    ?assert(
+        FullMaxIndex > MaxMatchIndex,
         "full follower must still receive entries past the max match index"
     ),
 
@@ -1850,7 +2021,7 @@ append_entries_two_witness_full_member_cap(Config) ->
     % Seed the leader's log up to index 6 (index 1 holds the promotion noop).
     LastLogIndex = 6,
     ok = lists:foreach(
-        fun (_) -> server_cast(?COMMIT_COMMAND(?FROM(), {make_ref(), noop}, high)) end,
+        fun(_) -> server_cast(?COMMIT_COMMAND(?FROM(), {make_ref(), noop}, high)) end,
         lists:seq(1, 5)
     ),
     {leader, SeededState} = server_invoke(state_timeout, heartbeat),
@@ -1862,7 +2033,7 @@ append_entries_two_witness_full_member_cap(Config) ->
     % match indices (6) would raise the all-member maximum to the log end.
     FullMemberMax = 4,
     {leader, _} = server_replace_state(
-        fun ({leader, State}) ->
+        fun({leader, State}) ->
             {leader, State#raft_state{
                 match_indices = #{node2 => FullMemberMax, node3 => 0, node4 => 6, node5 => 6},
                 next_indices = (State#raft_state.next_indices)#{node2 => 2, node5 => 2}
@@ -1878,20 +2049,20 @@ append_entries_two_witness_full_member_cap(Config) ->
         ?assertCast(Name, node5, ?APPEND_ENTRIES_RPC(1, Name, Node, _, _, _, _, _)),
     WitnessMaxIndex = WitnessPrevLogIndex + length(WitnessEntries),
     ?assertNotEqual([], WitnessEntries),
-    ?assertLessThanOrEqual(
-        WitnessMaxIndex, FullMemberMax,
+    ?assert(
+        WitnessMaxIndex =< FullMemberMax,
         "witness must not be sent entries past the full-member max with two witnesses"
     ),
-    ?assertLessThan(
-        WitnessMaxIndex, LastLogIndex,
+    ?assert(
+        WitnessMaxIndex < LastLogIndex,
         "two-witness cap must fall short of the log end"
     ),
 
     % A surviving full follower still receives entries up to the log end.
     {cast, {_, _, ?APPEND_ENTRIES_RPC(1, Name, Node, FullPrevLogIndex, _, FullEntries, _, _)}} =
         ?assertCast(Name, node2, ?APPEND_ENTRIES_RPC(1, Name, Node, _, _, _, _, _)),
-    ?assertGreaterThan(
-        FullPrevLogIndex + length(FullEntries), FullMemberMax,
+    ?assert(
+        FullPrevLogIndex + length(FullEntries) > FullMemberMax,
         "full follower must still receive entries past the full-member max"
     ),
 
@@ -1900,7 +2071,7 @@ append_entries_two_witness_full_member_cap(Config) ->
     % leader's own recorded index (0), so both witnesses are held to empty
     % heartbeats and can never outrank the one surviving full replica.
     {leader, _} = server_replace_state(
-        fun ({leader, State}) ->
+        fun({leader, State}) ->
             {leader, State#raft_state{
                 match_indices = #{node2 => 0, node3 => 0, node4 => 6, node5 => 6},
                 next_indices = (State#raft_state.next_indices)#{node4 => 2, node5 => 2}
@@ -1913,13 +2084,15 @@ append_entries_two_witness_full_member_cap(Config) ->
     {cast, {_, _, ?APPEND_ENTRIES_RPC(1, Name, Node, _, _, Witness4Entries, _, _)}} =
         ?assertCast(Name, node4, ?APPEND_ENTRIES_RPC(1, Name, Node, _, _, _, _, _)),
     ?assertEqual(
-        [], Witness4Entries,
+        [],
+        Witness4Entries,
         "with only the leader as a live full member, witnesses receive no new entries"
     ),
     {cast, {_, _, ?APPEND_ENTRIES_RPC(1, Name, Node, _, _, Witness5Entries, _, _)}} =
         ?assertCast(Name, node5, ?APPEND_ENTRIES_RPC(1, Name, Node, _, _, _, _, _)),
     ?assertEqual(
-        [], Witness5Entries,
+        [],
+        Witness5Entries,
         "with only the leader as a live full member, witnesses receive no new entries"
     ),
 
@@ -2165,10 +2338,34 @@ commit_label(Config) ->
     ?assertEqual({ok, {1, {ref1, 2, Command1}}}, wa_raft_log:get(State0#raft_state.log_view, 3)),
     ?assertEqual({ok, {1, {ref2, 2, Command2}}}, wa_raft_log:get(State0#raft_state.log_view, 4)),
     ?assertMatch(#{node2 := 5, node3 := 5, node4 := 5, node5 := 5}, State0#raft_state.next_indices),
-    ?assertCast(Name, node2, ?APPEND_ENTRIES_RPC(1, Name, Node, 1, 1, [{1, {ref0, 1, Command0}}, {1, {ref1, 2, Command1}}, {1, {ref2, 2, Command2}}], 0, 0)),
-    ?assertCast(Name, node3, ?APPEND_ENTRIES_RPC(1, Name, Node, 1, 1, [{1, {ref0, 1, Command0}}, {1, {ref1, 2, Command1}}, {1, {ref2, 2, Command2}}], 0, 0)),
-    ?assertCast(Name, node4, ?APPEND_ENTRIES_RPC(1, Name, Node, 1, 1, [{1, {ref0, 1, Command0}}, {1, {ref1, 2, Command1}}, {1, {ref2, 2, Command2}}], 0, 0)),
-    ?assertCast(Name, node5, ?APPEND_ENTRIES_RPC(1, Name, Node, 1, 1, [{1, {ref0, 1, Command0}}, {1, {ref1, 2, Command1}}, {1, {ref2, 2, Command2}}], 0, 0)),
+    ?assertCast(
+        Name,
+        node2,
+        ?APPEND_ENTRIES_RPC(
+            1, Name, Node, 1, 1, [{1, {ref0, 1, Command0}}, {1, {ref1, 2, Command1}}, {1, {ref2, 2, Command2}}], 0, 0
+        )
+    ),
+    ?assertCast(
+        Name,
+        node3,
+        ?APPEND_ENTRIES_RPC(
+            1, Name, Node, 1, 1, [{1, {ref0, 1, Command0}}, {1, {ref1, 2, Command1}}, {1, {ref2, 2, Command2}}], 0, 0
+        )
+    ),
+    ?assertCast(
+        Name,
+        node4,
+        ?APPEND_ENTRIES_RPC(
+            1, Name, Node, 1, 1, [{1, {ref0, 1, Command0}}, {1, {ref1, 2, Command1}}, {1, {ref2, 2, Command2}}], 0, 0
+        )
+    ),
+    ?assertCast(
+        Name,
+        node5,
+        ?APPEND_ENTRIES_RPC(
+            1, Name, Node, 1, 1, [{1, {ref0, 1, Command0}}, {1, {ref1, 2, Command1}}, {1, {ref2, 2, Command2}}], 0, 0
+        )
+    ),
 
     % Acknowledged log entries before quorum do not advance commit index
     clear_message_queue(),
@@ -2206,7 +2403,6 @@ commit_label(Config) ->
 
 -spec commit_witness(Config :: ct_suite:ct_config()) -> ok.
 commit_witness(Config) ->
-
     {witness, _} = server_start_witness_and_bootstrap(Config),
 
     Ref0 = make_ref(),
@@ -2219,7 +2415,6 @@ commit_witness(Config) ->
 
 -spec commit_follower(Config :: ct_suite:ct_config()) -> ok.
 commit_follower(Config) ->
-
     {follower, _} = server_start_and_bootstrap(Config),
 
     Ref0 = make_ref(),
@@ -2776,7 +2971,8 @@ read_after_candidate(Config) ->
 
 %% Establishes a healthy leader with quorum and returns the leader state
 %% along with the current term.
--spec setup_leader_with_quorum(Config :: ct_suite:ct_config()) -> {atom(), Name :: atom(), Term :: wa_raft_log:log_term(), #raft_state{}}.
+-spec setup_leader_with_quorum(Config :: ct_suite:ct_config()) ->
+    {atom(), Name :: atom(), Term :: wa_raft_log:log_term(), #raft_state{}}.
 setup_leader_with_quorum(Config) ->
     Name = ?SERVER_NAME(Config),
     Node = node(),
@@ -2874,7 +3070,7 @@ read_lease_miss_stale(Config) ->
         %% Force leader_quorum_ts far into the past so the lease is stale.
         StaleTs = erlang:monotonic_time(millisecond) - 10_000,
         server_replace_state(
-            fun ({SN, S}) -> {SN, S#raft_state{leader_quorum_ts = StaleTs}} end
+            fun({SN, S}) -> {SN, S#raft_state{leader_quorum_ts = StaleTs}} end
         ),
 
         Ref = make_ref(),
@@ -2908,7 +3104,7 @@ read_lease_miss_not_current_term(Config) ->
         %% the lease here.
         Now = erlang:monotonic_time(millisecond),
         server_replace_state(
-            fun ({SN, S}) -> {SN, S#raft_state{leader_quorum_ts = Now}} end
+            fun({SN, S}) -> {SN, S#raft_state{leader_quorum_ts = Now}} end
         ),
 
         Ref = make_ref(),
@@ -2933,7 +3129,7 @@ read_lease_miss_no_quorum_ts(Config) ->
         ?assert(Queues =/= undefined),
 
         server_replace_state(
-            fun ({SN, S}) -> {SN, S#raft_state{leader_quorum_ts = undefined}} end
+            fun({SN, S}) -> {SN, S#raft_state{leader_quorum_ts = undefined}} end
         ),
 
         Ref = make_ref(),
@@ -2958,7 +3154,7 @@ read_lease_miss_not_applied(Config) ->
 
         %% Force last_applied behind commit_index to simulate a slow apply.
         server_replace_state(
-            fun ({SN, S}) -> {SN, S#raft_state{last_applied = 0}} end
+            fun({SN, S}) -> {SN, S#raft_state{last_applied = 0}} end
         ),
         ?assertEqual(1, State0#raft_state.commit_index),
 
@@ -2984,7 +3180,7 @@ read_lease_miss_handover_in_progress(Config) ->
         ?assert(Queues =/= undefined),
 
         server_replace_state(
-            fun ({SN, S}) -> {SN, S#raft_state{handover_lease_state = in_progress}} end
+            fun({SN, S}) -> {SN, S#raft_state{handover_lease_state = in_progress}} end
         ),
 
         Ref = make_ref(),
@@ -3035,7 +3231,7 @@ read_lease_handover_timeout_rearms(Config) ->
             server_call(?HANDOVER_COMMAND(node2)),
         ?assertEqual(in_progress, State1#raft_state.handover_lease_state),
         server_replace_state(
-            fun ({SN, S}) ->
+            fun({SN, S}) ->
                 {SN, S#raft_state{
                     handover = {node2, Ref, erlang:monotonic_time(millisecond) - 1_000_000}
                 }}
@@ -3076,32 +3272,49 @@ truncate(Config) ->
     %  * Follower should successfully append log entries
     %  * Follower should apply log entry 101
     %  * Heartbeat response is generated before apply, so last applied index is 100
-    {follower, State0} = server_cast(?APPEND_ENTRIES_RPC(2, Name, node2, 100, 2, [{2, {101, noop}}, {2, {102, noop}}, {2, {103, noop}}], 101, 0)),
+    {follower, State0} = server_cast(
+        ?APPEND_ENTRIES_RPC(2, Name, node2, 100, 2, [{2, {101, noop}}, {2, {102, noop}}, {2, {103, noop}}], 101, 0)
+    ),
     ?assertCast(Name, node2, ?APPEND_ENTRIES_RESPONSE_RPC(2, Name, Node, 100, true, 103, 100)),
-    ?assertEqual(103, wa_raft_log:last_index(State0#raft_state.log_view)), % current last log entry is 103
-    ?assertEqual(101, State0#raft_state.last_applied), % last applied is 101
+    % current last log entry is 103
+    ?assertEqual(103, wa_raft_log:last_index(State0#raft_state.log_view)),
+    % last applied is 101
+    ?assertEqual(101, State0#raft_state.last_applied),
 
     % Follower gets a heartbeat from the new leader for term 3
     %  * The term for log entries 102 and 103 mismatch so they should
     %    be overwritten
-    {follower, State1} = server_cast(?APPEND_ENTRIES_RPC(3, Name, node3, 101, 2, [{3, {102, noop}}, {3, {103, noop}}, {3, {104, noop}}], 101, 0)),
+    {follower, State1} = server_cast(
+        ?APPEND_ENTRIES_RPC(3, Name, node3, 101, 2, [{3, {102, noop}}, {3, {103, noop}}, {3, {104, noop}}], 101, 0)
+    ),
     ?assertCast(Name, node3, ?APPEND_ENTRIES_RESPONSE_RPC(3, Name, Node, 101, true, 104, 101)),
     ?assertEqual(104, wa_raft_log:last_index(State1#raft_state.log_view)),
-    ?assertEqual({ok, {2, {101, noop}}}, wa_raft_log:get(State1#raft_state.log_view, 101)), % entry 101 is kept
-    ?assertEqual({ok, {3, {102, noop}}}, wa_raft_log:get(State1#raft_state.log_view, 102)), % entry 102 is replaced
-    ?assertEqual({ok, {3, {103, noop}}}, wa_raft_log:get(State1#raft_state.log_view, 103)), % entry 103 is replaced
-    ?assertEqual({ok, {3, {104, noop}}}, wa_raft_log:get(State1#raft_state.log_view, 104)), % entry 104 is replaced
+    % entry 101 is kept
+    ?assertEqual({ok, {2, {101, noop}}}, wa_raft_log:get(State1#raft_state.log_view, 101)),
+    % entry 102 is replaced
+    ?assertEqual({ok, {3, {102, noop}}}, wa_raft_log:get(State1#raft_state.log_view, 102)),
+    % entry 103 is replaced
+    ?assertEqual({ok, {3, {103, noop}}}, wa_raft_log:get(State1#raft_state.log_view, 103)),
+    % entry 104 is replaced
+    ?assertEqual({ok, {3, {104, noop}}}, wa_raft_log:get(State1#raft_state.log_view, 104)),
 
     % Follower gets a heartbeat from the new leader for term 4
     %  * The term for log entry 102 (3) does not match the term (4) provided
     %    for the previous log index. The log should be truncated past 102
-    {follower, State2} = server_cast(?APPEND_ENTRIES_RPC(4, Name, node2, 102, 4, [{4, {103, noop}}, {4, {104, noop}}], 101, 0)),
+    {follower, State2} = server_cast(
+        ?APPEND_ENTRIES_RPC(4, Name, node2, 102, 4, [{4, {103, noop}}, {4, {104, noop}}], 101, 0)
+    ),
     ?assertCast(Name, node2, ?APPEND_ENTRIES_RESPONSE_RPC(4, Name, Node, 102, false, 101, 101)),
-    ?assertEqual(101, wa_raft_log:last_index(State2#raft_state.log_view)), % new entries are not appended
-    ?assertEqual({ok, {2, {101, noop}}}, wa_raft_log:get(State2#raft_state.log_view, 101)), % entry 101 is unchanged
-    ?assertEqual(not_found, wa_raft_log:get(State2#raft_state.log_view, 102)), % entry 102 is truncated
-    ?assertEqual(not_found, wa_raft_log:get(State2#raft_state.log_view, 103)), % entry 103 is truncated
-    ?assertEqual(not_found, wa_raft_log:get(State2#raft_state.log_view, 104)), % entry 104 is truncated
+    % new entries are not appended
+    ?assertEqual(101, wa_raft_log:last_index(State2#raft_state.log_view)),
+    % entry 101 is unchanged
+    ?assertEqual({ok, {2, {101, noop}}}, wa_raft_log:get(State2#raft_state.log_view, 101)),
+    % entry 102 is truncated
+    ?assertEqual(not_found, wa_raft_log:get(State2#raft_state.log_view, 102)),
+    % entry 103 is truncated
+    ?assertEqual(not_found, wa_raft_log:get(State2#raft_state.log_view, 103)),
+    % entry 104 is truncated
+    ?assertEqual(not_found, wa_raft_log:get(State2#raft_state.log_view, 104)),
 
     % Stop server
     ok = server_stop().
@@ -3254,18 +3467,24 @@ promote(Config) ->
     ?assertEqual(0, State0#raft_state.current_term),
 
     % Follower can be force promoted in the current term if leader is unknown
-    {follower, _, ok} = server_call(?BOOTSTRAP_COMMAND(#raft_log_pos{index = 1, term = 5}, ?SERVER_CLUSTER_CONFIG(Config), #{})),
+    {follower, _, ok} = server_call(
+        ?BOOTSTRAP_COMMAND(#raft_log_pos{index = 1, term = 5}, ?SERVER_CLUSTER_CONFIG(Config), #{})
+    ),
     {leader, State1, ok} = server_call(?PROMOTE_COMMAND(5, true)),
     ?assertEqual(5, State1#raft_state.current_term),
 
     % Promotion should be disallowed if the node has recently gotten (or sent) a heartbeat
-    server_replace_state(fun ({SN, S}) -> {SN, S#raft_state{leader_commit_index_ts = erlang:monotonic_time(millisecond)}} end),
+    server_replace_state(fun({SN, S}) ->
+        {SN, S#raft_state{leader_commit_index_ts = erlang:monotonic_time(millisecond)}}
+    end),
     {leader, State2, {error, rejected}} = server_call(?PROMOTE_COMMAND(10, false)),
     ?assertEqual(5, State2#raft_state.current_term),
 
     % Reset heartbeat info and try to promote again. Clear both freshness
     % fields since the `?PROMOTE_COMMAND` gate reads their max.
-    server_replace_state(fun ({State, Data}) -> {State, Data#raft_state{leader_quorum_ts = undefined, leader_commit_index_ts = undefined}} end),
+    server_replace_state(fun({State, Data}) ->
+        {State, Data#raft_state{leader_quorum_ts = undefined, leader_commit_index_ts = undefined}}
+    end),
 
     % Promotion must be to newer term when leader is known
     {leader, State3, {error, invalid_term}} = server_call(?PROMOTE_COMMAND(5, false)),
@@ -3343,7 +3562,7 @@ resign(Config) ->
 
 -spec witness(Config :: ct_suite:ct_config()) -> ok.
 witness(Config) ->
-   % Node = node(),
+    % Node = node(),
 
     % Start server
     {witness, _State0} = server_start_witness_and_bootstrap(Config),
@@ -3441,7 +3660,6 @@ disable_candidate(Config) ->
 
 -spec disable_witness(Config :: ct_suite:ct_config()) -> ok.
 disable_witness(Config) ->
-
     % Test witness -> disabled transition
     {witness, _} = server_start_witness_and_bootstrap(Config),
     {disabled, State0, ok} = server_call(?DISABLE_COMMAND("Test disable.")),
@@ -3475,7 +3693,9 @@ handover(Config) ->
     ?assertEqual(undefined, State2#raft_state.handover),
 
     % Attempt to handover to valid peer node
-    {leader, #raft_state{handover = {node2, Ref3, _} = Handover3} = State3, {ok, node2}} = server_call(?HANDOVER_COMMAND(node2)),
+    {leader, #raft_state{handover = {node2, Ref3, _} = Handover3} = State3, {ok, node2}} = server_call(
+        ?HANDOVER_COMMAND(node2)
+    ),
     ?assertEqual(Term, State3#raft_state.current_term),
     ?assertCast(Name, node2, ?HANDOVER_RPC(Term, Name, Node, Ref3, 0, 0, [{2, {_, noop}}])),
 
@@ -3487,7 +3707,9 @@ handover(Config) ->
 
     % Handover times out after some time when the peer node does not become leader and replication resumes.
     clear_message_queue(),
-    server_replace_state(fun ({State, Data}) -> {State, Data#raft_state{handover = {node2, Ref3, erlang:monotonic_time(millisecond) - 1000000}}} end),
+    server_replace_state(fun({State, Data}) ->
+        {State, Data#raft_state{handover = {node2, Ref3, erlang:monotonic_time(millisecond) - 1000000}}}
+    end),
     {leader, State5} = server_invoke(state_timeout, heartbeat),
     ?assertEqual(Term, State5#raft_state.current_term),
     ?assertEqual(undefined, State5#raft_state.handover),
@@ -3628,7 +3850,9 @@ add_member(Config) ->
     {leader, State1, {error, already_member}} = server_call(?ADJUST_CONFIG_COMMAND({add, {Name, Node}}, undefined)),
 
     % Otherwise, since there is no pending reconfiguration, permit one.
-    {leader, State2, {ok, #raft_log_pos{index = 2, term = 1}}} = server_call(?ADJUST_CONFIG_COMMAND({add, {Name, node6}}, undefined)),
+    {leader, State2, {ok, #raft_log_pos{index = 2, term = 1}}} = server_call(
+        ?ADJUST_CONFIG_COMMAND({add, {Name, node6}}, undefined)
+    ),
     ?assertMatch({ok, {1, {_, {config, #{membership := _}}}}}, wa_raft_log:get(State2#raft_state.log_view, 2)),
 
     % Since there is a pending reconfiguration, do not allow another.
@@ -3658,7 +3882,9 @@ add_member(Config) ->
     {leader, State5, {error, already_member}} = server_call(?ADJUST_CONFIG_COMMAND({add, {Name, node6}}, undefined)),
 
     % Leader can now perform another reconfiguration
-    {leader, State6, {ok, #raft_log_pos{index = 3, term = 1}}} = server_call(?ADJUST_CONFIG_COMMAND({add, {Name, node7}}, undefined)),
+    {leader, State6, {ok, #raft_log_pos{index = 3, term = 1}}} = server_call(
+        ?ADJUST_CONFIG_COMMAND({add, {Name, node7}}, undefined)
+    ),
     ?assertMatch({ok, {1, {_, {config, #{membership := _}}}}}, wa_raft_log:get(State6#raft_state.log_view, 3)),
 
     % Stop server
@@ -3684,7 +3910,9 @@ add_member_follower(Config) ->
     ConfigB = wa_raft_server:make_config([Node1, Node2, Node3, Node4, Node5, Node6, Node7]),
 
     % Follower gets two new config entries each adding a member from the leader
-    {follower, State0} = server_cast(?APPEND_ENTRIES_RPC(1, Name, node2, 1, 1, [{1, {ref, {config, ConfigA}}}, {1, {ref, {config, ConfigB}}}], 2, 0)),
+    {follower, State0} = server_cast(
+        ?APPEND_ENTRIES_RPC(1, Name, node2, 1, 1, [{1, {ref, {config, ConfigA}}}, {1, {ref, {config, ConfigB}}}], 2, 0)
+    ),
     ?assertEqual(2, State0#raft_state.commit_index),
     ?assertEqual(2, State0#raft_state.last_applied),
     ?assertEqual(3, wa_raft_log:last_index(State0#raft_state.log_view)),
@@ -3750,13 +3978,19 @@ remove_member(Config) ->
     ?assertEqual(1, State1#raft_state.last_applied),
 
     % Leaders should not remove themselves from the membership
-    {leader, State1, {error, cannot_remove_self}} = server_call(?ADJUST_CONFIG_COMMAND({remove, {Name, Node}}, undefined)),
+    {leader, State1, {error, cannot_remove_self}} = server_call(
+        ?ADJUST_CONFIG_COMMAND({remove, {Name, Node}}, undefined)
+    ),
 
     % Leaders should not remove a non-member from the membership
-    {leader, State1, {error, not_a_participant}} = server_call(?ADJUST_CONFIG_COMMAND({remove, {Name, node6}}, undefined)),
+    {leader, State1, {error, not_a_participant}} = server_call(
+        ?ADJUST_CONFIG_COMMAND({remove, {Name, node6}}, undefined)
+    ),
 
     % Otherwise, since there is no pending reconfiguration, permit one.
-    {leader, State2, {ok, #raft_log_pos{index = 2, term = 1}}} = server_call(?ADJUST_CONFIG_COMMAND({remove, {Name, node5}}, undefined)),
+    {leader, State2, {ok, #raft_log_pos{index = 2, term = 1}}} = server_call(
+        ?ADJUST_CONFIG_COMMAND({remove, {Name, node5}}, undefined)
+    ),
     ?assertMatch({ok, {1, {_, {config, #{membership := _}}}}}, wa_raft_log:get(State2#raft_state.log_view, 2)),
 
     % Since there is a pending reconfiguration, do not allow another.
@@ -3779,10 +4013,14 @@ remove_member(Config) ->
     ?assertEqual(2, State4#raft_state.last_applied),
 
     % Do not allow removing the node again
-    {leader, State4, {error, not_a_participant}} = server_call(?ADJUST_CONFIG_COMMAND({remove, {Name, node5}}, undefined)),
+    {leader, State4, {error, not_a_participant}} = server_call(
+        ?ADJUST_CONFIG_COMMAND({remove, {Name, node5}}, undefined)
+    ),
 
     % Leader can now perform another reconfiguration
-    {leader, State5, {ok, #raft_log_pos{index = 3, term = 1}}} = server_call(?ADJUST_CONFIG_COMMAND({remove, {Name, node4}}, undefined)),
+    {leader, State5, {ok, #raft_log_pos{index = 3, term = 1}}} = server_call(
+        ?ADJUST_CONFIG_COMMAND({remove, {Name, node4}}, undefined)
+    ),
     ?assertMatch({ok, {1, {_, {config, #{membership := _}}}}}, wa_raft_log:get(State5#raft_state.log_view, 3)),
 
     % Stop server
@@ -3805,7 +4043,9 @@ remove_member_follower(Config) ->
     ConfigB = wa_raft_server:make_config([Node1, Node2, Node3]),
 
     % Follower gets two new config entries each removing a member from the leader
-    {follower, State0} = server_cast(?APPEND_ENTRIES_RPC(1, Name, node2, 1, 1, [{1, {ref, {config, ConfigA}}}, {1, {ref, {config, ConfigB}}}], 2, 0)),
+    {follower, State0} = server_cast(
+        ?APPEND_ENTRIES_RPC(1, Name, node2, 1, 1, [{1, {ref, {config, ConfigA}}}, {1, {ref, {config, ConfigB}}}], 2, 0)
+    ),
     ?assertEqual(2, State0#raft_state.commit_index),
     ?assertEqual(2, State0#raft_state.last_applied),
     ?assertEqual({ok, #raft_log_pos{index = 2, term = 1}, ConfigA}, wa_raft_storage:config(State0#raft_state.storage)),
@@ -3953,7 +4193,7 @@ check_quorum(Config) ->
 
     % Simulate stale quorum by setting leader_quorum_ts to a very old timestamp
     StaleTs = erlang:monotonic_time(millisecond) - 60_000,
-    server_replace_state(fun ({SN, S}) -> {SN, S#raft_state{leader_quorum_ts = StaleTs}} end),
+    server_replace_state(fun({SN, S}) -> {SN, S#raft_state{leader_quorum_ts = StaleTs}} end),
 
     % Leader should resign because quorum is stale
     {follower, _} = server_invoke(state_timeout, heartbeat),
@@ -3962,7 +4202,7 @@ check_quorum(Config) ->
     ok = application:unset_env(?RAFT_APPLICATION, ?RAFT_LEADER_CHECK_QUORUM),
     {leader, _, ok} = server_call(?PROMOTE_COMMAND(3, true)),
     clear_message_queue(),
-    server_replace_state(fun ({SN, S}) -> {SN, S#raft_state{leader_quorum_ts = StaleTs}} end),
+    server_replace_state(fun({SN, S}) -> {SN, S#raft_state{leader_quorum_ts = StaleTs}} end),
     {leader, _} = server_invoke(state_timeout, heartbeat),
 
     % Stop server
@@ -4006,7 +4246,7 @@ enter_follower_does_not_flap_liveness(Config) ->
     % Plant a known `leader_commit_index_ts` on the leader before stepping down.
     KnownTs = erlang:monotonic_time(millisecond) - 5,
     {leader, _} = server_replace_state(
-        fun ({SN, S}) -> {SN, S#raft_state{leader_commit_index_ts = KnownTs}} end
+        fun({SN, S}) -> {SN, S#raft_state{leader_commit_index_ts = KnownTs}} end
     ),
 
     % Resign: transitions leader → follower via enter_state. Under the split,
@@ -4029,19 +4269,19 @@ promote_gate_considers_both_signals(Config) ->
 
     % Recent leader_quorum_ts alone must block promotion.
     server_replace_state(
-        fun ({SN, S}) -> {SN, S#raft_state{leader_quorum_ts = Now, leader_commit_index_ts = undefined}} end
+        fun({SN, S}) -> {SN, S#raft_state{leader_quorum_ts = Now, leader_commit_index_ts = undefined}} end
     ),
     {follower, _, {error, rejected}} = server_call(?PROMOTE_COMMAND(next, false)),
 
     % Recent leader_commit_index_ts alone must also block promotion.
     server_replace_state(
-        fun ({SN, S}) -> {SN, S#raft_state{leader_quorum_ts = undefined, leader_commit_index_ts = Now}} end
+        fun({SN, S}) -> {SN, S#raft_state{leader_quorum_ts = undefined, leader_commit_index_ts = Now}} end
     ),
     {follower, _, {error, rejected}} = server_call(?PROMOTE_COMMAND(next, false)),
 
     % Clearing both should allow promotion.
     server_replace_state(
-        fun ({SN, S}) -> {SN, S#raft_state{leader_quorum_ts = undefined, leader_commit_index_ts = undefined}} end
+        fun({SN, S}) -> {SN, S#raft_state{leader_quorum_ts = undefined, leader_commit_index_ts = undefined}} end
     ),
     {leader, _, ok} = server_call(?PROMOTE_COMMAND(next, false)),
 
@@ -4077,7 +4317,7 @@ stepped_down_leader_is_not_stale(Config) ->
     % state_timeout invocation so the cached status is refreshed.
     Stale = erlang:monotonic_time(millisecond) - 60_000,
     server_replace_state(
-        fun ({SN, S}) -> {SN, S#raft_state{leader_quorum_ts = Stale, leader_commit_index_ts = Stale}} end
+        fun({SN, S}) -> {SN, S#raft_state{leader_quorum_ts = Stale, leader_commit_index_ts = Stale}} end
     ),
     {_, _} = server_invoke(state_timeout, election),
     ?assertEqual(true, wa_raft_info:get_stale(Table, Partition)),
@@ -4152,11 +4392,14 @@ participant_trim_index(Config) ->
     ?assertEqual(101, wa_raft_log:first_index(StateAfterParticipant#raft_state.log_view)),
 
     ok = meck:new(wa_raft_snapshot_catchup, [passthrough, no_link]),
-    ok = meck:expect(wa_raft_snapshot_catchup, catchup,
-        fun (App, RaftName, Follower, CatchupTable, CatchupPartition, Witness) ->
+    ok = meck:expect(
+        wa_raft_snapshot_catchup,
+        catchup,
+        fun(App, RaftName, Follower, CatchupTable, CatchupPartition, Witness) ->
             server_notify(host(), snapshot_catchup, {App, RaftName, Follower, CatchupTable, CatchupPartition, Witness}),
             ok
-        end),
+        end
+    ),
 
     clear_message_queue(),
     {leader, _} = server_cast(?APPEND_ENTRIES_RESPONSE_RPC(3, Name, node4, 101, false, 0, 0)),
@@ -4184,7 +4427,9 @@ trim_index(Config) ->
     {follower, _} = server_start_and_bootstrap(100, 2, Config),
 
     % Send an append with new log entries but without new commits
-    {follower, _} = server_cast(?APPEND_ENTRIES_RPC(3, Name, node2, 100, 2, [{3, {101, noop}}, {3, {102, noop}}, {3, {103, noop}}], 100, 100)),
+    {follower, _} = server_cast(
+        ?APPEND_ENTRIES_RPC(3, Name, node2, 100, 2, [{3, {101, noop}}, {3, {102, noop}}, {3, {103, noop}}], 100, 100)
+    ),
     ?assertCast(Name, node2, ?APPEND_ENTRIES_RESPONSE_RPC(3, Name, Node, 100, true, 103, 100)),
 
     % Send an append with new commits
@@ -4229,7 +4474,9 @@ get_current_config(Config) ->
     {leader, _} = server_cast(?APPEND_ENTRIES_RESPONSE_RPC(1, Name, node2, 0, true, 1, 0)),
     {leader, _} = server_cast(?APPEND_ENTRIES_RESPONSE_RPC(1, Name, node3, 0, true, 1, 0)),
     % Add a new member
-    {leader, _, {ok, #raft_log_pos{index = ConfigIndex}}} = server_call(?ADJUST_CONFIG_COMMAND({add, {Name, node6}}, undefined)),
+    {leader, _, {ok, #raft_log_pos{index = ConfigIndex}}} = server_call(
+        ?ADJUST_CONFIG_COMMAND({add, {Name, node6}}, undefined)
+    ),
     % Replicate the config change to a quorum
     {leader, _} = server_invoke(state_timeout, heartbeat),
     {leader, _} = server_cast(?APPEND_ENTRIES_RESPONSE_RPC(1, Name, node2, 1, true, ConfigIndex, 1)),
@@ -4400,7 +4647,7 @@ pre_vote_request(Config) ->
     ?assertCast(Name, node2, ?PRE_VOTE_RPC(1, Name, Node, Ref, true, 1, 1)),
 
     % 2. Follower with active leader (recent heartbeat) → should deny pre-vote
-    SetHeartbeat = fun ({SN, S}) -> {SN, S#raft_state{leader_commit_index_ts = erlang:monotonic_time(millisecond)}} end,
+    SetHeartbeat = fun({SN, S}) -> {SN, S#raft_state{leader_commit_index_ts = erlang:monotonic_time(millisecond)}} end,
     {follower, _} = server_replace_state(SetHeartbeat),
     Ref2 = make_ref(),
     {follower, _} = server_cast(?REQUEST_PRE_VOTE_RPC(1, Name, node2, Ref2)),

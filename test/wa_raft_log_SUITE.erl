@@ -1,3 +1,4 @@
+% @format
 %% Copyright (c) Meta Platforms, Inc. and affiliates. All rights reserved.
 %%
 %% This source code is licensed under the Apache 2.0 license found in
@@ -96,7 +97,7 @@ maybe_mock_durable_position(_Testcase) ->
 
 -spec end_per_testcase(Testcase :: atom(), Config :: ct_suite:ct_config()) -> ok.
 end_per_testcase(_, _) ->
-    ok.
+    wa_raft_test_helper:unload_mocks([wa_raft_storage]).
 
 -spec all() -> [ct_suite:ct_test_def()].
 all() ->
@@ -153,7 +154,7 @@ setup_log(Config) ->
 % elp:ignore unreachable_test - Not a test case, but a helper function used by other test suites
 teardown_log(Pid) ->
     case is_process_alive(Pid) of
-        true  -> gen_server:stop(Pid);
+        true -> gen_server:stop(Pid);
         false -> ok
     end.
 
@@ -458,7 +459,8 @@ get_terms(Config) ->
         begin
             ?assertEqual({ok, lists:sublist(ExpectedTerms, 1, N)}, wa_raft_log:get_terms(View1, 1, N)),
             ?assertEqual({ok, lists:sublist(ExpectedTerms, 1, N)}, wa_raft_log:get_terms(Log, 1, N))
-        end || N <- lists:seq(1, 70, 5)
+        end
+     || N <- lists:seq(1, 70, 5)
     ],
 
     ok = teardown_log(Pid).
@@ -493,7 +495,8 @@ get(Config) ->
                 wa_raft_log:entries(View1, 1, 30, EntryBytes * N)
             ),
             ?assertEqual({ok, lists:sublist(Entries, 1, min(N, 30))}, wa_raft_log:entries(Log, 1, 30, EntryBytes * N))
-        end || N <- lists:seq(1, 70, 5)
+        end
+     || N <- lists:seq(1, 70, 5)
     ],
 
     ok = teardown_log(Pid).
@@ -817,19 +820,22 @@ config_trim(Config) ->
 
     % Trim should not affect config info unless it reaches latest config
     {ok, View2} = wa_raft_log:trim(View1, 1),
-    sys:get_state(Name), % trim cast barrier
+    % trim cast barrier
+    sys:get_state(Name),
     ?assertEqual({ok, 2, Config2}, wa_raft_log:config(View2)),
     ?assertEqual({ok, 2, Config2}, wa_raft_log:config(Log)),
 
     % Trim should not affect config info unless it reaches latest config
     {ok, View3} = wa_raft_log:trim(View2, 2),
-    sys:get_state(Name), % trim cast barrier
+    % trim cast barrier
+    sys:get_state(Name),
     ?assertEqual({ok, 2, Config2}, wa_raft_log:config(View3)),
     ?assertEqual({ok, 2, Config2}, wa_raft_log:config(Log)),
 
     % Trimming index with latest config should clear latest config cache
     {ok, View4} = wa_raft_log:trim(View3, 3),
-    sys:get_state(Name), % trim cast barrier
+    % trim cast barrier
+    sys:get_state(Name),
     ?assertEqual(not_found, wa_raft_log:config(View4)),
     % Here, the result of calling config directly with the log name is not
     % defined here because log trim API does not require underlying log

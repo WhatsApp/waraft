@@ -1,3 +1,4 @@
+% @format
 %% Copyright (c) Meta Platforms, Inc. and affiliates. All rights reserved.
 %%
 %% This source code is licensed under the Apache 2.0 license found in
@@ -54,8 +55,8 @@ init_per_group(Group, Config0) ->
     Config2.
 
 -spec end_per_group(Group :: atom(), Config :: ct_suite:ct_config()) -> ok.
-end_per_group(_, _Config) ->
-    ok.
+end_per_group(_, Config) ->
+    wa_raft_cluster_test_helper:teardown_cluster(Config).
 
 -spec init_per_testcase(Testcase :: atom(), Config :: ct_suite:ct_config()) -> ct_suite:ct_config().
 init_per_testcase(Testcase, Config0) ->
@@ -68,7 +69,8 @@ init_per_testcase(Testcase, Config0) ->
             ok = wa_raft_test_helper:set_app_option(Node, ?RAFT_ELECTION_WEIGHT, 0),
             ok = wa_raft_test_helper:unset_app_option(Node, dist_transport_chunk_size),
             ok = wa_raft_test_helper:unset_app_option(Node, ?RAFT_LOG_ROTATION_INTERVAL)
-        end || Node <- proplists:get_value(nodes, Config1)
+        end
+     || Node <- proplists:get_value(nodes, Config1)
     ],
 
     % Reset the cluster by wiping and bootstrapping
@@ -111,7 +113,8 @@ check_batch(Node, From, To, ValueDelta) ->
         begin
             Value = read_with_retry(Node, Key, 10),
             ?assertEqual(Key + ValueDelta, Value, Node)
-        end || Key <- lists:seq(From, To)
+        end
+     || Key <- lists:seq(From, To)
     ],
     ct:print("Verified ok ~p-~p on ~p", [From, To, Node]),
     ok.
@@ -132,7 +135,9 @@ read_with_retry(Node, Key, Retries) ->
             Value
     end.
 
--spec check_data(Node :: node(), ExpectedLastApplied :: integer(), From :: integer(), To :: integer(), ValueDelta :: integer()) -> ok.
+-spec check_data(
+    Node :: node(), ExpectedLastApplied :: integer(), From :: integer(), To :: integer(), ValueDelta :: integer()
+) -> ok.
 check_data(Node, ExpectedLastApplied, From, To, ValueDelta) ->
     wait_for_last_applied(Node, ExpectedLastApplied),
     check_batch(Node, From, To, ValueDelta).
@@ -170,7 +175,7 @@ wait_for_server_status(Node, Field, Value) ->
 -spec wait_for_server_status(Node :: node(), Field :: atom(), Value :: term(), Timeout :: integer() | infinity) -> ok.
 wait_for_server_status(Node, Field, Value, Timeout) ->
     ct:print("Waiting for ~0p server state field ~0p to be ~0p.", [Node, Field, Value]),
-    ?assertEqual(ok, wait_for(fun () -> wa_raft_test_helper:get_server_status(Node, Field) =:= Value end, Timeout)).
+    ?assertEqual(ok, wait_for(fun() -> wa_raft_test_helper:get_server_status(Node, Field) =:= Value end, Timeout)).
 
 -spec wait_for_leader(Node :: node()) -> ok.
 wait_for_leader(Node) ->
@@ -183,7 +188,7 @@ wait_for_last_applied(Node, LastApplied) ->
 -spec wait_for_last_applied(node(), integer(), integer() | infinity) -> ok.
 wait_for_last_applied(Node, LastApplied, Timeout) ->
     ct:print("Waiting for ~0p to reach index ~0p.", [Node, LastApplied]),
-    ?assertEqual(ok, wait_for(fun () -> last_applied(Node) =:= LastApplied end, Timeout)).
+    ?assertEqual(ok, wait_for(fun() -> last_applied(Node) =:= LastApplied end, Timeout)).
 
 %%--------------------------------------------------------------------
 %% TEST CASES

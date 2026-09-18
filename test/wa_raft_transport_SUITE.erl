@@ -1,3 +1,4 @@
+% @format
 %% Copyright (c) Meta Platforms, Inc. and affiliates. All rights reserved.
 %%
 %% This source code is licensed under the Apache 2.0 license found in
@@ -70,7 +71,7 @@ traversal_paths_rejected(_Config) ->
             {error, invalid_file_path},
             wa_raft_transport:resolve_transport_files(?ROOT, [{1, Path, 10}])
         )
-        || Path <- ["..", "../x", "../../../../tmp/x", "a/../../b", "subdir/../../etc/passwd"]
+     || Path <- ["..", "../x", "../../../../tmp/x", "a/../../b", "subdir/../../etc/passwd"]
     ],
     %% A safe file mixed with an unsafe file still fails the whole transport.
     ?assertEqual(
@@ -89,6 +90,6 @@ absolute_paths_rejected(_Config) ->
             {error, invalid_file_path},
             wa_raft_transport:resolve_transport_files(?ROOT, [{1, Path, 10}])
         )
-        || Path <- ["/tmp/x", "/etc/passwd", "/"]
+     || Path <- ["/tmp/x", "/etc/passwd", "/"]
     ],
     ok.

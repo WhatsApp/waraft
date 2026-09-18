@@ -1,3 +1,4 @@
+% @format
 %% Copyright (c) Meta Platforms, Inc. and affiliates. All rights reserved.
 %%
 %% This source code is licensed under the Apache 2.0 license found in
@@ -109,7 +110,6 @@ durable_position(Config) ->
     ok = wa_raft_storage:apply(Storage, undefined, {1, {1, {make_ref(), undefined, noop}}}, 1, high),
     ?assertEqual(Position, wa_raft_storage:position(Storage)),
     ?assertEqual(unbounded, wa_raft_storage:durable_position(Table, Partition)).
-
 
 -spec durable_position_fails_closed_without_partition(ct_suite:ct_config()) -> ok.
 durable_position_fails_closed_without_partition(Config) ->

@@ -1,4 +1,11 @@
+% @format
+%% Copyright (c) Meta Platforms, Inc. and affiliates. All rights reserved.
+%%
+%% This source code is licensed under the Apache 2.0 license found in
+%% the LICENSE file in the root directory of this source tree.
+
 -module(wa_raft_cluster_test_helper).
+-oncall("whatsapp_msgd").
 -compile(warn_missing_spec_all).
 
 -export([
@@ -26,13 +33,14 @@ setup_cluster(Count, Config0) ->
 
 -spec setup_dist() -> ok.
 setup_dist() ->
-    node() =:= 'nonode@nohost' andalso begin
-        % distribution is not started, ensure epmd is
-        (erl_epmd:names("localhost") =:= {error, address}) andalso
-            ([] = os:cmd("epmd -daemon")),
-        Name = list_to_atom("test" ++ os:getpid() ++ "@localhost"),
-        {ok, _} = net_kernel:start([Name, shortnames])
-    end,
+    node() =:= 'nonode@nohost' andalso
+        begin
+            % distribution is not started, ensure epmd is
+            (erl_epmd:names("localhost") =:= {error, address}) andalso
+                ([] = os:cmd("epmd -daemon")),
+            Name = list_to_atom("test" ++ os:getpid() ++ "@localhost"),
+            {ok, _} = net_kernel:start([Name, shortnames])
+        end,
     ok.
 
 -spec setup_node(Index :: pos_integer()) -> Node :: node().
@@ -41,14 +49,11 @@ setup_node(Index) ->
     {ok, Pid, Node} = ?CT_PEER(#{name => Name, args => ["-kernel", "prevent_overlapping_partitions", "false"]}),
     unlink(Pid),
     register(Node, Pid),
-    rpc:call(Node, code, add_pathsz, [code:get_path()]),
+    erpc:call(Node, code, add_pathsz, [code:get_path()]),
     Node.
 
 -spec setup_raft(Node :: node(), Config :: ct_suite:ct_config()) -> ok.
 setup_raft(Node, Config) ->
-    % setup logging on the new node
-    rpc:call(Node, cth_enable_logging, pre_init_per_suite, [?MODULE, Config, undefined]),
-
     wa_raft_test_helper:set_database_path(Node, Config),
     wa_raft_test_helper:set_app_option(Node, raft_heartbeat_interval_ms, 50),
     wa_raft_test_helper:set_app_option(Node, raft_election_weight, 0),
@@ -59,10 +64,10 @@ setup_raft(Node, Config) ->
     wa_raft_test_helper:set_app_option(Node, raft_snapshot_catchup_failed_backoff_ms, 0),
     wa_raft_test_helper:set_app_option(Node, raft_commit_batch_interval_ms, 0),
 
-    {ok, _} = rpc:call(Node, application, ensure_all_started, [?RAFT_APPLICATION]),
+    {ok, _} = erpc:call(Node, application, ensure_all_started, [?RAFT_APPLICATION]),
     RaftArgs = #{table => ?TABLE, partition => ?PARTITION},
-    RaftChildSpecs = rpc:call(Node, wa_raft_sup, child_spec, [?RAFT_APPLICATION, [RaftArgs]]),
-    {ok, _} = rpc:call(Node, supervisor, start_child, [wa_raft_app_sup, RaftChildSpecs]),
+    RaftChildSpecs = erpc:call(Node, wa_raft_sup, child_spec, [?RAFT_APPLICATION, [RaftArgs]]),
+    {ok, _} = erpc:call(Node, supervisor, start_child, [wa_raft_app_sup, RaftChildSpecs]),
     ok.
 
 -spec bootstrap(Config :: ct_suite:ct_config()) -> ok.
@@ -79,8 +84,8 @@ bootstrap(Config) ->
 
 -spec wait_for_node(Node :: node()) -> ok.
 wait_for_node(Node) ->
-    Stale = rpc:call(Node, wa_raft_info, get_stale, [?TABLE, ?PARTITION]),
-    Live = rpc:call(Node, wa_raft_info, get_live, [?TABLE, ?PARTITION]),
+    Stale = erpc:call(Node, wa_raft_info, get_stale, [?TABLE, ?PARTITION]),
+    Live = erpc:call(Node, wa_raft_info, get_live, [?TABLE, ?PARTITION]),
     case not Stale andalso Live of
         true ->
             ok;
@@ -132,7 +137,7 @@ wait_for_ready(Config) ->
 -spec get_leader(Config :: ct_suite:ct_config()) -> Leader :: node() | undefined.
 get_leader(Config) ->
     Node = hd(proplists:get_value(nodes, Config)),
-    case rpc:call(Node, wa_raft_info, get_leader, [?TABLE, ?PARTITION]) of
+    case erpc:call(Node, wa_raft_info, get_leader, [?TABLE, ?PARTITION]) of
         undefined ->
             ct:sleep(100),
             get_leader(Config);

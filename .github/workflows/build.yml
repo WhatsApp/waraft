@@ -1,0 +1,39 @@
+name: Build
+
+on:
+  push:
+    branches:
+      - '*'
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            otp-version: 28
+            rebar3-version: 3.25.1
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: ${{ matrix.otp-version }}
+          rebar3-version: ${{ matrix.rebar3-version }}
+      - name: Cache Hex packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/rebar3/hex/hexpm/packages
+          key: ${{ runner.os }}-hex-${{ hashFiles(format('{0}{1}', github.workspace, '/rebar.lock')) }}
+          restore-keys: |
+            ${{ runner.os }}-hex-
+      - name: Compile
+        run: rebar3 compile
+      - name: Run CT Tests
+        run: rebar3 ct
+      - name: Run Checks
+        run: rebar3 do dialyzer, xref

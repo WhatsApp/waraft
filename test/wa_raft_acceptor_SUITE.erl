@@ -1,3 +1,4 @@
+% @format
 %% Copyright (c) Meta Platforms, Inc. and affiliates. All rights reserved.
 %%
 %% This source code is licensed under the Apache 2.0 license found in
@@ -67,7 +68,7 @@ init_per_testcase(Testcase, Config) ->
 
 -spec end_per_testcase(Testcase :: atom(), Config :: ct_suite:ct_config()) -> ok.
 end_per_testcase(_, _) ->
-    ok.
+    wa_raft_test_helper:unload_mocks([wa_raft_server]).
 
 -spec all() -> [ct_suite:ct_test_def()].
 all() ->
@@ -116,11 +117,17 @@ commit(Config) ->
 
     % Commit a successful write op at pos 101
     WriteOp = {write, ?TABLE, 1, 1},
-    ok = meck:expect(wa_raft_server, commit,
+    ok = meck:expect(
+        wa_raft_server,
+        commit,
         fun(_, From, {Ref, Command}, _) ->
-            timer:apply_after(10, wa_raft_storage, apply, [StoragePid, From, {101, {2, {Ref, undefined, Command}}}, 1, high]), % apply after 10ms
+            % apply after 10ms
+            timer:apply_after(10, wa_raft_storage, apply, [
+                StoragePid, From, {101, {2, {Ref, undefined, Command}}}, 1, high
+            ]),
             ok
-        end),
+        end
+    ),
     ?assertEqual(ok, wa_raft_acceptor:commit(AcceptorPid, {erlang:make_ref(), WriteOp})),
     ?assertEqual({ok, 1}, wa_raft_storage:read(?RAFT_STORAGE_NAME(?TABLE, ?PARTITION_1), {read, ?TABLE, 1})),
 
@@ -188,12 +195,14 @@ strong_read(Config) ->
     WriteFrom = {self(), make_ref()},
     WriteRef = make_ref(),
     WriteCommand = {write, ?TABLE, 1, 42},
-    ok = meck:expect(wa_raft_server, commit, fun (_, _, _, _) -> ok end),
+    ok = meck:expect(wa_raft_server, commit, fun(_, _, _, _) -> ok end),
     ok = wa_raft_acceptor:commit_async(AcceptorPid, WriteFrom, {WriteRef, WriteCommand}),
 
     % Trigger a fake commit to occur when the read request is accepted
     % so that the read is completed
-    ok = meck:expect(wa_raft_server, read,
+    ok = meck:expect(
+        wa_raft_server,
+        read,
         fun(_, From, Command, _) ->
             % Add read to queue at 101
             Queues = wa_raft_queue:queues(?TABLE, ?PARTITION_1),
@@ -202,7 +211,8 @@ strong_read(Config) ->
             % Commit the write op at 101, which should execute the read pending at 101
             wa_raft_storage:apply(StoragePid, WriteFrom, {101, {2, {WriteRef, undefined, WriteCommand}}}, 1, high),
             ok
-        end),
+        end
+    ),
 
     % Submit strong-read pending at 101
     ?assertEqual({ok, 42}, wa_raft_acceptor:read(AcceptorPid, {read, ?TABLE, 1})),

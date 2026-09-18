@@ -1,3 +1,9 @@
+% @format
+%% Copyright (c) Meta Platforms, Inc. and affiliates. All rights reserved.
+%%
+%% This source code is licensed under the Apache 2.0 license found in
+%% the LICENSE file in the root directory of this source tree.
+
 -module(wa_raft_queue_SUITE).
 -oncall("whatsapp_msgd").
 -compile(warn_missing_spec_all).
@@ -140,21 +146,23 @@ stop_server(Server) ->
 
 -define(assertReceive(Pattern), ?assertReceive(Pattern, 100)).
 -define(assertReceive(Pattern, Timeout),
-    (fun () ->
+    (fun() ->
         receive
             Pattern = __Message__ -> __Message__
-        after
-            Timeout ->
-                error({assertReceive, [
+        after Timeout ->
+            error(
+                {assertReceive, [
                     {module, ?MODULE},
                     {line, ?LINE},
                     {reason, "expected message was not received within timeout"},
                     {pattern, ??Pattern},
                     {timeout, Timeout},
                     {messages_in_queue, process_info(self(), messages)}
-                ]})
+                ]}
+            )
         end
-    end)()).
+    end)()
+).
 
 -spec make_from() -> {reference(), {pid(), reference()}}.
 make_from() ->
