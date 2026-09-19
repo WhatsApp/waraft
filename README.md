@@ -6,7 +6,7 @@ WARaft is a Raft library in Erlang by WhatsApp. It provides an Erlang implementa
 
 * Full implementation of Raft consensus algorithm defined in https://raft.github.io/
 * Extensible framework. It offers pluggable component interface for log, state machines and transport layer. Users are also allowed provide their own implementation to customize .
-* Performant. It is highly optimized for large volume transactions user cases. It could support up to 200K/s transactions with in a 5 node cluster.
+* Performant. It is highly optimized for large volume transactions use cases. It could support up to 200K/s transactions with in a 5 node cluster.
 * Distributed key value store. WARaft provides components needed to build a distributed key-value storage.
 
 ## Get Started
