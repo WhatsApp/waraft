@@ -13,11 +13,11 @@ Pluggable module for labeling log entries before adding them to the RAFT log.
 
 -export_type([label/0]).
 
-    -type label() :: dynamic().
+-type label() :: dynamic().
 
 %%% ------------------------------------------------------------------------
 %%%  Behaviour callbacks
 %%%
 
-% Produce a label for a new log record based on the log payload and the label of the preceding log entry.
+% Produce a label for a new log record based on the current log payload and the preceding label.
 -callback new_label(LastLabel :: label(), Command :: wa_raft_acceptor:command()) -> NewLabel :: label().
