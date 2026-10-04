@@ -102,6 +102,7 @@
 
 -type side() :: sender | receiver.
 -type status() :: requested | running | completed | failed.
+-type file_result() :: ok | {stop | error | exit | throw, Reason :: term()}.
 
 -define(STATUS_REQUESTED, 0).
 -define(STATUS_RUNNING, 1).
@@ -353,7 +354,7 @@ transfer_snapshot(Peer, Table, Partition, LogPos, Root, Witness, Timeout) ->
 cancel(ID, Reason) ->
     gen_server:call(?MODULE, {cancel, ID, Reason}).
 
--spec complete(ID :: transport_id(), FileID :: file_id(), Status :: dynamic()) -> ok.
+-spec complete(ID :: transport_id(), FileID :: file_id(), Status :: file_result()) -> ok.
 complete(ID, FileID, Status) ->
     gen_server:cast(?MODULE, {complete, ID, FileID, Status}).
 
@@ -475,7 +476,7 @@ advance_file(ID, FileID, NewCompleted) ->
             Prev
     end.
 
--spec complete_file(ID :: transport_id(), FileID :: file_id(), Status :: term()) -> ok.
+-spec complete_file(ID :: transport_id(), FileID :: file_id(), Status :: file_result()) -> ok.
 complete_file(ID, FileID, Status) ->
     complete(ID, FileID, Status),
     ok.
