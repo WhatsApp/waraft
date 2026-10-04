@@ -4369,6 +4369,10 @@ participant_trim_index(Config) ->
 
     ok = application:set_env(?RAFT_APPLICATION, raft_max_log_records_per_file, 0),
     ok = application:set_env(?RAFT_APPLICATION, raft_max_log_records, 0),
+    % An AppendEntries response handled more than one heartbeat interval after the
+    % last heartbeat replicates inline and advances `next_indices`, so keep the
+    % interval out of reach and drive every heartbeat explicitly.
+    ok = application:set_env(?RAFT_APPLICATION, ?RAFT_HEARTBEAT_INTERVAL, 60_000),
 
     {follower, _} = server_start_and_bootstrap(100, 2, ClusterConfig, Config),
     {leader, _, ok} = server_call(?PROMOTE_COMMAND(3, true)),
@@ -4412,6 +4416,7 @@ participant_trim_index(Config) ->
     {leader, _} = server_invoke(state_timeout, heartbeat),
     ?assertCast(Name, node4, ?APPEND_ENTRIES_RPC(3, Name, Node, 101, 3, [{3, _}], 102, 101)),
 
+    ok = application:unset_env(?RAFT_APPLICATION, ?RAFT_HEARTBEAT_INTERVAL),
     ok = server_stop().
 
 -spec trim_index(Config :: ct_suite:ct_config()) -> ok.
