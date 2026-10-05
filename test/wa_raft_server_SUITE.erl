@@ -2773,8 +2773,6 @@ commit_cancelled_candidate(Config) ->
 
     ok = server_stop().
 
-% TODO T246543941 Extend read test to verify the flow when commit index >
-% last applied index.
 -spec read(Config :: ct_suite:ct_config()) -> ok.
 read(Config) ->
     Name = ?SERVER_NAME(Config),
@@ -2814,11 +2812,25 @@ read(Config) ->
     ?assertCast(Name, node4, ?APPEND_ENTRIES_RPC(1, Name, Node, 1, 1, [{1, {?READ_OP, noop}}], 1, 0)),
     ?assertCast(Name, node5, ?APPEND_ENTRIES_RPC(1, Name, Node, 1, 1, [{1, {?READ_OP, noop}}], 1, 0)),
 
-    {leader, _} = server_cast(?APPEND_ENTRIES_RESPONSE_RPC(1, Name, node2, 1, true, 2, 1)),
-    {leader, State2} = server_cast(?APPEND_ENTRIES_RESPONSE_RPC(1, Name, node3, 1, true, 2, 1)),
-    ?assertEqual(2, State2#raft_state.commit_index),
-
-    ?assertReceive({Ref, _}),
+    ok = application:set_env(?RAFT_APPLICATION, ?RAFT_MAX_PENDING_APPLIES, 0),
+    try
+        {leader, _} = server_cast(?APPEND_ENTRIES_RESPONSE_RPC(1, Name, node2, 1, true, 2, 1)),
+        {leader, State2} = server_cast(?APPEND_ENTRIES_RESPONSE_RPC(1, Name, node3, 1, true, 2, 1)),
+        ?assertEqual(2, State2#raft_state.commit_index),
+        ?assertEqual(1, State2#raft_state.last_applied),
+        ?assertMatch([{{1, _}, noop}], wa_raft_queue:query_reads(Queues, infinity)),
+        ?assertNot(
+            receive
+                {Ref, _} -> true
+            after 0 -> false
+            end
+        )
+    after
+        ok = application:unset_env(?RAFT_APPLICATION, ?RAFT_MAX_PENDING_APPLIES)
+    end,
+    {leader, State3} = server_cast(?NOTIFY_COMPLETE_COMMAND()),
+    ?assertEqual(2, State3#raft_state.last_applied),
+    ?assertReceive({Ref, ok}),
 
     % Stop server
     ok = server_stop().
