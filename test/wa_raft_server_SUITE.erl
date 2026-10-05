@@ -2198,18 +2198,15 @@ replication_index(Config) ->
     ?assertCast(Name, node2, ?APPEND_ENTRIES_RPC(2, Name, Node, 11, 2, [{2, {ref, noop}}], 10, _)),
     ?assertEqual(12, wa_raft_log:last_index(State0#raft_state.log_view)),
 
-    % Follower responds with missing log - send from zero
-    %  * The log entry at zero always exists, so the leader will attempt to start
-    %    sending from 0:0 here.
+    % Follower reports an empty log - leader falls back to an empty heartbeat
+    % at the local log end because the previous index is outside the log view.
     clear_message_queue(),
     {leader, State1} = server_cast(?APPEND_ENTRIES_RESPONSE_RPC(2, Name, node2, 10, false, 0, 0)),
     ?assertEqual(#{node2 => 1, node3 => 13, node4 => 13, node5 => 13}, State1#raft_state.next_indices),
     ?assertEqual(#{}, State1#raft_state.match_indices),
-    % TODO T246543927 Currently crashes due to a bug when sending heartbeats.
-    % Leader attempts to read from 0 to existing log because log entry at 0
-    % exists.
-    % {leader, _} = server_invoke(state_timeout, heartbeat),
-    % ?assertCast(Name, node2, ?APPEND_ENTRIES_RPC(2, Name, Node, 0, 0, [], 10, _)),
+    clear_message_queue(),
+    {leader, _} = server_invoke(state_timeout, heartbeat),
+    ?assertCast(Name, node2, ?APPEND_ENTRIES_RPC(2, Name, Node, 12, 2, [], 10, _)),
 
     % Follower responds with lagging log - leader missing log
     %  * When the leader is missing a log entry to send, it sends a heartbeat
