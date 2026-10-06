@@ -995,7 +995,7 @@ handle_transport_start(From, Peer, Meta, Root, State) ->
                 end;
             {error, receiver_overloaded} ->
                 ?RAFT_COUNT(Table, 'transport.rejected.receiver_overloaded'),
-                ?RAFT_LOG_WARNING("wa_raft_transport peer ~p rejected transport ~p because of overload", [Peer, ID]),
+                ?RAFT_LOG_INFO("wa_raft_transport peer ~p rejected transport ~p because of overload", [Peer, ID]),
                 {{error, receiver_overloaded}, State};
             {error, receiver_disk_full} ->
                 ?RAFT_COUNT(Table, 'transport.rejected.receiver_disk_full'),
