@@ -2774,10 +2774,10 @@ commit_cancelled_candidate(Config) ->
 read(Config) ->
     Name = ?SERVER_NAME(Config),
     Node = node(),
-    Queues = ?SERVER_QUEUES(Config),
 
     % Setup server and promote to term 1
     {follower, _} = server_start_and_bootstrap(Config),
+    Queues = ?SERVER_QUEUES(Config),
     {leader, _, ok} = server_call(?PROMOTE_COMMAND(1, true)),
     ?assertCast(Name, node2, ?APPEND_ENTRIES_RPC(1, Name, Node, 0, 0, [{1, {_, noop}}], 0, 0)),
     ?assertCast(Name, node3, ?APPEND_ENTRIES_RPC(1, Name, Node, 0, 0, [{1, {_, noop}}], 0, 0)),
@@ -2839,10 +2839,10 @@ read(Config) ->
 read_after(Config) ->
     Name = ?SERVER_NAME(Config),
     Node = node(),
-    Queues = ?SERVER_QUEUES(Config),
 
     % Setup server and promote to term 1
     {follower, _} = server_start_and_bootstrap(Config),
+    Queues = ?SERVER_QUEUES(Config),
     {leader, _, ok} = server_call(?PROMOTE_COMMAND(1, true)),
     ?assertCast(Name, node2, ?APPEND_ENTRIES_RPC(1, Name, Node, 0, 0, [{1, {_, noop}}], 0, 0)),
     ?assertCast(Name, node3, ?APPEND_ENTRIES_RPC(1, Name, Node, 0, 0, [{1, {_, noop}}], 0, 0)),
@@ -2878,13 +2878,13 @@ read_after(Config) ->
 read_candidate(Config) ->
     Name = ?SERVER_NAME(Config),
     Node = node(),
-    Queues = ?SERVER_QUEUES(Config),
 
     % Enable candidate buffering for this test
     ok = application:set_env(?RAFT_APPLICATION, ?RAFT_CANDIDATE_BUFFER_REQUESTS, true),
 
     % Setup server and promote to term 1 (noop at index 1)
     {follower, _} = server_start_and_bootstrap(Config),
+    Queues = ?SERVER_QUEUES(Config),
     {leader, _, ok} = server_call(?PROMOTE_COMMAND(1, true)),
     ?assertCast(Name, node2, ?APPEND_ENTRIES_RPC(1, Name, Node, 0, 0, [{1, {_, noop}}], 0, 0)),
     ?assertCast(Name, node3, ?APPEND_ENTRIES_RPC(1, Name, Node, 0, 0, [{1, {_, noop}}], 0, 0)),
@@ -2937,12 +2937,12 @@ read_candidate(Config) ->
 read_after_candidate(Config) ->
     Name = ?SERVER_NAME(Config),
     Node = node(),
-    Queues = ?SERVER_QUEUES(Config),
 
     ok = application:set_env(?RAFT_APPLICATION, ?RAFT_CANDIDATE_BUFFER_REQUESTS, true),
 
     % Setup server and promote to term 1 (noop at index 1)
     {follower, _} = server_start_and_bootstrap(Config),
+    Queues = ?SERVER_QUEUES(Config),
     {leader, _, ok} = server_call(?PROMOTE_COMMAND(1, true)),
     ?assertCast(Name, node2, ?APPEND_ENTRIES_RPC(1, Name, Node, 0, 0, [{1, {_, noop}}], 0, 0)),
     ?assertCast(Name, node3, ?APPEND_ENTRIES_RPC(1, Name, Node, 0, 0, [{1, {_, noop}}], 0, 0)),
@@ -3100,9 +3100,9 @@ read_lease_miss_not_current_term(Config) ->
     ok = set_lease_ms(1000),
     try
         Name = ?SERVER_NAME(Config),
-        Queues = ?SERVER_QUEUES(Config),
 
         {follower, _} = server_start_and_bootstrap(Config),
+        Queues = ?SERVER_QUEUES(Config),
         {leader, State0, ok} = server_call(?PROMOTE_COMMAND(1, true)),
         ?assert(State0#raft_state.commit_index < State0#raft_state.first_current_term_log_index),
         ?assert(Queues =/= undefined),

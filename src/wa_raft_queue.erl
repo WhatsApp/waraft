@@ -318,13 +318,20 @@ submit_read(#queues{reads = Reads}, ReadIndex, From, Command) ->
     ok.
 
 -spec query_reads(Queues :: queues(), wa_raft_log:log_index() | infinity) -> [{{wa_raft_log:log_index(), reference()}, wa_raft_acceptor:command()}].
-query_reads(#queues{reads = Reads}, MaxLogIndex) ->
-    MatchSpec = ets:fun2ms(
-        fun({{LogIndex, Reference}, _, Command}) when LogIndex =< MaxLogIndex ->
-            {{LogIndex, Reference}, Command}
-        end
-    ),
-    ets:select(Reads, MatchSpec).
+query_reads(#queues{reads = Reads} = Queues, MaxLogIndex) ->
+    % A read is counted before it is inserted and uncounted only after it is
+    % taken, so a zero count means the table is empty.
+    case read_queue_size(Queues) of
+        0 ->
+            [];
+        _ ->
+            MatchSpec = ets:fun2ms(
+                fun({{LogIndex, Reference}, _, Command}) when LogIndex =< MaxLogIndex ->
+                    {{LogIndex, Reference}, Command}
+                end
+            ),
+            ets:select(Reads, MatchSpec)
+    end.
 
 -spec fulfill_read(Queues :: queues(), {wa_raft_log:log_index(), reference()}, dynamic()) -> ok | not_found.
 fulfill_read(#queues{counters = Counters, reads = Reads}, Reference, Reply) ->

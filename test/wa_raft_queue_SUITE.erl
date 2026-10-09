@@ -264,12 +264,14 @@ read(_Config) ->
     Queue = wa_raft_queue:queues(?TABLE, 1),
     ?assert(Queue =/= undefined),
     {CallRef, From} = make_from(),
+    ?assertEqual([], wa_raft_queue:query_reads(Queue, infinity)),
     ?assertEqual(ok, wa_raft_queue:reserve_read(Queue)),
     ?assertEqual(ok, wa_raft_queue:submit_read(Queue, 1, From, command_a)),
     ?assertMatch([{_, command_a}], wa_raft_queue:query_reads(Queue, 1)),
     [{ReadRef, _}] = wa_raft_queue:query_reads(Queue, 1),
     ?assertEqual(ok, wa_raft_queue:fulfill_read(Queue, ReadRef, reply)),
-    ?assertReceive({CallRef, reply}).
+    ?assertReceive({CallRef, reply}),
+    ?assertEqual([], wa_raft_queue:query_reads(Queue, infinity)).
 
 -spec read_early(ct_suite:ct_config()) -> term().
 read_early(_Config) ->
