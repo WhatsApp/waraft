@@ -111,12 +111,9 @@ teardown_node(Node) ->
 
 -spec wait_until_node_shutdown(Node :: node()) -> ok.
 wait_until_node_shutdown(Node) ->
-    case lists:member(Node, nodes()) of
-        true ->
-            timer:sleep(100),
-            wait_until_node_shutdown(Node);
-        _ ->
-            ok
+    true = erlang:monitor_node(Node, true),
+    receive
+        {nodedown, Node} -> ok
     end.
 
 -spec reset_cluster(Config :: ct_suite:ct_config()) -> ok.
