@@ -94,6 +94,7 @@
 
 -define(HANDOVER_CANDIDATES_COMMAND,                ?RAFT_COMMAND(handover_candidates, undefined)).
 -define(HANDOVER_COMMAND(Peer),                     ?RAFT_COMMAND(handover, Peer)).
+-define(HANDOVER_COMMAND(Peer, Force),              ?RAFT_COMMAND(handover, {Peer, Force})).
 -define(IS_PEER_READY_COMMAND(Peer),                ?RAFT_COMMAND(is_peer_ready, Peer)).
 
 -define(ENABLE_COMMAND,                             ?RAFT_COMMAND(enable, undefined)).

@@ -121,6 +121,7 @@ implement a replicated state machine in a distributed cluster.
     resign/1,
     handover/1,
     handover/2,
+    handover/3,
     handover_candidates/1,
     is_peer_ready/2,
     disable/2,
@@ -286,7 +287,7 @@ implement a replicated state machine in a distributed cluster.
 -type adjust_config_command()       :: ?ADJUST_CONFIG_COMMAND(gen_server:from() | undefined, config_action(), wa_raft_log:log_index() | undefined).
 -type snapshot_available_command()  :: ?SNAPSHOT_AVAILABLE_COMMAND(string(), wa_raft_log:log_pos()).
 -type handover_candidates_command() :: ?HANDOVER_CANDIDATES_COMMAND.
--type handover_command()            :: ?HANDOVER_COMMAND(node()).
+-type handover_command()            :: ?HANDOVER_COMMAND(node() | undefined) | ?HANDOVER_COMMAND(node() | undefined, boolean()).
 -type enable_command()              :: ?ENABLE_COMMAND.
 -type disable_command()             :: ?DISABLE_COMMAND(term()).
 -type bootstrap_command()           :: ?BOOTSTRAP_COMMAND(wa_raft_log:log_pos(), config(), dynamic()).
@@ -705,6 +706,15 @@ handover(Server) ->
 -spec handover(Server :: gen_statem:server_ref(), Peer :: node() | undefined) -> {ok, Peer :: node()} | {error, Reason :: term()}.
 handover(Server, Peer) ->
     gen_statem:call(Server, ?HANDOVER_COMMAND(Peer), ?RAFT_RPC_CALL_TIMEOUT()).
+
+%% Force bypasses the normal peer lag threshold. When the peer is `undefined`,
+%% forced handover selects the full member with the most replicated log entries.
+-spec handover(Server :: gen_statem:server_ref(), Peer :: node() | undefined, Force :: boolean()) ->
+    {ok, Peer :: node()} | {error, Reason :: term()}.
+handover(Server, Peer, false) ->
+    handover(Server, Peer);
+handover(Server, Peer, true) ->
+    gen_statem:call(Server, ?HANDOVER_COMMAND(Peer, true), ?RAFT_RPC_CALL_TIMEOUT()).
 
 -spec handover_candidates(Server :: gen_statem:server_ref()) -> {ok, Candidates :: [node()]} | {error, Reason :: term()}.
 handover_candidates(Server) ->
@@ -1531,20 +1541,23 @@ leader({call, From}, ?IS_PEER_READY_COMMAND(Peer), #raft_state{} = State) ->
         end,
     {keep_state_and_data, {reply, From, Result}};
 
-%% [Handover] With peer 'undefined' randomly select a valid candidate to handover to
-leader(Type, ?HANDOVER_COMMAND(undefined), #raft_state{} = State) ->
-    case get_handover_candidates(State) of
-        [] ->
+%% [Handover] Keep the legacy payload for rolling compatibility with non-forced callers.
+leader(Type, ?HANDOVER_COMMAND(Peer), #raft_state{} = State) when is_atom(Peer) ->
+    leader(Type, ?HANDOVER_COMMAND(Peer, false), State);
+
+%% [Handover] Select a candidate when no peer is specified.
+leader(Type, ?HANDOVER_COMMAND(undefined, Force), #raft_state{} = State) ->
+    case get_handover_candidate(Force, State) of
+        {error, no_valid_peer} = Error ->
             ?SERVER_LOG_NOTICE(State, "has no valid peer to handover to.", []),
-            reply(Type, {error, no_valid_peer}),
+            reply(Type, Error),
             keep_state_and_data;
-        Candidates ->
-            Peer = lists:nth(rand:uniform(length(Candidates)), Candidates),
-            leader(Type, ?HANDOVER_COMMAND(Peer), State)
+        {ok, Peer} ->
+            leader(Type, ?HANDOVER_COMMAND(Peer, Force), State)
     end;
 
 %% [Handover] Handover to self results in no-op
-leader(Type, ?HANDOVER_COMMAND(Peer), #raft_state{} = State) when Peer =:= node() ->
+leader(Type, ?HANDOVER_COMMAND(Peer, _Force), #raft_state{} = State) when Peer =:= node() ->
     ?SERVER_LOG_WARNING(State, "dropping handover to self.", []),
     reply(Type, {ok, Peer}),
     {keep_state, State};
@@ -1552,7 +1565,7 @@ leader(Type, ?HANDOVER_COMMAND(Peer), #raft_state{} = State) when Peer =:= node(
 %% [Handover] Attempt to start a handover to the specified peer
 leader(
     Type,
-    ?HANDOVER_COMMAND(Peer),
+    ?HANDOVER_COMMAND(Peer, Force),
     #raft_state{
         application = App,
         table = Table,
@@ -1574,17 +1587,21 @@ leader(
             FirstIndex = wa_raft_log:first_index(View),
             PeerSendIndex = max(PeerMatchIndex + 1, FirstIndex + 1),
             LastIndex = wa_raft_log:last_index(View),
-            MaxHandoverBatchSize = ?RAFT_HANDOVER_MAX_ENTRIES(App, Table),
+            ConfiguredMaxEntries = ?RAFT_HANDOVER_MAX_ENTRIES(App, Table),
+            MaxHandoverEntries = case Force of
+                true -> max(LastIndex - PeerSendIndex + 1, 1);
+                false -> ConfiguredMaxEntries
+            end,
             MaxHandoverBytes = ?RAFT_HANDOVER_MAX_BYTES(App, Table),
 
-            case LastIndex - PeerSendIndex =< MaxHandoverBatchSize of
+            case Force orelse LastIndex - PeerSendIndex =< ConfiguredMaxEntries of
                 true ->
                     ?RAFT_COUNT(Table, 'leader.handover'),
                     ?SERVER_LOG_NOTICE(State0, "starting handover to ~p.", [Peer]),
 
                     PrevLogIndex = PeerSendIndex - 1,
                     {ok, PrevLogTerm} = wa_raft_log:term(View, PrevLogIndex),
-                    {ok, LogEntries} = wa_raft_log:entries(View, PeerSendIndex, MaxHandoverBatchSize, MaxHandoverBytes),
+                    {ok, LogEntries} = wa_raft_log:entries(View, PeerSendIndex, MaxHandoverEntries, MaxHandoverBytes),
 
                     % The request to load the log may fail to load all required log entries
                     % if we hit the byte size limit. Ensure that we have loaded all required
@@ -1597,9 +1614,20 @@ leader(
                                 handover = {Peer, Ref, Timeout},
                                 handover_lease_state = in_progress
                             },
-                            send_rpc(?IDENTITY_REQUIRES_MIGRATION(Name, Peer), ?HANDOVER(Ref, PrevLogIndex, PrevLogTerm, LogEntries), State1),
-                            reply(Type, {ok, Peer}),
-                            {keep_state, State1};
+                            case send_rpc(
+                                ?IDENTITY_REQUIRES_MIGRATION(Name, Peer),
+                                ?HANDOVER(Ref, PrevLogIndex, PrevLogTerm, LogEntries),
+                                State1
+                            ) of
+                                ok ->
+                                    reply(Type, {ok, Peer}),
+                                    {keep_state, State1};
+                                {error, Reason} ->
+                                    ?RAFT_COUNT(Table, 'leader.handover.send_failed'),
+                                    ?SERVER_LOG_WARNING(State0, "failed to send handover RPC to ~0p due to ~0P.", [Peer, Reason, 20]),
+                                    reply(Type, {error, {send_failed, Reason}}),
+                                    keep_state_and_data
+                            end;
                         _ ->
                             ?RAFT_COUNT(Table, 'leader.handover.oversize'),
                             ?SERVER_LOG_WARNING(State0, "handover to peer ~0p would require an oversized RPC.", [Peer]),
@@ -1616,7 +1644,7 @@ leader(
     end;
 
 %% [Handover] Reject starting a handover when a handover is still in progress
-leader({call, From}, ?HANDOVER_COMMAND(Peer), #raft_state{handover = {Node, _, _}} = State) ->
+leader({call, From}, ?HANDOVER_COMMAND(Peer, _Force), #raft_state{handover = {Node, _, _}} = State) ->
     ?SERVER_LOG_WARNING(State, "rejecting duplicate handover to ~0p with running handover to ~0p.", [Peer, Node]),
     {keep_state_and_data, {reply, From, {error, duplicate}}};
 
@@ -3586,6 +3614,32 @@ cancel_pending_and_queued(Reason, #raft_state{queues = Queues, queued = Queued} 
 %% RAFT Server - State Machine Implementation - Leader - Handover
 %%------------------------------------------------------------------------------
 
+-spec get_handover_candidate(Force :: boolean(), State :: #raft_state{}) ->
+    {ok, node()} | {error, no_valid_peer}.
+get_handover_candidate(false, State) ->
+    case get_handover_candidates(State) of
+        [] -> {error, no_valid_peer};
+        Candidates -> {ok, lists:nth(rand:uniform(length(Candidates)), Candidates)}
+    end;
+get_handover_candidate(
+    true,
+    #raft_state{match_indices = MatchIndices, last_applied_indices = LastAppliedIndices} = State
+) ->
+    Replicas = config_full_member_identities(config(State)),
+    Candidates = [
+        {MatchIndex, maps:get(Peer, LastAppliedIndices, 0), Peer}
+     || ?IDENTITY_REQUIRES_MIGRATION(_, Peer) <- Replicas,
+        Peer =/= node(),
+        {ok, MatchIndex} <- [maps:find(Peer, MatchIndices)]
+    ],
+    case Candidates of
+        [] ->
+            {error, no_valid_peer};
+        _ ->
+            {_, _, Peer} = lists:max(Candidates),
+            {ok, Peer}
+    end.
+
 -spec get_handover_eligibility_match_cutoff(State :: #raft_state{}) -> wa_raft_log:log_index().
 get_handover_eligibility_match_cutoff(#raft_state{application = App, table = Table, log_view = View}) ->
     wa_raft_log:last_index(View) - ?RAFT_HANDOVER_MAX_ENTRIES(App, Table).
@@ -4192,8 +4246,17 @@ cast(
         distribution_module = Distribution
     }
 ) ->
-    try
-        ok = Distribution:cast({Name, Node}, Identifier, Message)
+    try Distribution:cast({Name, Node}, Identifier, Message) of
+        ok ->
+            ok;
+        {error, Reason} = Error ->
+            ?RAFT_COUNT(Table, {'server.cast.error', Reason}),
+            ?RAFT_LOG_DEBUG("Cast to ~p error ~100p", [Destination, Reason]),
+            Error;
+        Reason ->
+            ?RAFT_COUNT(Table, {'server.cast.error', Reason}),
+            ?RAFT_LOG_DEBUG("Cast to ~p error ~100p", [Destination, Reason]),
+            {error, Reason}
     catch
         _:E ->
             ?RAFT_COUNT(Table, {'server.cast.error', E}),

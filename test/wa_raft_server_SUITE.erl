@@ -97,6 +97,8 @@
     disable_candidate/1,
     disable_witness/1,
     handover/1,
+    forced_handover/1,
+    handover_send_failure/1,
     handover_follower/1,
     handover_witness/1,
     add_member/1,
@@ -266,6 +268,8 @@ server_groups() ->
             disable_candidate,
             disable_witness,
             handover,
+            forced_handover,
+            handover_send_failure,
             handover_follower,
             handover_witness,
             add_member,
@@ -3784,6 +3788,64 @@ handover(Config) ->
     ?assertCast(Name, node2, ?VOTE_RPC(NextTerm, Name, Node, true)),
 
     % Stop server
+    ok = server_stop().
+
+-spec forced_handover(Config :: ct_suite:ct_config()) -> ok.
+forced_handover(Config) ->
+    Name = ?SERVER_NAME(Config),
+    Node = node(),
+
+    {follower, _} = server_start_and_bootstrap(Config),
+    {leader, #raft_state{current_term = Term}, ok} = server_call(?PROMOTE_COMMAND(2, true)),
+
+    % Leave every peer outside the normal handover threshold while making node3
+    % the peer with the greatest confirmed match index.
+    ok = application:set_env(?RAFT_APPLICATION, ?RAFT_HANDOVER_MAX_ENTRIES, 0),
+    {leader, _} = server_cast(?COMMIT_COMMAND(?FROM(), {forced_handover, noop}, high)),
+    {leader, _} = server_invoke(state_timeout, heartbeat),
+    {leader, _} = server_cast(?APPEND_ENTRIES_RESPONSE_RPC(Term, Name, node3, 0, true, 1, 0)),
+    clear_message_queue(),
+
+    {leader, _, {error, no_valid_peer}} = server_call(?HANDOVER_COMMAND(undefined)),
+
+    ok = application:set_env(?RAFT_APPLICATION, ?RAFT_HANDOVER_MAX_BYTES, 0),
+    {leader, OversizeState, {error, oversize}} = server_call(?HANDOVER_COMMAND(undefined, true)),
+    ?assertEqual(undefined, OversizeState#raft_state.handover),
+
+    ok = application:set_env(?RAFT_APPLICATION, ?RAFT_HANDOVER_MAX_BYTES, 50 * 1024 * 1024),
+
+    {leader, PeerLaggingState, {error, peer_lagging}} = server_call(?HANDOVER_COMMAND(node2)),
+    ?assertEqual(undefined, PeerLaggingState#raft_state.handover),
+    {leader, #raft_state{handover = {node2, Ref2, _}}, {ok, node2}} = server_call(?HANDOVER_COMMAND(node2, true)),
+    ?assertCast(
+        Name,
+        node2,
+        ?HANDOVER_RPC(Term, Name, Node, Ref2, 0, 0, [{Term, {_, noop}}, {Term, {forced_handover, noop}}])
+    ),
+    {leader, ClearedState} = server_cast(?HANDOVER_FAILED_RPC(Term, Name, node2, Ref2)),
+    ?assertEqual(undefined, ClearedState#raft_state.handover),
+
+    {leader, #raft_state{handover = {node3, Ref, _}}, {ok, node3}} = server_call(
+        ?HANDOVER_COMMAND(undefined, true)
+    ),
+    ?assertCast(Name, node3, ?HANDOVER_RPC(Term, Name, Node, Ref, 1, Term, [{Term, {forced_handover, noop}}])),
+
+    ok = server_stop().
+
+-spec handover_send_failure(Config :: ct_suite:ct_config()) -> ok.
+handover_send_failure(Config) ->
+    {follower, _} = server_start_and_bootstrap(Config),
+    {leader, _, ok} = server_call(?PROMOTE_COMMAND(2, true)),
+    ok = meck:expect(wa_raft_test_distribution, cast, fun(_, _, _) -> {error, noconnect} end),
+
+    {leader, State0, {error, {send_failed, noconnect}}} = server_call(?HANDOVER_COMMAND(node2)),
+    ?assertEqual(undefined, State0#raft_state.handover),
+    ?assertEqual(unaffected, State0#raft_state.handover_lease_state),
+
+    From = ?FROM(),
+    {leader, State1} = server_cast(?COMMIT_COMMAND(From, {after_failed_handover, noop}, high)),
+    ?assertEqual([{From, {after_failed_handover, noop}}], State1#raft_state.pending_high),
+
     ok = server_stop().
 
 -spec handover_follower(Config :: ct_suite:ct_config()) -> ok.
