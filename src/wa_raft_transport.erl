@@ -982,16 +982,22 @@ handle_transport_start(From, Peer, Meta, Root, State) ->
 
                 % Complete transport if empty or start workers. The pending reply is
                 % registered only once the transport has been fully handed off (workers
-                % started, or the empty transport completed), so a failure before this
-                % point falls through to the catch clause and replies {error, failed}
-                % via handle_call instead of a spurious {ok, ID}.
+                % started, or the empty transport completed), so a startup failure
+                % returns {error, failed} instead of a spurious {ok, ID}.
                 case TotalFiles of
                     0 ->
                         {{ok, ID}, complete_transport(ID, add_pending_notify(ID, From, State))};
                     _ ->
-                        Sup = wa_raft_transport_sup:get_or_start(Peer),
-                        [gen_server:cast(Pid, {notify, ID, Table}) || {_Id, Pid, _Type, _Modules} <- supervisor:which_children(Sup), is_pid(Pid)],
-                        {{ok, ID}, add_pending_notify(ID, From, State)}
+                        NumThreads = ?RAFT_TRANSPORT_THREADS(),
+                        case wa_raft_transport_sup:start_workers(ID, Module, NumThreads) of
+                            ok ->
+                                {{ok, ID}, add_pending_notify(ID, From, State)};
+                            {error, Reason} ->
+                                ?RAFT_COUNT(Table, 'transport.start.error'),
+                                ?RAFT_LOG_WARNING("failed to start workers for transport ~0p due to ~0P", [ID, Reason, 20]),
+                                {_, FailedState} = fail_transport(ID, {worker_start, Reason}, State),
+                                {{error, failed}, FailedState}
+                        end
                 end;
             {error, receiver_overloaded} ->
                 ?RAFT_COUNT(Table, 'transport.rejected.receiver_overloaded'),

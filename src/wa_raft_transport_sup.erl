@@ -15,16 +15,17 @@ send and receive for RAFT transport mechanisms.
 
 %% Internal API
 -export([
-    get_or_start/1
+    start_worker/2,
+    start_workers/3
 ]).
 
-%% OTP supervision callbacks
+%% OTP supervision
 -export([
     child_spec/0,
     start_link/0
 ]).
 
-%% supervisor callbacks
+%% Supervisor
 -export([
     init/1
 ]).
@@ -33,15 +34,42 @@ send and receive for RAFT transport mechanisms.
 %%%  Internal API
 %%%
 
--spec get_or_start(node()) -> atom().
-get_or_start(Node) ->
-    Name = wa_raft_transport_target_sup:name(Node),
-    not is_pid(whereis(Name)) andalso
-        supervisor:start_child(?MODULE, wa_raft_transport_target_sup:child_spec(Node)),
-    Name.
+-spec start_worker(ID :: wa_raft_transport:transport_id(), Module :: module()) -> supervisor:startchild_ret().
+start_worker(ID, Module) ->
+    supervisor:start_child(?MODULE, [ID, Module]).
+
+-spec start_workers(ID :: wa_raft_transport:transport_id(), Module :: module(), Count :: non_neg_integer()) ->
+    ok | {error, Reason :: term()}.
+start_workers(ID, Module, Count) ->
+    start_workers(ID, Module, Count, []).
+
+-spec start_workers(
+    ID :: wa_raft_transport:transport_id(),
+    Module :: module(),
+    Count :: non_neg_integer(),
+    Started :: [pid()]
+) -> ok | {error, Reason :: term()}.
+start_workers(_, _, Count, _) when Count =< 0 ->
+    ok;
+start_workers(ID, Module, Count, Started) ->
+    case start_worker(ID, Module) of
+        {ok, Pid} when is_pid(Pid) ->
+            start_workers(ID, Module, Count - 1, [Pid | Started]);
+        {ok, undefined} ->
+            terminate_workers(Started),
+            {error, worker_ignored};
+        {error, _} = Error ->
+            terminate_workers(Started),
+            Error
+    end.
+
+-spec terminate_workers([pid()]) -> ok.
+terminate_workers(Started) ->
+    [supervisor:terminate_child(?MODULE, Pid) || Pid <- Started],
+    ok.
 
 %%% ------------------------------------------------------------------------
-%%%  OTP supervision callbacks
+%%%  OTP supervision
 %%%
 
 -spec child_spec() -> supervisor:child_spec().
@@ -60,9 +88,9 @@ start_link() ->
     supervisor:start_link({local, ?MODULE}, ?MODULE, []).
 
 %%% ------------------------------------------------------------------------
-%%%  supervisor callbacks
+%%%  Supervisor
 %%%
 
 -spec init(term()) -> {ok, {supervisor:sup_flags(), [supervisor:child_spec()]}}.
 init(_) ->
-    {ok, {#{strategy => one_for_one, intensity => 5, period => 1}, []}}.
+    {ok, {#{strategy => simple_one_for_one, intensity => 5, period => 1}, [wa_raft_transport_worker:child_spec()]}}.
