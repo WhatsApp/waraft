@@ -2870,7 +2870,7 @@ read_after(Config) ->
     ok = wa_raft_queue:reserve_read(Queues),
     {leader, _} = server_cast(?READ_COMMAND(?FROM(RefLow), read_low, 0)),
     Reads = wa_raft_queue:query_reads(Queues, infinity),
-    ?assertEqual(2, length(Reads)),
+    ?assertMatch([_, _], Reads),
     ?assert(lists:any(fun({{I, _}, C}) -> I =:= 1 andalso C =:= read_low end, Reads)),
     ?assert(lists:any(fun({{I, _}, C}) -> I =:= 5 andalso C =:= read_high end, Reads)),
 
@@ -2976,7 +2976,7 @@ read_after_candidate(Config) ->
     ok = wa_raft_queue:reserve_read(Queues),
     {candidate, _} = server_cast(?READ_COMMAND(?FROM(RefLow), read_low, 1)),
     Reads = wa_raft_queue:query_reads(Queues, infinity),
-    ?assertEqual(2, length(Reads)),
+    ?assertMatch([_, _], Reads),
     ?assert(lists:any(fun({{I, _}, C}) -> I =:= 2 andalso C =:= read_low end, Reads)),
     ?assert(lists:any(fun({{I, _}, C}) -> I =:= 5 andalso C =:= read_high end, Reads)),
 
