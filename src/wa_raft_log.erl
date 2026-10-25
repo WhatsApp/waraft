@@ -330,7 +330,6 @@ start_link(#raft_options{log_name = Name} = Options) ->
 -spec append(View :: view(), Entries :: [log_entry() | binary()]) ->
     {ok, NewView :: view()} | {error, Reason :: term()}.
 append(View, Entries) ->
-    % eqwalizer:ignore - strict append cannot return skipped
     append(View, Entries, strict, high).
 
 %% Attempt to append new log entries to the end of the log if an append can be
@@ -346,22 +345,30 @@ try_append(View, Entries, Priority) ->
     append(View, Entries, relaxed, Priority).
 
 %% Append new log entries to the end of the log.
--spec append(View :: view(), Entries :: [log_entry() | binary()], Mode :: strict | relaxed, Priority :: wa_raft_acceptor:priority()) ->
-    {ok, NewView :: view()} | skipped | {error, Reason :: term()}.
-append(#log_view{log = #raft_log{table = Table}, last = Last} = View, Entries, Mode, Priority) ->
+-spec append
+    (View :: view(), Entries :: [log_entry() | binary()], Mode :: strict, Priority :: wa_raft_acceptor:priority()) ->
+        {ok, NewView :: view()} | {error, Reason :: term()};
+    (View :: view(), Entries :: [log_entry() | binary()], Mode :: relaxed, Priority :: wa_raft_acceptor:priority()) ->
+        {ok, NewView :: view()} | skipped | {error, Reason :: term()}.
+append(#log_view{log = #raft_log{table = Table}} = View, Entries, Mode, Priority) ->
     ?RAFT_COUNT(Table, 'log.append'),
     Provider = provider(View),
-    case Provider:append(View, Entries, Mode, Priority) of
-        ok ->
-            ?RAFT_COUNT(Table, 'log.append.ok'),
-            {ok, refresh_config(View#log_view{last = Last + length(Entries)})};
-        skipped when Mode =:= relaxed ->
-            ?RAFT_COUNT(Table, 'log.append.skipped'),
-            skipped;
-        {error, Reason} ->
-            ?RAFT_COUNT(Table, 'log.append.error'),
-            {error, Reason}
-    end.
+    handle_append_result(Provider:append(View, Entries, Mode, Priority), Mode, View, Entries).
+
+-spec handle_append_result
+    (ok | {error, Reason :: term()}, Mode :: strict, View :: view(), Entries :: [log_entry() | binary()]) ->
+        {ok, NewView :: view()} | {error, Reason :: term()};
+    (ok | skipped | {error, Reason :: term()}, Mode :: relaxed, View :: view(), Entries :: [log_entry() | binary()]) ->
+        {ok, NewView :: view()} | skipped | {error, Reason :: term()}.
+handle_append_result(ok, _Mode, #log_view{log = #raft_log{table = Table}, last = Last} = View, Entries) ->
+    ?RAFT_COUNT(Table, 'log.append.ok'),
+    {ok, refresh_config(View#log_view{last = Last + length(Entries)})};
+handle_append_result(skipped, relaxed, #log_view{log = #raft_log{table = Table}}, _Entries) ->
+    ?RAFT_COUNT(Table, 'log.append.skipped'),
+    skipped;
+handle_append_result({error, Reason}, _Mode, #log_view{log = #raft_log{table = Table}}, _Entries) ->
+    ?RAFT_COUNT(Table, 'log.append.error'),
+    {error, Reason}.
 
 %% Compare the provided heartbeat log entries to the local log at the provided
 %% starting position in preparation for an append operation:
