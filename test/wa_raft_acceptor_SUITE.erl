@@ -27,6 +27,7 @@
     commit_error_apply_queue_full/1,
     commit_error_commit_queue_full/1,
     strong_read/1,
+    strong_read_late_reply/1,
     strong_read_apply_queue_full/1,
     strong_read_read_queue_full/1
 ]).
@@ -82,6 +83,7 @@ groups() ->
             commit_error_apply_queue_full,
             commit_error_commit_queue_full,
             strong_read,
+            strong_read_late_reply,
             strong_read_apply_queue_full,
             strong_read_read_queue_full
         ]}
@@ -216,6 +218,62 @@ strong_read(Config) ->
 
     % Submit strong-read pending at 101
     ?assertEqual({ok, 42}, wa_raft_acceptor:read(AcceptorPid, {read, ?TABLE, 1})),
+
+    ok = gen_server:stop(AcceptorPid, normal, 1000),
+    ok = gen_server:stop(StoragePid, normal, 1000),
+    ok = gen_server:stop(QueuePid, normal, 1000),
+    ok.
+
+%% Characterizes whether a strong-read reply that is produced after the caller's
+%% read/3 call already timed out is still delivered to the caller's mailbox.
+-spec strong_read_late_reply(Config :: ct_suite:ct_config()) -> ok.
+strong_read_late_reply(Config) ->
+    meck:new(wa_raft_server, [passthrough]),
+
+    Options = get_raft_options(),
+    {ok, QueuePid} = wa_raft_queue:start_link(Options),
+    {ok, StoragePid} = wa_raft_storage:start_link(Options),
+    {ok, AcceptorPid} = wa_raft_acceptor:start_link(Options),
+    ok = reset(StoragePid, #raft_log_pos{index = 100, term = 2}, Config),
+
+    % Accept the read into the pending queue without fulfilling it, so the caller
+    % below times out while the read is still pending.
+    TestPid = self(),
+    ReadSubmitted = make_ref(),
+    ok = meck:expect(
+        wa_raft_server,
+        read,
+        fun(_Server, From, Command, _MinIndex) ->
+            Queues = wa_raft_queue:queues(?TABLE, ?PARTITION_1),
+            ?assert(Queues =/= undefined),
+            wa_raft_queue:submit_read(Queues, 101, From, Command),
+            TestPid ! ReadSubmitted,
+            ok
+        end
+    ),
+
+    % A zero timeout makes the gen_server:call give up while the read is pending.
+    ?assertEqual({error, timeout}, wa_raft_acceptor:read(AcceptorPid, {read, ?TABLE, 1}, 0)),
+    receive
+        ReadSubmitted -> ok
+    after 5000 -> ct:fail(read_not_submitted)
+    end,
+
+    % Fulfilling the read now replies to a caller that already timed out; observe
+    % whether that late reply reaches the caller's mailbox.
+    PendingQueues =
+        case wa_raft_queue:queues(?TABLE, ?PARTITION_1) of
+            undefined -> ct:fail(no_queues);
+            FoundQueues -> FoundQueues
+        end,
+    ok = wa_raft_queue:fulfill_all_reads(PendingQueues, {error, not_leader}),
+    LateReply =
+        receive
+            {_Tag, Reply} -> {delivered, Reply}
+        after 1000 -> dropped
+        end,
+    ct:pal("late strong-read reply delivery: ~0p", [LateReply]),
+    ?assertEqual(dropped, LateReply),
 
     ok = gen_server:stop(AcceptorPid, normal, 1000),
     ok = gen_server:stop(StoragePid, normal, 1000),
