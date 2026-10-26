@@ -1696,11 +1696,11 @@ follower(Type, Event, #raft_state{} = State) when is_tuple(Event), element(1, Ev
 
 %% [AppendEntries RPC] Handle incoming heartbeats (5.2, 5.3)
 follower(
-    Type,
+    _,
     ?REMOTE(Leader, ?APPEND_ENTRIES(PrevLogIndex, PrevLogTerm, Entries, CommitIndex, TrimIndex)),
     #raft_state{} = State
 ) ->
-    handle_heartbeat(?FUNCTION_NAME, Type, Leader, PrevLogIndex, PrevLogTerm, Entries, CommitIndex, TrimIndex, State);
+    handle_heartbeat(?FUNCTION_NAME, Leader, PrevLogIndex, PrevLogTerm, Entries, CommitIndex, TrimIndex, State);
 
 %% [AppendEntriesResponse RPC] Followers should not act upon any incoming heartbeat responses (5.2)
 follower(_, ?REMOTE(_, ?APPEND_ENTRIES_RESPONSE(_, _, _, _)), #raft_state{}) ->
@@ -2231,11 +2231,11 @@ witness(Type, Event, #raft_state{} = State) when is_tuple(Event), element(1, Eve
 
 %% [AppendEntries RPC] Handle incoming heartbeats (5.2, 5.3)
 witness(
-    Type,
+    _,
     ?REMOTE(Leader, ?APPEND_ENTRIES(PrevLogIndex, PrevLogTerm, Entries, CommitIndex, TrimIndex)),
     #raft_state{} = State
 ) ->
-    handle_heartbeat(?FUNCTION_NAME, Type, Leader, PrevLogIndex, PrevLogTerm, Entries, CommitIndex, TrimIndex, State);
+    handle_heartbeat(?FUNCTION_NAME, Leader, PrevLogIndex, PrevLogTerm, Entries, CommitIndex, TrimIndex, State);
 
 %% [AppendEntriesResponse RPC] Witnesses should not act upon any incoming heartbeat responses (5.2)
 witness(_, ?REMOTE(_, ?APPEND_ENTRIES_RESPONSE(_, _, _, _)), #raft_state{}) ->
@@ -2813,13 +2813,12 @@ config_remove_member(Peer, Config) ->
 %% being applied. If it is, then update the cached configuration.
 -spec maybe_update_config(
     Index :: wa_raft_log:log_index(),
-    Term :: wa_raft_log:log_term(),
     Op :: wa_raft_acceptor:command(),
     State :: #raft_state{}
 ) -> NewState :: #raft_state{}.
-maybe_update_config(Index, _, {config, Config}, State) ->
+maybe_update_config(Index, {config, Config}, State) ->
     State#raft_state{cached_config = {Index, Config}};
-maybe_update_config(_, _, _, State) ->
+maybe_update_config(_, _, State) ->
     State.
 
 %% Convert a mapping of peers to values to a list of values for all members of the
@@ -3100,11 +3099,11 @@ apply_op(State, LogIndex, _, _, #raft_state{last_applied = LastApplied} = Data) 
 apply_op(_, Index, Size, {Term, {Key, Command}}, #raft_state{} = Data) ->
     Record = {Index, {Term, {Key, undefined, Command}}},
     NewData = send_op_to_storage(Index, Record, Size, Data),
-    maybe_update_config(Index, Term, Command, NewData);
-apply_op(_, Index, Size, {Term, {_, _, Command}} = Entry, #raft_state{} = Data) ->
+    maybe_update_config(Index, Command, NewData);
+apply_op(_, Index, Size, {_, {_, _, Command}} = Entry, #raft_state{} = Data) ->
     Record = {Index, Entry},
     NewData = send_op_to_storage(Index, Record, Size, Data),
-    maybe_update_config(Index, Term, Command, NewData);
+    maybe_update_config(Index, Command, NewData);
 apply_op(State, LogIndex, _, undefined, #raft_state{table = Table, log_view = View} = Data) ->
     ?RAFT_COUNT(Table, 'server.missing.log.entry'),
     ?SERVER_LOG_ERROR(State, Data, "failed to apply ~0p because log entry is missing from log covering ~0p to ~0p.",
@@ -3881,7 +3880,6 @@ open_snapshot(Root, Position, #raft_state{storage = Storage} = Data) ->
 %% the election timeout timer as necessary.
 -spec handle_heartbeat(
     State :: state(),
-    Event :: gen_statem:event_type(),
     Leader :: #raft_identity{},
     PrevLogIndex :: wa_raft_log:log_index(),
     PrevLogTerm :: wa_raft_log:log_term(),
@@ -3893,7 +3891,6 @@ open_snapshot(Root, Position, #raft_state{storage = Storage} = Data) ->
 
 handle_heartbeat(
     State,
-    _Event,
     Leader,
     PrevLogIndex,
     PrevLogTerm,

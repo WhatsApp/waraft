@@ -148,7 +148,7 @@ storage_create_snapshot(SnapshotPath, #state{storage = Storage}) ->
 storage_create_witness_snapshot(SnapshotPath, #state{name = Name, table = Table, partition = Partition, self = Self} = State) ->
     {ok, ConfigPosition, Config} = storage_config(State),
     SnapshotPosition = storage_position(State),
-    storage_make_empty_snapshot(Name, Table, Partition, Self, SnapshotPath, SnapshotPosition, Config, ConfigPosition, #{}).
+    storage_make_empty_snapshot(Name, Table, Partition, Self, SnapshotPath, SnapshotPosition, Config, ConfigPosition).
 
 -spec storage_open_snapshot(file:filename(), wa_raft_log:log_pos(), #state{}) -> {ok, #state{}} | {error, Reason :: term()}.
 storage_open_snapshot(SnapshotPath, SnapshotPosition, #state{storage = Storage} = State) ->
@@ -184,11 +184,11 @@ storage_check_config(Config, #state{self = Self} = State) ->
     end.
 
 -spec storage_make_empty_snapshot(#raft_options{}, file:filename(), wa_raft_log:log_pos(), wa_raft_server:config(), dynamic()) -> ok | {error, Reason :: term()}.
-storage_make_empty_snapshot(#raft_options{table = Table, partition = Partition, self = Self, storage_name = Name}, SnapshotPath, SnapshotPosition, Config, Data) ->
-    storage_make_empty_snapshot(Name, Table, Partition, Self, SnapshotPath, SnapshotPosition, Config, SnapshotPosition, Data).
+storage_make_empty_snapshot(#raft_options{table = Table, partition = Partition, self = Self, storage_name = Name}, SnapshotPath, SnapshotPosition, Config, _Data) ->
+    storage_make_empty_snapshot(Name, Table, Partition, Self, SnapshotPath, SnapshotPosition, Config, SnapshotPosition).
 
--spec storage_make_empty_snapshot(atom(), wa_raft:table(), wa_raft:partition(), #raft_identity{}, file:filename(), wa_raft_log:log_pos(), wa_raft_server:config(), wa_raft_log:log_pos(), dynamic()) -> ok | {error, Reason :: term()}.
-storage_make_empty_snapshot(Name, Table, Partition, Self, SnapshotPath, SnapshotPosition, Config, ConfigPosition, _Data) ->
+-spec storage_make_empty_snapshot(atom(), wa_raft:table(), wa_raft:partition(), #raft_identity{}, file:filename(), wa_raft_log:log_pos(), wa_raft_server:config(), wa_raft_log:log_pos()) -> ok | {error, Reason :: term()}.
+storage_make_empty_snapshot(Name, Table, Partition, Self, SnapshotPath, SnapshotPosition, Config, ConfigPosition) ->
     Storage = ets:new(Name, ?OPTIONS),
     State = #state{name = Name, table = Table, partition = Partition, self = Self, storage = Storage},
     storage_apply_config(Config, ConfigPosition, SnapshotPosition, State),
