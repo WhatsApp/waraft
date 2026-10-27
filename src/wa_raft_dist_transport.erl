@@ -12,6 +12,7 @@ This module implements the transport interface using Erlang distribution.
 -compile(warn_missing_spec_all).
 -behaviour(gen_server).
 -behaviour(wa_raft_transport).
+-behaviour(wa_raft_transport_worker).
 
 -export([
     child_spec/0,
@@ -19,8 +20,15 @@ This module implements the transport interface using Erlang distribution.
 ]).
 
 -export([
+    transport_accept/2,
+    transport_start/1,
+    transport_complete/1
+]).
+
+-export([
     transport_init/1,
-    transport_send/3
+    transport_send/3,
+    transport_terminate/2
 ]).
 
 -export([
@@ -52,6 +60,18 @@ child_spec() ->
 -spec start_link() -> gen_server:start_ret().
 start_link() ->
     gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
+
+-spec transport_accept(Meta :: wa_raft_transport:meta(), IncomingBytes :: non_neg_integer()) -> ok.
+transport_accept(_, _) ->
+    ok.
+
+-spec transport_start(ID :: wa_raft_transport:transport_id()) -> ok | {error, Reason :: term()}.
+transport_start(ID) ->
+    wa_raft_transport_sup:start_workers(ID, ?MODULE, 1).
+
+-spec transport_complete(ID :: wa_raft_transport:transport_id()) -> ok.
+transport_complete(_) ->
+    ok.
 
 -spec transport_init(Node :: node()) -> {ok, State :: #sender_state{}}.
 transport_init(_Node) ->
@@ -148,6 +168,10 @@ transport_send_loop(ID, FileID, Fd, Offset, Peer, Chunks, ChunkSize, MaxInflight
             ?RAFT_LOG_ERROR("wa_raft_dist_transport failed to read file ~p/~p due to ~p", [ID, FileID, Reason]),
             {error, {read_failed, ID, FileID, Reason}, State}
     end.
+
+-spec transport_terminate(Reason :: term(), State :: #sender_state{}) -> ok.
+transport_terminate(_, _) ->
+    ok.
 
 -spec init(Args :: []) -> {ok, State :: #receiver_state{}}.
 init([]) ->

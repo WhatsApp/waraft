@@ -24,7 +24,7 @@
     worker_shutdown/1
 ]).
 
-%% Transport behavior callbacks
+%% Transport worker behavior callbacks
 -export([
     transport_init/1,
     transport_send/3,
@@ -128,6 +128,12 @@ worker_failures(_Config) ->
         ?assertEqual({error, init_failed}, wa_raft_transport_sup:start_workers(4, ?MODULE, 2)),
         ?assertEqual(2, atomics:get(InitCounter, 1)),
         ?assertEqual([], supervisor:which_children(wa_raft_transport_sup)),
+
+        ok = wa_raft_dist_transport:transport_start(5),
+        DistWorker = receive_ready_worker(5),
+        ?assertEqual(1, length(supervisor:which_children(wa_raft_transport_sup))),
+        ok = supervisor:terminate_child(wa_raft_transport_sup, DistWorker),
+        ?assertEqual([], supervisor:which_children(wa_raft_transport_sup)),
         ok = gen_server:stop(Supervisor)
     after
         process_flag(trap_exit, PreviousTrapExit)
@@ -225,6 +231,14 @@ assert_worker_failure(ID, CompletionStatus, ExitReason) ->
         receive_message()
     ),
     ok.
+
+-spec receive_ready_worker(wa_raft_transport:transport_id()) -> pid().
+receive_ready_worker(ID) ->
+    receive
+        {transport_worker_ready, Pid, ID} -> Pid
+    after 1000 ->
+        ct:fail({transport_worker_not_ready, ID})
+    end.
 
 -spec receive_message() -> term().
 receive_message() ->

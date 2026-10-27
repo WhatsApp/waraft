@@ -110,8 +110,6 @@
 %% Default cross-node call timeout for heartbeats made for bulk logs catchup
 -define(RAFT_CATCHUP_HEARTBEAT_TIMEOUT(), ?RAFT_CONFIG(raft_catchup_rpc_timeout_ms, 5000)).
 
-%% Number of workers to use for transports
--define(RAFT_TRANSPORT_THREADS(), ?RAFT_CONFIG(raft_transport_threads, 1)).
 %% Time in seconds after which a transport that has not made progress should be considered failed
 -define(RAFT_TRANSPORT_IDLE_TIMEOUT(), ?RAFT_CONFIG(transport_idle_timeout_secs, 30)).
 

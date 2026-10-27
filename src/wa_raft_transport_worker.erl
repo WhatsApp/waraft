@@ -37,6 +37,36 @@
 }).
 
 %%% ------------------------------------------------------------------------
+%%%  Transport worker behavior
+%%%
+
+%% Perform any setup required before transport can be started.
+-callback transport_init(Node :: node()) -> {ok, State :: term()} | {stop, Reason :: term()}.
+
+%% Perform work towards sending a file to the target peer.
+%%  * Returning `ok` means that the file is fully sent and the implementation
+%%    is ready to accept a new file.
+%%  * Returning `continue` means that some of the file has been sent and the
+%%    implementation will continue when this method is called again.
+%%  * Returning `stop` means that the implementation encountered some error
+%%    and is unable to recover.
+-callback transport_send(
+    ID :: wa_raft_transport:transport_id(),
+    FileID :: wa_raft_transport:file_id(),
+    State :: term()
+) ->
+    {ok, NewState :: term()} |
+    {continue, NewState :: term()} |
+    {stop, Reason :: term(), NewState :: term()}.
+
+%% Optional callback for performing any shutdown operations.
+-callback transport_terminate(Reason :: term(), State :: term()) -> term().
+
+-optional_callbacks([
+    transport_terminate/2
+]).
+
+%%% ------------------------------------------------------------------------
 %%%  OTP supervision callbacks
 %%%
 

@@ -214,34 +214,31 @@
 -define(FILE_ATOMICS_COUNT, 7).
 
 %%% ------------------------------------------------------------------------
-%%%  Behaviour callbacks
+%%%  Transport provider behaviour
 %%%
 
-%% Perform any setup required before transport can be started.
--callback transport_init(Node :: node()) -> {ok, State :: term()} | {stop, Reason :: term()}.
-
-%% Send a file to the target peer.
--callback transport_send(ID :: transport_id(), FileID :: file_id(), State :: term()) ->
-    {ok, NewState :: term()} |
-    {continue, NewState :: term()} |
-    {stop, Reason :: term(), NewState :: term()}.
-
-%% Optional callback for when a transport has completed.
--callback transport_complete(ID :: transport_id()) -> ok.
-
-%% Optional callback for performing any shutdown operations.
--callback transport_terminate(Reason :: term(), State :: term()) -> term().
-
-%% Optional callback allowing the transport implementation to reject an incoming
-%% transport before it is accepted, e.g. when the receiver is under disk pressure.
-%% IncomingBytes is the total size of the files about to be received.
+%% Returns whether or not the transport provider should allow or reject some
+%% incoming transport before it is initiated. One common usecase is to reject
+%% an incoming transport if there might not be enough local space to hold it.
 -callback transport_accept(Meta :: meta(), IncomingBytes :: non_neg_integer()) -> ok | {error, Reason :: term()}.
 
+%% Request the transport provider to start the specified transport. The callback
+%% must synchronously clean up partially started resources before returning an
+%% error. Providers that do not require advanced functionality or control can
+%% use the standard transport worker framework via the
+%% `wa_raft_transport_worker` behavior by calling
+%% `wa_raft_transport_sup:start_workers/3`.
+-callback transport_start(ID :: transport_id()) -> ok | {error, Reason :: term()}.
+
+%% Called whenever a transport that uses this provider is completed.
+-callback transport_complete(ID :: transport_id()) -> ok.
+
 -optional_callbacks([
-    transport_complete/1,
-    transport_terminate/2,
-    transport_accept/2
+    transport_accept/2,
+    transport_complete/1
 ]).
+
+%%% ------------------------------------------------------------------------
 
 %% Name of the ETS table to keep records for transports
 -define(TRANSPORT_TABLE, wa_raft_transport_transports).
@@ -289,11 +286,21 @@ start_link() ->
 %%%  Internal API
 %%%
 
--spec start_transport(Peer :: atom(), Meta :: meta(), Root :: string(), Timeout :: timeout()) -> {ok, ID :: transport_id()} | {error, Reason :: term()}.
+-spec start_transport(
+    Peer :: atom(),
+    Meta :: meta(),
+    Root :: string(),
+    Timeout :: timeout()
+) -> {ok, ID :: transport_id()} | {error, Reason :: term()}.
 start_transport(Peer, Meta, Root, Timeout) ->
     gen_server:call(?MODULE, {start, Peer, Meta, Root}, Timeout).
 
--spec start_transport_and_wait(Peer :: atom(), Meta :: meta(), Root :: string(), Timeout :: timeout()) -> {ok, ID :: transport_id()} | {error, Reason :: term()}.
+-spec start_transport_and_wait(
+    Peer :: atom(),
+    Meta :: meta(),
+    Root :: string(),
+    Timeout :: timeout()
+) -> {ok, ID :: transport_id()} | {error, Reason :: term()}.
 start_transport_and_wait(Peer, Meta, Root, Timeout) ->
     gen_server:call(?MODULE, {start_wait, Peer, Meta, Root}, Timeout).
 
@@ -301,15 +308,32 @@ start_transport_and_wait(Peer, Meta, Root, Timeout) ->
 %%%  Bulk Transfer API
 %%%
 
--spec start_transfer(Peer :: atom(), Table :: wa_raft:table(), Partition :: wa_raft:partition(), Root :: string()) -> {ok, ID :: transport_id()} | {error, Reason :: term()}.
+-spec start_transfer(
+    Peer :: atom(),
+    Table :: wa_raft:table(),
+    Partition :: wa_raft:partition(),
+    Root :: string()
+) -> {ok, ID :: transport_id()} | {error, Reason :: term()}.
 start_transfer(Peer, Table, Partition, Root) ->
     start_transfer(Peer, Table, Partition, Root, 10000).
 
--spec start_transfer(Peer :: atom(), Table :: wa_raft:table(), Partition :: wa_raft:partition(), Root :: string(), Timeout :: timeout()) -> {ok, ID :: transport_id()} | {error, Reason :: term()}.
+-spec start_transfer(
+    Peer :: atom(),
+    Table :: wa_raft:table(),
+    Partition :: wa_raft:partition(),
+    Root :: string(),
+    Timeout :: timeout()
+) -> {ok, ID :: transport_id()} | {error, Reason :: term()}.
 start_transfer(Peer, Table, Partition, Root, Timeout) ->
     start_transport(Peer, #{type => transfer, table => Table, partition => Partition}, Root, Timeout).
 
--spec transfer(Peer :: atom(), Table :: wa_raft:table(), Partition :: wa_raft:partition(), Root :: string(), Timeout :: timeout()) -> {ok, ID :: transport_id()} | {error, Reason :: term()}.
+-spec transfer(
+    Peer :: atom(),
+    Table :: wa_raft:table(),
+    Partition :: wa_raft:partition(),
+    Root :: string(),
+    Timeout :: timeout()
+) -> {ok, ID :: transport_id()} | {error, Reason :: term()}.
 transfer(Peer, Table, Partition, Root, Timeout) ->
     start_transport_and_wait(Peer, #{type => transfer, table => Table, partition => Partition}, Root, Timeout).
 
@@ -334,15 +358,38 @@ may_accept(Peer, Witness, Timeout) ->
         exit:_ -> {error, unsupported}
     end.
 
--spec start_snapshot_transfer(Peer :: atom(), Table :: wa_raft:table(), Partition :: wa_raft:partition(), LogPos :: wa_raft_log:log_pos(), Root :: string(), Witness :: boolean()) -> {ok, ID :: transport_id()} | {error, Reason :: term()}.
+-spec start_snapshot_transfer(
+    Peer :: atom(),
+    Table :: wa_raft:table(),
+    Partition :: wa_raft:partition(),
+    LogPos :: wa_raft_log:log_pos(),
+    Root :: string(),
+    Witness :: boolean()
+) -> {ok, ID :: transport_id()} | {error, Reason :: term()}.
 start_snapshot_transfer(Peer, Table, Partition, LogPos, Root, Witness) ->
     start_snapshot_transfer(Peer, Table, Partition, LogPos, Root, Witness, 10000).
 
--spec start_snapshot_transfer(Peer :: atom(), Table :: wa_raft:table(), Partition :: wa_raft:partition(), LogPos :: wa_raft_log:log_pos(), Root :: string(), Witness :: boolean(), Timeout :: timeout()) -> {ok, ID :: transport_id()} | {error, Reason :: term()}.
+-spec start_snapshot_transfer(
+    Peer :: atom(),
+    Table :: wa_raft:table(),
+    Partition :: wa_raft:partition(),
+    LogPos :: wa_raft_log:log_pos(),
+    Root :: string(),
+    Witness :: boolean(),
+    Timeout :: timeout()
+) -> {ok, ID :: transport_id()} | {error, Reason :: term()}.
 start_snapshot_transfer(Peer, Table, Partition, LogPos, Root, Witness, Timeout) ->
     start_transport(Peer, #{type => snapshot, table => Table, partition => Partition, position => LogPos, witness => Witness}, Root, Timeout).
 
--spec transfer_snapshot(Peer :: atom(), Table :: wa_raft:table(), Partition :: wa_raft:partition(), LogPos :: wa_raft_log:log_pos(), Root :: string(), Witness :: boolean(), Timeout :: timeout()) -> {ok, ID :: transport_id()} | {error, Reason :: term()}.
+-spec transfer_snapshot(
+    Peer :: atom(),
+    Table :: wa_raft:table(),
+    Partition :: wa_raft:partition(),
+    LogPos :: wa_raft_log:log_pos(),
+    Root :: string(),
+    Witness :: boolean(),
+    Timeout :: timeout()
+) -> {ok, ID :: transport_id()} | {error, Reason :: term()}.
 transfer_snapshot(Peer, Table, Partition, LogPos, Root, Witness, Timeout) ->
     start_transport_and_wait(Peer, #{type => snapshot, table => Table, partition => Partition, position => LogPos, witness => Witness}, Root, Timeout).
 
@@ -988,8 +1035,7 @@ handle_transport_start(From, Peer, Meta, Root, State) ->
                     0 ->
                         {{ok, ID}, complete_transport(ID, add_pending_notify(ID, From, State))};
                     _ ->
-                        NumThreads = ?RAFT_TRANSPORT_THREADS(),
-                        case wa_raft_transport_sup:start_workers(ID, Module, NumThreads) of
+                        case Module:transport_start(ID) of
                             ok ->
                                 {{ok, ID}, add_pending_notify(ID, From, State)};
                             {error, Reason} ->
