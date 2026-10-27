@@ -91,15 +91,6 @@ implement a replicated state machine in a distributed cluster.
 ]).
 
 %%------------------------------------------------------------------------------
-%% RAFT Server - Internal APIs - RPC Handling
-%%------------------------------------------------------------------------------
-
--export([
-    make_rpc/3,
-    parse_rpc/2
-]).
-
-%%------------------------------------------------------------------------------
 %% RAFT Server - Internal APIs - Commands
 %%------------------------------------------------------------------------------
 
@@ -267,9 +258,7 @@ implement a replicated state machine in a distributed cluster.
 
 -type event() :: rpc() | remote(normalized_procedure()) | command() | internal_event() | timeout_type().
 
--type rpc() :: rpc_named() | legacy_rpc().
--type legacy_rpc() :: ?LEGACY_RAFT_RPC(atom(), wa_raft_log:log_term(), node(), undefined | tuple()).
--type rpc_named() :: ?RAFT_NAMED_RPC(atom(), wa_raft_log:log_term(), atom(), node(), undefined | tuple()).
+-type rpc() :: ?RAFT_NAMED_RPC(atom(), wa_raft_log:log_term(), atom(), node(), undefined | tuple()).
 
 -type command() :: commit_command() | read_command() | current_config_command() | status_command() |
                    trigger_election_command() | promote_command() | resign_command() | adjust_config_command() |
@@ -564,30 +553,6 @@ registered_name(Table, Partition) ->
     end.
 
 %%------------------------------------------------------------------------------
-%% RAFT Server - Internal APIs - RPC Handling
-%%------------------------------------------------------------------------------
-
--spec make_rpc(Self :: #raft_identity{}, Term :: wa_raft_log:log_term(), Procedure :: normalized_procedure()) -> rpc().
-make_rpc(#raft_identity{name = Name, node = Node}, Term, ?PROCEDURE(Procedure, Payload)) ->
-    % For compatibility with legacy versions that expect RPCs sent with no arguments to have payload 'undefined' instead of {}.
-    PayloadOrUndefined = case Payload of
-        {} -> undefined;
-        _  -> Payload
-    end,
-    ?RAFT_NAMED_RPC(Procedure, Term, Name, Node, PayloadOrUndefined).
-
--spec parse_rpc(Self :: #raft_identity{}, RPC :: rpc()) -> {Term :: wa_raft_log:log_term(), Sender :: #raft_identity{}, Procedure :: procedure()}.
-parse_rpc(_, ?RAFT_NAMED_RPC(Key, Term, SenderName, SenderNode, PayloadOrUndefined)) ->
-    Payload = case PayloadOrUndefined of
-        undefined -> {};
-        _         -> PayloadOrUndefined
-    end,
-    #{Key := ?PROCEDURE(Procedure, Defaults)} = protocol(),
-    {Term, #raft_identity{name = SenderName, node = SenderNode}, ?PROCEDURE(Procedure, defaultize_payload(Defaults, Payload))};
-parse_rpc(#raft_identity{name = Name} = Self, ?LEGACY_RAFT_RPC(Procedure, Term, SenderId, Payload)) ->
-    parse_rpc(Self, ?RAFT_NAMED_RPC(Procedure, Term, Name, SenderId, Payload)).
-
-%%------------------------------------------------------------------------------
 %% RAFT Server - Internal APIs - Commands
 %%------------------------------------------------------------------------------
 
@@ -780,8 +745,7 @@ init(
 
     % This increases the potential overhead of sending messages to the server;
     % however, this can protect the server from GC overhead
-    % and other memory-related issues (most notably when receiving log entries
-    % when undergoing a fast log catchup).
+    % and other memory-related issues when receiving log entries.
     ?RAFT_CONFIG(raft_server_message_queue_off_heap, true) andalso
         process_flag(message_queue_data, off_heap),
 
@@ -886,8 +850,6 @@ protocol() ->
 
 handle_rpc(Type, ?RAFT_NAMED_RPC(Procedure, Term, SenderName, SenderNode, Payload) = Event, State, #raft_state{} = Data) ->
     handle_rpc_impl(Type, Event, Procedure, Term, #raft_identity{name = SenderName, node = SenderNode}, Payload, State, Data);
-handle_rpc(Type, ?LEGACY_RAFT_RPC(Procedure, Term, SenderId, Payload) = Event, State, #raft_state{name = Name} = Data) ->
-    handle_rpc_impl(Type, Event, Procedure, Term, #raft_identity{name = Name, node = SenderId}, Payload, State, Data);
 handle_rpc(_, RPC, State, #raft_state{table = Table} = Data) ->
     ?RAFT_COUNT(Table, {'rpc.unrecognized', State}),
     ?SERVER_LOG_NOTICE(State, Data, "receives unknown RPC format ~0P", [RPC, 20]),
@@ -4223,8 +4185,13 @@ send_rpc(Destination, Procedure, #raft_state{current_term = Term} = State) ->
     Procedure :: normalized_procedure(),
     State :: #raft_state{}
 ) -> ok | {error, term()}.
-send_rpc(Destination, Term, Procedure, #raft_state{self = Self} = State) ->
-    cast(Destination, make_rpc(Self, Term, Procedure), State).
+send_rpc(
+    Destination,
+    Term,
+    ?PROCEDURE(Procedure, Payload),
+    #raft_state{self = #raft_identity{name = Name, node = Node}} = State
+) ->
+    cast(Destination, ?RAFT_NAMED_RPC(Procedure, Term, Name, Node, Payload), State).
 
 -spec send_rpc_to_all_members(ProcedureCall :: normalized_procedure(), State :: #raft_state{}) -> [ok | {error, term()}].
 send_rpc_to_all_members(ProcedureCall, #raft_state{self = Self} = State) ->

@@ -17,12 +17,6 @@
 
 -define(RAFT_NAMED_RPC(Type, Term, SenderName, SenderNode, Payload), {rpc, Type, Term, SenderName, SenderNode, Payload}).
 
-%% These two RPCs are used by RAFT catchup to receive the status of
-%% the RAFT server being sent to and should not change.
--define(LEGACY_RAFT_RPC(Type, Term, SenderId, Payload), {rpc, Type, Term, SenderId, Payload}).
--define(LEGACY_APPEND_ENTRIES_RESPONSE_RPC(Term, SenderId, PrevLogIndex, Success, LastIndex),
-    ?LEGACY_RAFT_RPC(append_entries_response, Term, SenderId, {PrevLogIndex, Success, LastIndex})).
-
 %%-------------------------------------------------------------------
 %% RAFT Server Procedures
 %%-------------------------------------------------------------------

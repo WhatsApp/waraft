@@ -107,9 +107,6 @@
 %% Maximum number of concurrent incoming snapshot transfers of witness snapshots.
 -define(RAFT_MAX_CONCURRENT_INCOMING_WITNESS_SNAPSHOT_TRANSFERS(), ?RAFT_CONFIG(raft_max_incoming_witness_snapshot_transfers, 10)).
 
-%% Default cross-node call timeout for heartbeats made for bulk logs catchup
--define(RAFT_CATCHUP_HEARTBEAT_TIMEOUT(), ?RAFT_CONFIG(raft_catchup_rpc_timeout_ms, 5000)).
-
 %% Time in seconds after which a transport that has not made progress should be considered failed
 -define(RAFT_TRANSPORT_IDLE_TIMEOUT(), ?RAFT_CONFIG(transport_idle_timeout_secs, 30)).
 

@@ -59,7 +59,6 @@ setup_raft(Node, Config) ->
     wa_raft_test_helper:set_app_option(Node, raft_election_weight, 0),
     wa_raft_test_helper:set_app_option(Node, raft_election_timeout_ms, 400),
     wa_raft_test_helper:set_app_option(Node, raft_election_timeout_ms_max, 500),
-    wa_raft_test_helper:set_app_option(Node, raft_catchup_rpc_timeout_ms, 2000),
     wa_raft_test_helper:set_app_option(Node, raft_snapshot_catchup_completed_backoff_ms, 0),
     wa_raft_test_helper:set_app_option(Node, raft_snapshot_catchup_failed_backoff_ms, 0),
     wa_raft_test_helper:set_app_option(Node, raft_commit_batch_interval_ms, 0),

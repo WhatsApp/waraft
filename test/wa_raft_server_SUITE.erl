@@ -41,9 +41,11 @@
     init/1,
     init_witness/1,
     init_empty/1,
+    named_rpc/1,
     advance_term/1,
     advance_term_vote/1,
     advance_term_witness/1,
+    legacy_rpc/1,
     stale_rpc/1,
     stale_rpc_witness/1,
     election/1,
@@ -212,9 +214,11 @@ server_groups() ->
             init,
             init_witness,
             init_empty,
+            named_rpc,
             advance_term,
             advance_term_vote,
             advance_term_witness,
+            legacy_rpc,
             stale_rpc,
             stale_rpc_witness,
             election,
@@ -1285,7 +1289,7 @@ clear_message_queue() ->
 ).
 
 -define(NOTIFY_TERM_RPC(Term, SenderName, SenderNode),
-    ?RAFT_NAMED_RPC(notify_term, Term, SenderName, SenderNode, undefined)
+    ?RAFT_NAMED_RPC(notify_term, Term, SenderName, SenderNode, {})
 ).
 
 -spec init(Config :: ct_suite:ct_config()) -> ok.
@@ -1420,6 +1424,48 @@ advance_term_witness(Config) ->
     ?assertMatch({ok, #raft_state{current_term = 2}}, wa_raft_durable_state:load(State0)),
 
     % Stop server
+    ok = server_stop().
+
+-spec named_rpc(Config :: ct_suite:ct_config()) -> ok.
+named_rpc(Config) ->
+    Name = ?SERVER_NAME(Config),
+    Node = node(),
+    SenderName = remote_sender,
+    {follower, _} = server_start_and_bootstrap(10, 2, Config),
+    {follower, State0} = server_cast(?RAFT_NAMED_RPC(append_entries, 2, SenderName, node2, {10, 2, [], 10, 0})),
+    ?assertEqual(#raft_identity{name = SenderName, node = node2}, State0#raft_state.leader),
+    ?assertCast(SenderName, node2, ?APPEND_ENTRIES_RESPONSE_RPC(2, Name, Node, 10, true, 10, 10)),
+    {follower, _} = server_cast(?RAFT_NAMED_RPC(append_entries, 2, SenderName, node2, {10, 2, [], 10})),
+    ?assertCast(SenderName, node2, ?APPEND_ENTRIES_RESPONSE_RPC(2, Name, Node, 10, true, 10, 10)),
+    {follower, _} = server_cast(?RAFT_NAMED_RPC(append_entries, 1, SenderName, node2, {10, 2, [], 10, 0})),
+    ?assertCast(SenderName, node2, ?RAFT_NAMED_RPC(notify_term, 2, Name, Node, {})),
+    {leader, _, ok} = server_call(?PROMOTE_COMMAND(3, true)),
+    {leader, State1} = server_cast(?RAFT_NAMED_RPC(append_entries_response, 3, SenderName, node2, {10, true, 10})),
+    ?assertMatch(#{node2 := 10}, State1#raft_state.match_indices),
+    {follower, _, ok} = server_call(?RESIGN_COMMAND),
+    {candidate, State2} = server_invoke(state_timeout, election),
+    Term = State2#raft_state.current_term,
+    {candidate, State3} = server_cast(?RAFT_NAMED_RPC(vote, Term, SenderName, node2, undefined)),
+    ?assertMatch(#{node2 := false}, State3#raft_state.votes),
+    {candidate, State4} = server_cast(?RAFT_NAMED_RPC(vote, Term, SenderName, node3, {})),
+    ?assertMatch(#{node2 := false, node3 := false}, State4#raft_state.votes),
+    {follower, State5} = server_cast(?RAFT_NAMED_RPC(notify_term, Term + 1, SenderName, node2, undefined)),
+    ?assertEqual(Term + 1, State5#raft_state.current_term),
+    {follower, State6} = server_cast(?RAFT_NAMED_RPC(notify_term, Term + 2, SenderName, node2, {})),
+    ?assertEqual(Term + 2, State6#raft_state.current_term),
+    ok = server_stop().
+
+-spec legacy_rpc(Config :: ct_suite:ct_config()) -> ok.
+legacy_rpc(Config) ->
+    Name = ?SERVER_NAME(Config),
+    {follower, State0} = server_start_and_bootstrap(Config),
+    ?assertEqual({follower, State0}, server_cast({rpc, append_entries, 2, node2, {1, 1, [], 1, 0}})),
+    ?assertEqual({follower, State0}, server_cast({rpc, notify_term, 2, node2, undefined})),
+    {leader, State1, ok} = server_call(?PROMOTE_COMMAND(3, true)),
+    ?assertEqual({leader, State1}, server_cast({rpc, append_entries, 4, node2, {1, 1, [], 1, 0}})),
+    ?assertEqual({leader, State1}, server_cast({rpc, append_entries_response, 4, node2, {1, true, 1}})),
+    {follower, State2} = server_cast(?NOTIFY_TERM_RPC(4, Name, node2)),
+    ?assertEqual(4, State2#raft_state.current_term),
     ok = server_stop().
 
 -spec stale_rpc(Config :: ct_suite:ct_config()) -> ok.
