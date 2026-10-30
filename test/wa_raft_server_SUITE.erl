@@ -117,6 +117,8 @@
 %% Server sequential unit test cases
 -export([
     commit_batch/1,
+    read_batch/1,
+    commit_read_batch/1,
     node_weight/1,
     check_quorum/1,
     check_quorum_force_promote_multi_node/1,
@@ -292,6 +294,8 @@ server_groups() ->
         % Server unit tests that affect global state and should be run sequentially
         {server_sequential, [
             commit_batch,
+            read_batch,
+            commit_read_batch,
             node_weight,
             check_quorum,
             check_quorum_force_promote_multi_node,
@@ -2843,7 +2847,7 @@ read(Config) ->
 
     ?assertEqual([], wa_raft_queue:query_reads(Queues, infinity)),
     ?assertEqual([], State0#raft_state.pending_high),
-    ?assertNot(State0#raft_state.pending_read),
+    ?assertEqual(0, State0#raft_state.pending_reads),
     Ref = make_ref(),
 
     ok = wa_raft_queue:reserve_read(Queues),
@@ -2851,7 +2855,7 @@ read(Config) ->
 
     ?assertMatch([{{1, _}, noop}], wa_raft_queue:query_reads(Queues, infinity)),
     ?assertEqual([], State1#raft_state.pending_high),
-    ?assert(State1#raft_state.pending_read),
+    ?assertEqual(1, State1#raft_state.pending_reads),
 
     {leader, _} = server_invoke(state_timeout, heartbeat),
     ?assertCast(Name, node2, ?APPEND_ENTRIES_RPC(1, Name, Node, 1, 1, [{1, {?READ_OP, noop}}], 1, 0)),
@@ -2956,7 +2960,7 @@ read_candidate(Config) ->
     Ref = make_ref(),
     ok = wa_raft_queue:reserve_read(Queues),
     {candidate, State1} = server_cast(?READ_COMMAND(?FROM(Ref), noop, undefined)),
-    ?assert(State1#raft_state.pending_read),
+    ?assertEqual(1, State1#raft_state.pending_reads),
     ?assertMatch([{{2, _}, noop}], wa_raft_queue:query_reads(Queues, infinity)),
 
     % Win election — candidate transitions to leader
@@ -2966,7 +2970,7 @@ read_candidate(Config) ->
 
     % After leader entry, the pending read should have produced a read
     % noop entry (in addition to the noop for the new term).
-    ?assertNot(State2#raft_state.pending_read),
+    ?assertEqual(0, State2#raft_state.pending_reads),
 
     % Get quorum acks to commit the entries in the new term
     clear_message_queue(),
@@ -3014,13 +3018,14 @@ read_after_candidate(Config) ->
     RefHigh = make_ref(),
     ok = wa_raft_queue:reserve_read(Queues),
     {candidate, StateHigh} = server_cast(?READ_COMMAND(?FROM(RefHigh), read_high, 5)),
-    ?assert(StateHigh#raft_state.pending_read),
+    ?assertEqual(1, StateHigh#raft_state.pending_reads),
     ?assertMatch([{{5, _}, read_high}], wa_raft_queue:query_reads(Queues, infinity)),
 
     % MinIndex at/below the base floor: read is buffered at the floor (2).
     RefLow = make_ref(),
     ok = wa_raft_queue:reserve_read(Queues),
-    {candidate, _} = server_cast(?READ_COMMAND(?FROM(RefLow), read_low, 1)),
+    {candidate, StateLow} = server_cast(?READ_COMMAND(?FROM(RefLow), read_low, 1)),
+    ?assertEqual(2, StateLow#raft_state.pending_reads),
     Reads = wa_raft_queue:query_reads(Queues, infinity),
     ?assertMatch([_, _], Reads),
     ?assert(lists:any(fun({{I, _}, C}) -> I =:= 2 andalso C =:= read_low end, Reads)),
@@ -3075,7 +3080,7 @@ read_lease_hit(Config) ->
         {leader, State1} = server_cast(?READ_COMMAND(?FROM(Ref), noop, undefined)),
 
         %% Lease-hit path bypasses submit_read and pending_read.
-        ?assertNot(State1#raft_state.pending_read),
+        ?assertEqual(0, State1#raft_state.pending_reads),
         ?assertEqual([], wa_raft_queue:query_reads(Queues, infinity)),
 
         %% No new log entry appended by the read.
@@ -3112,7 +3117,7 @@ read_lease_miss_disabled(Config) ->
     ok = wa_raft_queue:reserve_read(Queues),
     {leader, State1} = server_cast(?READ_COMMAND(?FROM(Ref), noop, undefined)),
 
-    ?assert(State1#raft_state.pending_read),
+    ?assertEqual(1, State1#raft_state.pending_reads),
     ?assertMatch([{{1, _}, noop}], wa_raft_queue:query_reads(Queues, infinity)),
     ok = server_stop().
 
@@ -3136,7 +3141,7 @@ read_lease_miss_stale(Config) ->
         ok = wa_raft_queue:reserve_read(Queues),
         {leader, State1} = server_cast(?READ_COMMAND(?FROM(Ref), noop, undefined)),
 
-        ?assert(State1#raft_state.pending_read),
+        ?assertEqual(1, State1#raft_state.pending_reads),
         ?assertMatch([{{1, _}, noop}], wa_raft_queue:query_reads(Queues, infinity)),
         ok = server_stop()
     after
@@ -3170,7 +3175,7 @@ read_lease_miss_not_current_term(Config) ->
         ok = wa_raft_queue:reserve_read(Queues),
         {leader, State1} = server_cast(?READ_COMMAND(?FROM(Ref), noop, undefined)),
 
-        ?assert(State1#raft_state.pending_read),
+        ?assertEqual(1, State1#raft_state.pending_reads),
         ?assertNotEqual(undefined, Name),
         ok = server_stop()
     after
@@ -3195,7 +3200,7 @@ read_lease_miss_no_quorum_ts(Config) ->
         ok = wa_raft_queue:reserve_read(Queues),
         {leader, State1} = server_cast(?READ_COMMAND(?FROM(Ref), noop, undefined)),
 
-        ?assert(State1#raft_state.pending_read),
+        ?assertEqual(1, State1#raft_state.pending_reads),
         ok = server_stop()
     after
         application:unset_env(?RAFT_APPLICATION, ?RAFT_LEADER_READ_LEASE_MS)
@@ -3221,7 +3226,7 @@ read_lease_miss_not_applied(Config) ->
         ok = wa_raft_queue:reserve_read(Queues),
         {leader, State1} = server_cast(?READ_COMMAND(?FROM(Ref), noop, undefined)),
 
-        ?assert(State1#raft_state.pending_read),
+        ?assertEqual(1, State1#raft_state.pending_reads),
         ok = server_stop()
     after
         application:unset_env(?RAFT_APPLICATION, ?RAFT_LEADER_READ_LEASE_MS)
@@ -3246,7 +3251,7 @@ read_lease_miss_handover_in_progress(Config) ->
         ok = wa_raft_queue:reserve_read(Queues),
         {leader, State1} = server_cast(?READ_COMMAND(?FROM(Ref), noop, undefined)),
 
-        ?assert(State1#raft_state.pending_read),
+        ?assertEqual(1, State1#raft_state.pending_reads),
         ok = server_stop()
     after
         application:unset_env(?RAFT_APPLICATION, ?RAFT_LEADER_READ_LEASE_MS)
@@ -3800,7 +3805,7 @@ handover(Config) ->
     clear_message_queue(),
     {leader, State12} = server_cast(?READ_COMMAND(?FROM(Ref12), noop, undefined)),
     ?assertEqual([], State12#raft_state.pending_high),
-    ?assertNot(State12#raft_state.pending_read),
+    ?assertEqual(0, State12#raft_state.pending_reads),
     ?assertEqual(1, wa_raft_log:last_index(State12#raft_state.log_view)),
     ?assertReceive({Ref12, {error, {notify_redirect, node2}}}),
 
@@ -3814,7 +3819,7 @@ handover(Config) ->
     {leader, State14} = server_cast(?HANDOVER_FAILED_RPC(Term, Name, node2, Ref10)),
     ?assertEqual(undefined, State14#raft_state.handover),
     ?assertEqual([], State14#raft_state.pending_high),
-    ?assertNot(State14#raft_state.pending_read),
+    ?assertEqual(0, State14#raft_state.pending_reads),
     ?assertEqual(1, wa_raft_log:last_index(State14#raft_state.log_view)),
 
     % Attempt a handover that succeeds (since we get a vote request from the peer)
@@ -4223,6 +4228,97 @@ commit_batch(Config) ->
     ?assertCast(Name, node5, ?APPEND_ENTRIES_RPC(1, Name, Node, 1, 1, _, _, _)),
 
     % Stop server
+    ok = server_stop().
+
+-spec read_batch(Config :: ct_suite:ct_config()) -> ok.
+read_batch(Config) ->
+    ok = application:set_env(?RAFT_APPLICATION, ?RAFT_COMMIT_BATCH_MAX_ENTRIES, 2),
+    {leader, Name, Term, _} = setup_leader_with_quorum(Config),
+    Queues = ?SERVER_QUEUES(Config),
+    ?assert(Queues =/= undefined),
+    Ref0 = make_ref(),
+    Ref1 = make_ref(),
+    Ref2 = make_ref(),
+
+    ok = wa_raft_queue:reserve_read(Queues),
+    {leader, State0} = server_cast(?READ_COMMAND(?FROM(Ref0), noop, undefined)),
+    ?assertEqual(1, State0#raft_state.pending_reads),
+    ok = wa_raft_queue:reserve_read(Queues),
+    {leader, State1} = server_cast(?READ_COMMAND(?FROM(Ref1), noop, undefined)),
+    ?assertEqual(2, State1#raft_state.pending_reads),
+    ?assertEqual(2, proplists:get_value(pending_reads, wa_raft_server:status(Name))),
+    ?assertNotCast(_, _, ?APPEND_ENTRIES_RPC(Term, Name, _, _, _, _, _, _)),
+
+    ok = wa_raft_queue:reserve_read(Queues),
+    {leader, State2} = server_cast(?READ_COMMAND(?FROM(Ref2), noop, undefined)),
+    ?assertEqual(0, State2#raft_state.pending_reads),
+    ?assertEqual(2, wa_raft_log:last_index(State2#raft_state.log_view)),
+    ?assertEqual({ok, {Term, {?READ_OP, noop}}}, wa_raft_log:get(State2#raft_state.log_view, 2)),
+    ?assertEqual(3, length(wa_raft_queue:query_reads(Queues, infinity))),
+    ?assertCast(Name, node2, ?APPEND_ENTRIES_RPC(Term, Name, _, 1, Term, [{Term, {?READ_OP, noop}}], 1, _)),
+    ?assertCast(Name, node3, ?APPEND_ENTRIES_RPC(Term, Name, _, 1, Term, [{Term, {?READ_OP, noop}}], 1, _)),
+
+    clear_message_queue(),
+    {leader, _} = server_cast(?APPEND_ENTRIES_RESPONSE_RPC(Term, Name, node2, 1, true, 2, 1)),
+    {leader, State3} = server_cast(?APPEND_ENTRIES_RESPONSE_RPC(Term, Name, node3, 1, true, 2, 1)),
+    ?assertEqual(2, State3#raft_state.commit_index),
+    [?assertReceive({Ref, ok}) || Ref <:- [Ref0, Ref1, Ref2]],
+
+    RefCancelled = make_ref(),
+    ok = wa_raft_queue:reserve_read(Queues),
+    {leader, State4} = server_cast(?READ_COMMAND(?FROM(RefCancelled), noop, undefined)),
+    ?assertEqual(1, State4#raft_state.pending_reads),
+    {follower, State5, ok} = server_call(?RESIGN_COMMAND),
+    ?assertEqual(0, State5#raft_state.pending_reads),
+    ?assertReceive({RefCancelled, {error, not_leader}}),
+    ok = server_stop().
+
+-spec commit_read_batch(Config :: ct_suite:ct_config()) -> ok.
+commit_read_batch(Config) ->
+    ok = application:set_env(?RAFT_APPLICATION, ?RAFT_COMMIT_BATCH_MAX_ENTRIES, 2),
+    {leader, Name, Term, _} = setup_leader_with_quorum(Config),
+    Queues = ?SERVER_QUEUES(Config),
+    ?assert(Queues =/= undefined),
+    FromHigh = ?FROM(),
+    FromLow = ?FROM(),
+    {leader, _} = server_cast(?COMMIT_COMMAND(FromHigh, {ref_high, noop}, high)),
+    {leader, State0} = server_cast(?COMMIT_COMMAND(FromLow, {ref_low, noop}, low)),
+    ?assertEqual(0, State0#raft_state.pending_reads),
+    ?assertNotCast(_, _, ?APPEND_ENTRIES_RPC(Term, Name, _, _, _, _, _, _)),
+
+    RefRead0 = make_ref(),
+    ok = wa_raft_queue:reserve_read(Queues),
+    {leader, State1} = server_cast(?READ_COMMAND(?FROM(RefRead0), noop, undefined)),
+    ?assertEqual(1, State1#raft_state.pending_reads),
+    ?assertEqual([{FromHigh, {ref_high, noop}}], State1#raft_state.pending_high),
+    ?assertEqual([{FromLow, {ref_low, noop}}], State1#raft_state.pending_low),
+    ?assertEqual(1, wa_raft_log:last_index(State1#raft_state.log_view)),
+    ?assertNotCast(_, _, ?APPEND_ENTRIES_RPC(Term, Name, _, _, _, _, _, _)),
+
+    RefRead1 = make_ref(),
+    ok = wa_raft_queue:reserve_read(Queues),
+    {leader, State2} = server_cast(?READ_COMMAND(?FROM(RefRead1), noop, undefined)),
+    ?assertEqual(2, State2#raft_state.pending_reads),
+    ?assertEqual(1, wa_raft_log:last_index(State2#raft_state.log_view)),
+    ?assertNotCast(_, _, ?APPEND_ENTRIES_RPC(Term, Name, _, _, _, _, _, _)),
+
+    RefRead2 = make_ref(),
+    ok = wa_raft_queue:reserve_read(Queues),
+    {leader, State3} = server_cast(?READ_COMMAND(?FROM(RefRead2), noop, undefined)),
+    ?assertEqual(0, State3#raft_state.pending_reads),
+    ?assertEqual([], State3#raft_state.pending_high),
+    ?assertEqual([], State3#raft_state.pending_low),
+    ?assertEqual(3, wa_raft_log:last_index(State3#raft_state.log_view)),
+    ?assertEqual({ok, {Term, {ref_high, noop}}}, wa_raft_log:get(State3#raft_state.log_view, 2)),
+    ?assertEqual({ok, {Term, {ref_low, noop}}}, wa_raft_log:get(State3#raft_state.log_view, 3)),
+    ?assertCast(Name, node2, ?APPEND_ENTRIES_RPC(Term, Name, _, 1, Term, _, 1, _)),
+    ?assertCast(Name, node3, ?APPEND_ENTRIES_RPC(Term, Name, _, 1, Term, _, 1, _)),
+
+    clear_message_queue(),
+    {leader, _} = server_cast(?APPEND_ENTRIES_RESPONSE_RPC(Term, Name, node2, 1, true, 3, 1)),
+    {leader, State4} = server_cast(?APPEND_ENTRIES_RESPONSE_RPC(Term, Name, node3, 1, true, 3, 1)),
+    ?assertEqual(3, State4#raft_state.commit_index),
+    [?assertReceive({Ref, ok}) || Ref <:- [RefRead0, RefRead1, RefRead2]],
     ok = server_stop().
 
 % Leader - give up leader role if election weight is 0

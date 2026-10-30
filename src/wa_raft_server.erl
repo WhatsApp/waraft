@@ -233,6 +233,7 @@ implement a replicated state machine in a distributed cluster.
     | {pending_high, non_neg_integer()}
     | {pending_low, non_neg_integer()}
     | {pending_read, boolean()}
+    | {pending_reads, non_neg_integer()}
     | {queued, non_neg_integer()}
     | {next_indices, #{node() => wa_raft_log:log_index()}}
     | {match_indices, #{node() => wa_raft_log:log_index()}}
@@ -1445,7 +1446,7 @@ leader(
                     % to be served earlier than any round of heartbeats caused by the following pending
                     % entry, but as long as the actual storage state has reached the effective index, then
                     % the read will still be sequentially consistent.
-                    leader_batch_or_heartbeat(State#raft_state{pending_read = true})
+                    leader_batch_or_heartbeat(State#raft_state{pending_reads = State#raft_state.pending_reads + 1})
             end
     end;
 
@@ -2027,7 +2028,7 @@ candidate(
                 _ -> max(MinReadIndex, MinIndex)
             end,
             ok = wa_raft_queue:submit_read(Queues, ReadIndex, From, ReadCommand),
-            {keep_state, State#raft_state{pending_read = true}};
+            {keep_state, State#raft_state{pending_reads = State#raft_state.pending_reads + 1}};
         false ->
             command(?FUNCTION_NAME, Event, Command, State)
     end;
@@ -2343,7 +2344,8 @@ command(State, {call, From}, ?STATUS_COMMAND, #raft_state{} = Data) ->
         {leader_commit_index_ts, Data#raft_state.leader_commit_index_ts},
         {pending_high, length(Data#raft_state.pending_high)},
         {pending_low, length(Data#raft_state.pending_low)},
-        {pending_read, Data#raft_state.pending_read},
+        {pending_read, Data#raft_state.pending_reads > 0},
+        {pending_reads, Data#raft_state.pending_reads},
         {queued, maps:size(Data#raft_state.queued)},
         {next_indices, Data#raft_state.next_indices},
         {match_indices, Data#raft_state.match_indices},
@@ -3442,10 +3444,8 @@ has_pending_commits(#raft_state{}) ->
     true.
 
 -spec pending_count(Data :: #raft_state{}) -> non_neg_integer().
-pending_count(#raft_state{pending_high = [], pending_low = [], pending_read = true}) ->
-    1;
-pending_count(#raft_state{pending_high = PendingHigh, pending_low = PendingLow}) ->
-    length(PendingHigh) + length(PendingLow).
+pending_count(#raft_state{pending_high = PendingHigh, pending_low = PendingLow, pending_reads = PendingReads}) ->
+    max(length(PendingHigh) + length(PendingLow), PendingReads).
 
 -spec add_pending(
     From :: gen_server:from(),
@@ -3459,7 +3459,7 @@ add_pending(From, Op, low, #raft_state{pending_low = PendingLow} = Data) ->
     Data#raft_state{pending_low = [{From, Op} | PendingLow]}.
 
 -spec commit_pending(Data :: #raft_state{}, Priority :: wa_raft_acceptor:priority()) -> #raft_state{}.
-commit_pending(#raft_state{pending_high = [], pending_low = [], pending_read = false} = Data, _Priority) ->
+commit_pending(#raft_state{pending_high = [], pending_low = [], pending_reads = 0} = Data, _Priority) ->
     Data;
 commit_pending(#raft_state{table = Table, log_view = View, pending_high = PendingHigh, pending_low = PendingLow, queued = Queued} = Data, Priority) ->
     Pending =
@@ -3487,13 +3487,13 @@ commit_pending(#raft_state{table = Table, log_view = View, pending_high = Pendin
                             {Last, Queued},
                             Pending
                         ),
-                    % We can clear pending read flag as we've successfully added at
+                    % We can clear pending reads as we've successfully added at
                     % least one new log entry so the leader will proceed to replicate
                     % and establish a new quorum if it is still up to date.
                     Data1 = Data#raft_state{
                         log_view = NewView,
                         last_label = NewLabel,
-                        pending_read = false,
+                        pending_reads = 0,
                         queued = NewQueued
                     },
                     case Priority of
@@ -3518,7 +3518,10 @@ commit_pending(#raft_state{table = Table, log_view = View, pending_high = Pendin
     end.
 
 -spec collect_pending(Data :: #raft_state{}, Priority :: wa_raft_acceptor:priority()) -> {[wa_raft_log:log_entry()], wa_raft_label:label() | undefined}.
-collect_pending(#raft_state{pending_high = [], pending_low = [], pending_read = true} = Data, _Priority) ->
+collect_pending(
+    #raft_state{pending_high = [], pending_low = [], pending_reads = PendingReads} = Data,
+    _Priority
+) when PendingReads > 0 ->
     % If the pending queues are empty, then we have at least one pending
     % read but no commits to go along with it.
     {ReadEntry, NewLabel} = make_log_entry_impl({?READ_OP, noop}, Data),
@@ -3552,7 +3555,7 @@ cancel_pending(
         storage = Storage,
         pending_high = PendingHigh,
         pending_low = PendingLow,
-        pending_read = PendingRead
+        pending_reads = PendingReads
     } = Data
 ) ->
     % Pending commits are kept in reverse order. Pending reads are also cancelled.
@@ -3560,9 +3563,9 @@ cancel_pending(
         [wa_raft_queue:commit_cancelled(Queues, From, Reason, high) || {From, _Op} <- lists:reverse(PendingHigh)],
     PendingLow =/= [] andalso
         [wa_raft_queue:commit_cancelled(Queues, From, Reason, low) || {From, _Op} <- lists:reverse(PendingLow)],
-    PendingRead andalso
+    PendingReads > 0 andalso
         wa_raft_storage:cancel_reads(Storage, Reason),
-    Data#raft_state{pending_high = [], pending_low = [], pending_read = false}.
+    Data#raft_state{pending_high = [], pending_low = [], pending_reads = 0}.
 
 %% Cancel all pending and queued commits and reads with the given error reason.
 -spec cancel_pending_and_queued(Reason :: wa_raft_acceptor:common_error(), Data :: #raft_state{}) -> #raft_state{}.

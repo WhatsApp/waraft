@@ -537,9 +537,9 @@
 
     pending_low = [] :: [{gen_server:from(), wa_raft_acceptor:op()}],
 
-    %% [Leader] Whether or not a read has been accepted and is waiting for the
-    %%          leader to establish a new quorum to be handled.
-    pending_read = false :: boolean(),
+    %% [Leader, Candidate] Reads accepted since the last log append that
+    %%                     establishes a new quorum for those reads.
+    pending_reads = 0 :: non_neg_integer(),
     %% [Leader] The queue of accepted commit requests that are waiting to be
     %%          committed and applied for response to the client.
     queued = #{} :: #{wa_raft_log:log_index() => {gen_server:from(), wa_raft_acceptor:priority()}},
