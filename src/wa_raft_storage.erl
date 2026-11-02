@@ -74,7 +74,6 @@ storage solutions on top of the RAFT consensus algorithm.
 -export_type([
     storage_handle/0,
     snapshot_options/0,
-    metadata/0,
     status/0
 ]).
 
@@ -85,7 +84,6 @@ storage solutions on top of the RAFT consensus algorithm.
 %% RAFT Storage - Types
 %%-----------------------------------------------------------------------------
 
--type metadata() :: config | atom().
 -type storage_handle() :: dynamic().
 -type snapshot_options() :: map().
 
