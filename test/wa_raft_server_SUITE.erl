@@ -111,7 +111,18 @@
     get_current_config_different_states/1,
     pre_vote_election/1,
     pre_vote_rejected/1,
-    pre_vote_request/1
+    pre_vote_request/1,
+    rpc_sender_timestamps/1,
+    heartbeat_timestamp_echo/1,
+    heartbeat_timestamp_echo_witness/1,
+    heartbeat_timestamp_echo_stalled/1,
+    request_vote_timestamp_echo/1,
+    delayed_heartbeat_reply_three_members/1,
+    delayed_heartbeat_reply_five_members/1,
+    vote_reply_timestamps/1,
+    vote_reply_timestamps_three_members/1,
+    legacy_missing_timestamp/1,
+    legacy_vote_missing_timestamp/1
 ]).
 
 %% Server sequential unit test cases
@@ -289,7 +300,18 @@ server_groups() ->
             get_current_config_different_states,
             pre_vote_election,
             pre_vote_rejected,
-            pre_vote_request
+            pre_vote_request,
+            rpc_sender_timestamps,
+            heartbeat_timestamp_echo,
+            heartbeat_timestamp_echo_witness,
+            heartbeat_timestamp_echo_stalled,
+            request_vote_timestamp_echo,
+            delayed_heartbeat_reply_three_members,
+            delayed_heartbeat_reply_five_members,
+            vote_reply_timestamps,
+            vote_reply_timestamps_three_members,
+            legacy_missing_timestamp,
+            legacy_vote_missing_timestamp
         ]},
         % Server unit tests that affect global state and should be run sequentially
         {server_sequential, [
@@ -1265,14 +1287,44 @@ clear_message_queue() ->
         append_entries, Term, SenderName, SenderNode, {PrevLogIndex, PrevLogTerm, Entries, CommitIndex, TrimIndex}
     )
 ).
+-define(APPEND_ENTRIES_RPC(
+    Term, SenderName, SenderNode, PrevLogIndex, PrevLogTerm, Entries, CommitIndex, TrimIndex, LeaderMTimeMs
+),
+    ?RAFT_NAMED_RPC(
+        append_entries,
+        Term,
+        SenderName,
+        SenderNode,
+        {PrevLogIndex, PrevLogTerm, Entries, CommitIndex, TrimIndex, LeaderMTimeMs}
+    )
+).
 -define(APPEND_ENTRIES_RESPONSE_RPC(Term, SenderName, SenderNode, PrevLogIndex, Success, MatchIndex, LastAppliedIndex),
     ?RAFT_NAMED_RPC(
         append_entries_response, Term, SenderName, SenderNode, {PrevLogIndex, Success, MatchIndex, LastAppliedIndex}
     )
 ).
+-define(APPEND_ENTRIES_RESPONSE_RPC(
+    Term, SenderName, SenderNode, PrevLogIndex, Success, MatchIndex, LastAppliedIndex, LeaderMTimeMs
+),
+    ?RAFT_NAMED_RPC(
+        append_entries_response,
+        Term,
+        SenderName,
+        SenderNode,
+        {PrevLogIndex, Success, MatchIndex, LastAppliedIndex, LeaderMTimeMs}
+    )
+).
 
 -define(REQUEST_VOTE_RPC(Term, SenderName, SenderNode, ElectionType, LastLogIndex, LastLogTerm),
     ?RAFT_NAMED_RPC(request_vote, Term, SenderName, SenderNode, {ElectionType, LastLogIndex, LastLogTerm})
+).
+-define(REQUEST_VOTE_RPC(Term, SenderName, SenderNode, ElectionType, LastLogIndex, LastLogTerm, CandidateMTimeMs),
+    ?RAFT_NAMED_RPC(
+        request_vote, Term, SenderName, SenderNode, {ElectionType, LastLogIndex, LastLogTerm, CandidateMTimeMs}
+    )
+).
+-define(VOTE_RPC(Term, SenderName, SenderNode, Vote, CandidateMTimeMs),
+    ?RAFT_NAMED_RPC(vote, Term, SenderName, SenderNode, {Vote, CandidateMTimeMs})
 ).
 -define(VOTE_RPC(Term, SenderName, SenderNode, Vote),
     ?RAFT_NAMED_RPC(vote, Term, SenderName, SenderNode, {Vote})
@@ -1438,9 +1490,9 @@ named_rpc(Config) ->
     {follower, _} = server_start_and_bootstrap(10, 2, Config),
     {follower, State0} = server_cast(?RAFT_NAMED_RPC(append_entries, 2, SenderName, node2, {10, 2, [], 10, 0})),
     ?assertEqual(#raft_identity{name = SenderName, node = node2}, State0#raft_state.leader),
-    ?assertCast(SenderName, node2, ?APPEND_ENTRIES_RESPONSE_RPC(2, Name, Node, 10, true, 10, 10)),
+    ?assertCast(SenderName, node2, ?APPEND_ENTRIES_RESPONSE_RPC(2, Name, Node, 10, true, 10, 10, _)),
     {follower, _} = server_cast(?RAFT_NAMED_RPC(append_entries, 2, SenderName, node2, {10, 2, [], 10})),
-    ?assertCast(SenderName, node2, ?APPEND_ENTRIES_RESPONSE_RPC(2, Name, Node, 10, true, 10, 10)),
+    ?assertCast(SenderName, node2, ?APPEND_ENTRIES_RESPONSE_RPC(2, Name, Node, 10, true, 10, 10, _)),
     {follower, _} = server_cast(?RAFT_NAMED_RPC(append_entries, 1, SenderName, node2, {10, 2, [], 10, 0})),
     ?assertCast(SenderName, node2, ?RAFT_NAMED_RPC(notify_term, 2, Name, Node, {})),
     {leader, _, ok} = server_call(?PROMOTE_COMMAND(3, true)),
@@ -1621,11 +1673,11 @@ election(Config) ->
     {candidate, State1} = server_invoke(state_timeout, election),
     ?assertEqual(2, State1#raft_state.current_term),
     ?assertMatch({ok, #raft_state{current_term = 2}}, wa_raft_durable_state:load(State0)),
-    ?assertCast(Name, Node, ?VOTE_RPC(2, Name, Node, true)),
-    ?assertCast(Name, node2, ?REQUEST_VOTE_RPC(2, Name, Node, normal, 1, 1)),
-    ?assertCast(Name, node3, ?REQUEST_VOTE_RPC(2, Name, Node, normal, 1, 1)),
-    ?assertCast(Name, node4, ?REQUEST_VOTE_RPC(2, Name, Node, normal, 1, 1)),
-    ?assertCast(Name, node5, ?REQUEST_VOTE_RPC(2, Name, Node, normal, 1, 1)),
+    ?assertCast(Name, Node, ?VOTE_RPC(2, Name, Node, true, _)),
+    ?assertCast(Name, node2, ?REQUEST_VOTE_RPC(2, Name, Node, normal, 1, 1, _)),
+    ?assertCast(Name, node3, ?REQUEST_VOTE_RPC(2, Name, Node, normal, 1, 1, _)),
+    ?assertCast(Name, node4, ?REQUEST_VOTE_RPC(2, Name, Node, normal, 1, 1, _)),
+    ?assertCast(Name, node5, ?REQUEST_VOTE_RPC(2, Name, Node, normal, 1, 1, _)),
 
     % Trigger election timeout on candidate
     %  * Candidate should advance another term for election restart
@@ -1634,11 +1686,11 @@ election(Config) ->
     {candidate, State2} = server_invoke(state_timeout, election),
     ?assertEqual(3, State2#raft_state.current_term),
     ?assertMatch({ok, #raft_state{current_term = 3}}, wa_raft_durable_state:load(State0)),
-    ?assertCast(Name, Node, ?VOTE_RPC(3, Name, Node, true)),
-    ?assertCast(Name, node2, ?REQUEST_VOTE_RPC(3, Name, Node, normal, 1, 1)),
-    ?assertCast(Name, node3, ?REQUEST_VOTE_RPC(3, Name, Node, normal, 1, 1)),
-    ?assertCast(Name, node4, ?REQUEST_VOTE_RPC(3, Name, Node, normal, 1, 1)),
-    ?assertCast(Name, node5, ?REQUEST_VOTE_RPC(3, Name, Node, normal, 1, 1)),
+    ?assertCast(Name, Node, ?VOTE_RPC(3, Name, Node, true, _)),
+    ?assertCast(Name, node2, ?REQUEST_VOTE_RPC(3, Name, Node, normal, 1, 1, _)),
+    ?assertCast(Name, node3, ?REQUEST_VOTE_RPC(3, Name, Node, normal, 1, 1, _)),
+    ?assertCast(Name, node4, ?REQUEST_VOTE_RPC(3, Name, Node, normal, 1, 1, _)),
+    ?assertCast(Name, node5, ?REQUEST_VOTE_RPC(3, Name, Node, normal, 1, 1, _)),
 
     % Votes come in for election
     %  * Candidate should wait until it gets a quorum of votes
@@ -1712,11 +1764,11 @@ election_three_members(Config) ->
     {leader, _, ok} = server_call(?PROMOTE_COMMAND(1, true)),
     {follower, _, ok} = server_call(?RESIGN_COMMAND),
     {candidate, _} = server_invoke(state_timeout, election),
-    ?assertCast(Name, Node, ?VOTE_RPC(2, Name, Node, true)),
-    ?assertCast(Name, node2, ?REQUEST_VOTE_RPC(2, Name, Node, normal, _, _)),
-    ?assertCast(Name, node3, ?REQUEST_VOTE_RPC(2, Name, Node, normal, _, _)),
-    ?assertNotCast(Name, node4, ?REQUEST_VOTE_RPC(2, Name, Node, _, _, _)),
-    ?assertNotCast(Name, node5, ?REQUEST_VOTE_RPC(2, Name, Node, _, _, _)),
+    ?assertCast(Name, Node, ?VOTE_RPC(2, Name, Node, true, _)),
+    ?assertCast(Name, node2, ?REQUEST_VOTE_RPC(2, Name, Node, normal, _, _, _)),
+    ?assertCast(Name, node3, ?REQUEST_VOTE_RPC(2, Name, Node, normal, _, _, _)),
+    ?assertNotCast(Name, node4, ?REQUEST_VOTE_RPC(2, Name, Node, _, _, _, _)),
+    ?assertNotCast(Name, node5, ?REQUEST_VOTE_RPC(2, Name, Node, _, _, _, _)),
     {candidate, _} = server_cast(?VOTE_RPC(2, Name, Node, true)),
     {leader, _} = server_cast(?VOTE_RPC(2, Name, node2, true)),
 
@@ -1740,11 +1792,11 @@ election_four_members(Config) ->
     {leader, _, ok} = server_call(?PROMOTE_COMMAND(1, true)),
     {follower, _, ok} = server_call(?RESIGN_COMMAND),
     {candidate, _} = server_invoke(state_timeout, election),
-    ?assertCast(Name, Node, ?VOTE_RPC(2, Name, Node, true)),
-    ?assertCast(Name, node2, ?REQUEST_VOTE_RPC(2, Name, Node, normal, _, _)),
-    ?assertCast(Name, node3, ?REQUEST_VOTE_RPC(2, Name, Node, normal, _, _)),
-    ?assertCast(Name, node4, ?REQUEST_VOTE_RPC(2, Name, Node, normal, _, _)),
-    ?assertNotCast(Name, node5, ?REQUEST_VOTE_RPC(2, Name, Node, _, _, _)),
+    ?assertCast(Name, Node, ?VOTE_RPC(2, Name, Node, true, _)),
+    ?assertCast(Name, node2, ?REQUEST_VOTE_RPC(2, Name, Node, normal, _, _, _)),
+    ?assertCast(Name, node3, ?REQUEST_VOTE_RPC(2, Name, Node, normal, _, _, _)),
+    ?assertCast(Name, node4, ?REQUEST_VOTE_RPC(2, Name, Node, normal, _, _, _)),
+    ?assertNotCast(Name, node5, ?REQUEST_VOTE_RPC(2, Name, Node, _, _, _, _)),
     {candidate, _} = server_cast(?VOTE_RPC(2, Name, Node, true)),
     {candidate, _} = server_cast(?VOTE_RPC(2, Name, node2, true)),
     {leader, _} = server_cast(?VOTE_RPC(2, Name, node3, true)),
@@ -1763,45 +1815,45 @@ request_vote(Config) ->
     % Followers can only vote yes to a single peer each term
     {follower, StateA0} = server_cast(?REQUEST_VOTE_RPC(2, Name, node2, normal, 100, 2)),
     ?assertEqual(node2, StateA0#raft_state.voted_for),
-    ?assertCast(Name, node2, ?VOTE_RPC(2, Name, Node, true)),
+    ?assertCast(Name, node2, ?VOTE_RPC(2, Name, Node, true, _)),
     {follower, StateA1} = server_cast(?REQUEST_VOTE_RPC(2, Name, node3, normal, 105, 2)),
     ?assertEqual(node2, StateA1#raft_state.voted_for),
-    ?assertNotCast(Name, node3, ?VOTE_RPC(2, Name, Node, true)),
+    ?assertNotCast(Name, node3, ?VOTE_RPC(2, Name, Node, true, _)),
     {follower, StateA2} = server_cast(?REQUEST_VOTE_RPC(2, Name, node4, normal, 110, 2)),
     ?assertEqual(node2, StateA2#raft_state.voted_for),
-    ?assertNotCast(Name, node4, ?VOTE_RPC(2, Name, Node, true)),
+    ?assertNotCast(Name, node4, ?VOTE_RPC(2, Name, Node, true, _)),
     {follower, StateA3} = server_cast(?REQUEST_VOTE_RPC(2, Name, node5, normal, 100, 4)),
     ?assertEqual(node2, StateA3#raft_state.voted_for),
-    ?assertNotCast(Name, node5, ?VOTE_RPC(2, Name, Node, true)),
+    ?assertNotCast(Name, node5, ?VOTE_RPC(2, Name, Node, true, _)),
 
     % In a new term, a new peer can be voted for
     {follower, StateB0} = server_cast(?REQUEST_VOTE_RPC(3, Name, node3, normal, 100, 2)),
     ?assertEqual(node3, StateB0#raft_state.voted_for),
-    ?assertCast(Name, node3, ?VOTE_RPC(3, Name, Node, true)),
+    ?assertCast(Name, node3, ?VOTE_RPC(3, Name, Node, true, _)),
     {follower, StateB1} = server_cast(?REQUEST_VOTE_RPC(3, Name, node2, normal, 100, 2)),
     ?assertEqual(node3, StateB1#raft_state.voted_for),
-    ?assertNotCast(Name, node2, ?VOTE_RPC(3, Name, Node, true)),
+    ?assertNotCast(Name, node2, ?VOTE_RPC(3, Name, Node, true, _)),
 
     % Followers can only vote yes to a peer whose log is at least
     % as up-to-date as their own log (lexicographically on {Term, Index})
     {follower, StateC0} = server_cast(?REQUEST_VOTE_RPC(4, Name, node2, normal, 50, 2)),
     ?assertEqual(undefined, StateC0#raft_state.voted_for),
-    ?assertNotCast(Name, node2, ?VOTE_RPC(4, Name, Node, true)),
+    ?assertNotCast(Name, node2, ?VOTE_RPC(4, Name, Node, true, _)),
     {follower, StateC1} = server_cast(?REQUEST_VOTE_RPC(5, Name, node2, normal, 150, 1)),
     ?assertEqual(undefined, StateC1#raft_state.voted_for),
-    ?assertNotCast(Name, node2, ?VOTE_RPC(5, Name, Node, true)),
+    ?assertNotCast(Name, node2, ?VOTE_RPC(5, Name, Node, true, _)),
     {follower, StateC2} = server_cast(?REQUEST_VOTE_RPC(6, Name, node2, normal, 100, 1)),
     ?assertEqual(undefined, StateC2#raft_state.voted_for),
-    ?assertNotCast(Name, node2, ?VOTE_RPC(6, Name, Node, true)),
+    ?assertNotCast(Name, node2, ?VOTE_RPC(6, Name, Node, true, _)),
     {follower, StateC3} = server_cast(?REQUEST_VOTE_RPC(7, Name, node2, normal, 100, 3)),
     ?assertEqual(node2, StateC3#raft_state.voted_for),
-    ?assertCast(Name, node2, ?VOTE_RPC(7, Name, Node, true)),
+    ?assertCast(Name, node2, ?VOTE_RPC(7, Name, Node, true, _)),
     {follower, StateC4} = server_cast(?REQUEST_VOTE_RPC(8, Name, node2, normal, 101, 2)),
     ?assertEqual(node2, StateC4#raft_state.voted_for),
-    ?assertCast(Name, node2, ?VOTE_RPC(8, Name, Node, true)),
+    ?assertCast(Name, node2, ?VOTE_RPC(8, Name, Node, true, _)),
     {follower, StateC5} = server_cast(?REQUEST_VOTE_RPC(9, Name, node2, normal, 50, 3)),
     ?assertEqual(node2, StateC5#raft_state.voted_for),
-    ?assertCast(Name, node2, ?VOTE_RPC(9, Name, Node, true)),
+    ?assertCast(Name, node2, ?VOTE_RPC(9, Name, Node, true, _)),
 
     % Stop server
     ok = server_stop().
@@ -1815,32 +1867,36 @@ request_vote_drop(Config) ->
     % Followers should reject normal vote requests when leader is active
     {follower, _} = server_start_and_bootstrap(Config),
     {follower, State0} = server_replace_state(SetHeartbeat),
+    {follower, State0} = server_cast(?REQUEST_VOTE_RPC(10, Name, node2, normal, 10, 10, 1111)),
+    ?assertCast(Name, node2, ?VOTE_RPC(_, Name, Node, false, 1111)),
+
+    % A pre-deploy candidate sends no timestamp; the rejection must still be sent.
     {follower, State0} = server_cast(?REQUEST_VOTE_RPC(10, Name, node2, normal, 10, 10)),
-    ?assertCast(Name, node2, ?VOTE_RPC(_, Name, Node, false)),
+    ?assertCast(Name, node2, ?VOTE_RPC(_, Name, Node, false, undefined)),
 
     % Candidates should reject normal vote requests when leader is active
     {candidate, _} = server_invoke(state_timeout, election),
     {candidate, State1} = server_replace_state(SetHeartbeat),
-    {candidate, State1} = server_cast(?REQUEST_VOTE_RPC(10, Name, node2, normal, 10, 10)),
-    ?assertCast(Name, node2, ?VOTE_RPC(_, Name, Node, false)),
+    {candidate, State1} = server_cast(?REQUEST_VOTE_RPC(10, Name, node2, normal, 10, 10, 2222)),
+    ?assertCast(Name, node2, ?VOTE_RPC(_, Name, Node, false, 2222)),
 
     % Leaders should reject normal vote requests because they are leader
     {leader, _, ok} = server_call(?PROMOTE_COMMAND(5, true)),
     {leader, State2} = server_replace_state(SetHeartbeat),
-    {leader, State2} = server_cast(?REQUEST_VOTE_RPC(10, Name, node2, normal, 10, 10)),
-    ?assertCast(Name, node2, ?VOTE_RPC(_, Name, Node, false)),
+    {leader, State2} = server_cast(?REQUEST_VOTE_RPC(10, Name, node2, normal, 10, 10, 3333)),
+    ?assertCast(Name, node2, ?VOTE_RPC(_, Name, Node, false, 3333)),
 
     % Disabled should reject normal vote requests
     {disabled, _, ok} = server_call(?DISABLE_COMMAND("Test")),
     {disabled, State3} = server_replace_state(SetHeartbeat),
-    {disabled, State3} = server_cast(?REQUEST_VOTE_RPC(10, Name, node2, normal, 10, 10)),
-    ?assertCast(Name, node2, ?VOTE_RPC(_, Name, Node, false)),
+    {disabled, State3} = server_cast(?REQUEST_VOTE_RPC(10, Name, node2, normal, 10, 10, 4444)),
+    ?assertCast(Name, node2, ?VOTE_RPC(_, Name, Node, false, 4444)),
 
     % Stalled should reject normal vote requests when leader is active
     {stalled, _, ok} = server_call(?ENABLE_COMMAND),
     {stalled, State4} = server_replace_state(SetHeartbeat),
-    {stalled, State4} = server_cast(?REQUEST_VOTE_RPC(10, Name, node2, normal, 10, 10)),
-    ?assertCast(Name, node2, ?VOTE_RPC(_, Name, Node, false)),
+    {stalled, State4} = server_cast(?REQUEST_VOTE_RPC(10, Name, node2, normal, 10, 10, 5555)),
+    ?assertCast(Name, node2, ?VOTE_RPC(_, Name, Node, false, 5555)),
 
     % Stop server
     ok = server_stop().
@@ -1861,7 +1917,7 @@ append_entries(Config) ->
     %  * Response is issued before apply, so last applied index is 100
     {follower, State1} = server_cast(?APPEND_ENTRIES_RPC(2, Name, node2, 100, 2, [{2, {ref, noop}}], 101, 0)),
     ?assertSetTimeout({state_timeout, _, election}),
-    ?assertCast(Name, node2, ?APPEND_ENTRIES_RESPONSE_RPC(2, Name, Node, 100, true, 101, 100)),
+    ?assertCast(Name, node2, ?APPEND_ENTRIES_RESPONSE_RPC(2, Name, Node, 100, true, 101, 100, _)),
     % log index updated
     ?assertEqual(101, wa_raft_log:last_index(State1#raft_state.log_view)),
     % commit index is updated
@@ -1881,7 +1937,7 @@ append_entries(Config) ->
     clear_message_queue(),
     {follower, State2} = server_cast(?APPEND_ENTRIES_RPC(3, Name, node2, 101, 2, [{2, {ref, noop}}], 102, 0)),
     ?assertSetTimeout({state_timeout, _, election}),
-    ?assertCast(Name, node2, ?APPEND_ENTRIES_RESPONSE_RPC(3, Name, Node, 101, true, 102, 101)),
+    ?assertCast(Name, node2, ?APPEND_ENTRIES_RESPONSE_RPC(3, Name, Node, 101, true, 102, 101, _)),
     % current term advanced
     ?assertEqual(3, State2#raft_state.current_term),
     % log entry is appended
@@ -1897,7 +1953,7 @@ append_entries(Config) ->
     clear_message_queue(),
     {follower, State3} = server_cast(?APPEND_ENTRIES_RPC(3, Name, node2, 105, 2, [{2, {ref, noop}}], 102, 0)),
     ?assertSetTimeout({state_timeout, _, election}),
-    ?assertCast(Name, node2, ?APPEND_ENTRIES_RESPONSE_RPC(3, Name, Node, 105, false, 102, 102)),
+    ?assertCast(Name, node2, ?APPEND_ENTRIES_RESPONSE_RPC(3, Name, Node, 105, false, 102, 102, _)),
     % current term preserved
     ?assertEqual(3, State3#raft_state.current_term),
     % log entries preserved
@@ -1916,7 +1972,7 @@ append_entries(Config) ->
         ?APPEND_ENTRIES_RPC(3, Name, node2, 101, 2, [{2, {ref, noop}}, {2, {ref, noop}}], 102, 0)
     ),
     ?assertSetTimeout({state_timeout, _, election}),
-    ?assertCast(Name, node2, ?APPEND_ENTRIES_RESPONSE_RPC(3, Name, Node, 101, true, 103, 102)),
+    ?assertCast(Name, node2, ?APPEND_ENTRIES_RESPONSE_RPC(3, Name, Node, 101, true, 103, 102, _)),
     % only append 1
     ?assertEqual(103, wa_raft_log:last_index(State4#raft_state.log_view)),
     % commit index is unchanged
@@ -1933,7 +1989,7 @@ append_entries(Config) ->
     clear_message_queue(),
     {follower, State5} = server_cast(?APPEND_ENTRIES_RPC(3, Name, node2, 103, 2, [], 103, 0)),
     ?assertSetTimeout({state_timeout, _, election}),
-    ?assertCast(Name, node2, ?APPEND_ENTRIES_RESPONSE_RPC(3, Name, Node, 103, true, 103, 102)),
+    ?assertCast(Name, node2, ?APPEND_ENTRIES_RESPONSE_RPC(3, Name, Node, 103, true, 103, 102, _)),
     % nothing is appended
     ?assertEqual(103, wa_raft_log:last_index(State5#raft_state.log_view)),
     % commit index is updated
@@ -1948,7 +2004,7 @@ append_entries(Config) ->
     clear_message_queue(),
     {follower, State6} = server_cast(?APPEND_ENTRIES_RPC(3, Name, node2, 103, 2, [], 105, 0)),
     ?assertSetTimeout({state_timeout, _, election}),
-    ?assertCast(Name, node2, ?APPEND_ENTRIES_RESPONSE_RPC(3, Name, Node, 103, true, 103, 103)),
+    ?assertCast(Name, node2, ?APPEND_ENTRIES_RESPONSE_RPC(3, Name, Node, 103, true, 103, 103, _)),
     % nothing is appended
     ?assertEqual(103, wa_raft_log:last_index(State6#raft_state.log_view)),
     % commit index is not changed
@@ -1970,7 +2026,7 @@ append_entries_witness(Config) ->
 
     clear_message_queue(),
     {witness, State1} = server_cast(?APPEND_ENTRIES_RPC(2, Name, node2, 100, 2, [{2, {ref, noop}}], 101, 0)),
-    ?assertCast(Name, node2, ?APPEND_ENTRIES_RESPONSE_RPC(2, Name, Node, 100, true, 101, 100)),
+    ?assertCast(Name, node2, ?APPEND_ENTRIES_RESPONSE_RPC(2, Name, Node, 100, true, 101, 100, _)),
     % log index updated
     ?assertEqual(101, wa_raft_log:last_index(State1#raft_state.log_view)),
     % commit index is updated
@@ -1980,7 +2036,7 @@ append_entries_witness(Config) ->
 
     clear_message_queue(),
     {witness, _} = server_cast(?APPEND_ENTRIES_RPC(2, Name, node2, 101, 2, [], 101, 0)),
-    ?assertCast(Name, node2, ?APPEND_ENTRIES_RESPONSE_RPC(2, Name, Node, 101, true, 101, _)),
+    ?assertCast(Name, node2, ?APPEND_ENTRIES_RESPONSE_RPC(2, Name, Node, 101, true, 101, _, _)),
 
     ok = server_stop().
 
@@ -2031,8 +2087,8 @@ append_entries_witness_match_cap(Config) ->
     % The witness heartbeat must stop at the max match index: the highest index
     % it replicates (PrevLogIndex + number of entries) may not exceed it, and it
     % must fall strictly short of the log end so the cap is doing real work.
-    {cast, {_, _, ?APPEND_ENTRIES_RPC(1, Name, Node, WitnessPrevLogIndex, _, WitnessEntries, _, _)}} =
-        ?assertCast(Name, node4, ?APPEND_ENTRIES_RPC(1, Name, Node, _, _, _, _, _)),
+    {cast, {_, _, ?APPEND_ENTRIES_RPC(1, Name, Node, WitnessPrevLogIndex, _, WitnessEntries, _, _, _)}} =
+        ?assertCast(Name, node4, ?APPEND_ENTRIES_RPC(1, Name, Node, _, _, _, _, _, _)),
     WitnessMaxIndex = WitnessPrevLogIndex + length(WitnessEntries),
     % The witness still replicates the acknowledged tail (a real heartbeat, not a
     % degenerate empty one).
@@ -2048,8 +2104,8 @@ append_entries_witness_match_cap(Config) ->
 
     % The same heartbeat to a full follower still carries everything up to the
     % log end, confirming the cap is witness-specific.
-    {cast, {_, _, ?APPEND_ENTRIES_RPC(1, Name, Node, FullPrevLogIndex, _, FullEntries, _, _)}} =
-        ?assertCast(Name, node2, ?APPEND_ENTRIES_RPC(1, Name, Node, _, _, _, _, _)),
+    {cast, {_, _, ?APPEND_ENTRIES_RPC(1, Name, Node, FullPrevLogIndex, _, FullEntries, _, _, _)}} =
+        ?assertCast(Name, node2, ?APPEND_ENTRIES_RPC(1, Name, Node, _, _, _, _, _, _)),
     FullMaxIndex = FullPrevLogIndex + length(FullEntries),
     ?assert(
         FullMaxIndex > MaxMatchIndex,
@@ -2099,8 +2155,8 @@ append_entries_two_witness_full_member_cap(Config) ->
 
     % The witness is capped at the surviving full-member maximum, not at the other
     % witness's higher position, and stops short of the log end.
-    {cast, {_, _, ?APPEND_ENTRIES_RPC(1, Name, Node, WitnessPrevLogIndex, _, WitnessEntries, _, _)}} =
-        ?assertCast(Name, node5, ?APPEND_ENTRIES_RPC(1, Name, Node, _, _, _, _, _)),
+    {cast, {_, _, ?APPEND_ENTRIES_RPC(1, Name, Node, WitnessPrevLogIndex, _, WitnessEntries, _, _, _)}} =
+        ?assertCast(Name, node5, ?APPEND_ENTRIES_RPC(1, Name, Node, _, _, _, _, _, _)),
     WitnessMaxIndex = WitnessPrevLogIndex + length(WitnessEntries),
     ?assertNotEqual([], WitnessEntries),
     ?assert(
@@ -2113,8 +2169,8 @@ append_entries_two_witness_full_member_cap(Config) ->
     ),
 
     % A surviving full follower still receives entries up to the log end.
-    {cast, {_, _, ?APPEND_ENTRIES_RPC(1, Name, Node, FullPrevLogIndex, _, FullEntries, _, _)}} =
-        ?assertCast(Name, node2, ?APPEND_ENTRIES_RPC(1, Name, Node, _, _, _, _, _)),
+    {cast, {_, _, ?APPEND_ENTRIES_RPC(1, Name, Node, FullPrevLogIndex, _, FullEntries, _, _, _)}} =
+        ?assertCast(Name, node2, ?APPEND_ENTRIES_RPC(1, Name, Node, _, _, _, _, _, _)),
     ?assert(
         FullPrevLogIndex + length(FullEntries) > FullMemberMax,
         "full follower must still receive entries past the full-member max"
@@ -2135,15 +2191,15 @@ append_entries_two_witness_full_member_cap(Config) ->
     clear_message_queue(),
     {leader, _} = server_invoke(state_timeout, heartbeat),
 
-    {cast, {_, _, ?APPEND_ENTRIES_RPC(1, Name, Node, _, _, Witness4Entries, _, _)}} =
-        ?assertCast(Name, node4, ?APPEND_ENTRIES_RPC(1, Name, Node, _, _, _, _, _)),
+    {cast, {_, _, ?APPEND_ENTRIES_RPC(1, Name, Node, _, _, Witness4Entries, _, _, _)}} =
+        ?assertCast(Name, node4, ?APPEND_ENTRIES_RPC(1, Name, Node, _, _, _, _, _, _)),
     ?assertEqual(
         [],
         Witness4Entries,
         "with only the leader as a live full member, witnesses receive no new entries"
     ),
-    {cast, {_, _, ?APPEND_ENTRIES_RPC(1, Name, Node, _, _, Witness5Entries, _, _)}} =
-        ?assertCast(Name, node5, ?APPEND_ENTRIES_RPC(1, Name, Node, _, _, _, _, _)),
+    {cast, {_, _, ?APPEND_ENTRIES_RPC(1, Name, Node, _, _, Witness5Entries, _, _, _)}} =
+        ?assertCast(Name, node5, ?APPEND_ENTRIES_RPC(1, Name, Node, _, _, _, _, _, _)),
     ?assertEqual(
         [],
         Witness5Entries,
@@ -2164,10 +2220,10 @@ heartbeat(Config) ->
     {leader, State0, ok} = server_call(?PROMOTE_COMMAND(1, true)),
     ?assertSetTimeout({state_timeout, _, heartbeat}),
     ?assertEqual(#{node2 => 2, node3 => 2, node4 => 2, node5 => 2}, State0#raft_state.next_indices),
-    ?assertCast(Name, node2, ?APPEND_ENTRIES_RPC(1, Name, Node, 0, 0, [{1, {_, noop}}], 0, 0)),
-    ?assertCast(Name, node3, ?APPEND_ENTRIES_RPC(1, Name, Node, 0, 0, [{1, {_, noop}}], 0, 0)),
-    ?assertCast(Name, node4, ?APPEND_ENTRIES_RPC(1, Name, Node, 0, 0, [{1, {_, noop}}], 0, 0)),
-    ?assertCast(Name, node5, ?APPEND_ENTRIES_RPC(1, Name, Node, 0, 0, [{1, {_, noop}}], 0, 0)),
+    ?assertCast(Name, node2, ?APPEND_ENTRIES_RPC(1, Name, Node, 0, 0, [{1, {_, noop}}], 0, 0, _)),
+    ?assertCast(Name, node3, ?APPEND_ENTRIES_RPC(1, Name, Node, 0, 0, [{1, {_, noop}}], 0, 0, _)),
+    ?assertCast(Name, node4, ?APPEND_ENTRIES_RPC(1, Name, Node, 0, 0, [{1, {_, noop}}], 0, 0, _)),
+    ?assertCast(Name, node5, ?APPEND_ENTRIES_RPC(1, Name, Node, 0, 0, [{1, {_, noop}}], 0, 0, _)),
 
     % After heartbeat timeout, leader should send another heartbeat and set
     % another heartbeat timeout
@@ -2175,10 +2231,10 @@ heartbeat(Config) ->
     {leader, State1} = server_invoke(state_timeout, heartbeat),
     ?assertSetTimeout({state_timeout, _, heartbeat}),
     ?assertEqual(#{node2 => 2, node3 => 2, node4 => 2, node5 => 2}, State1#raft_state.next_indices),
-    ?assertCast(Name, node2, ?APPEND_ENTRIES_RPC(1, Name, Node, 1, 1, [], 0, 0)),
-    ?assertCast(Name, node3, ?APPEND_ENTRIES_RPC(1, Name, Node, 1, 1, [], 0, 0)),
-    ?assertCast(Name, node4, ?APPEND_ENTRIES_RPC(1, Name, Node, 1, 1, [], 0, 0)),
-    ?assertCast(Name, node5, ?APPEND_ENTRIES_RPC(1, Name, Node, 1, 1, [], 0, 0)),
+    ?assertCast(Name, node2, ?APPEND_ENTRIES_RPC(1, Name, Node, 1, 1, [], 0, 0, _)),
+    ?assertCast(Name, node3, ?APPEND_ENTRIES_RPC(1, Name, Node, 1, 1, [], 0, 0, _)),
+    ?assertCast(Name, node4, ?APPEND_ENTRIES_RPC(1, Name, Node, 1, 1, [], 0, 0, _)),
+    ?assertCast(Name, node5, ?APPEND_ENTRIES_RPC(1, Name, Node, 1, 1, [], 0, 0, _)),
 
     % Stop server
     ok = server_stop().
@@ -2201,10 +2257,10 @@ heartbeat_three_members(Config) ->
     {leader, StateA0, ok} = server_call(?PROMOTE_COMMAND(1, true)),
     ?assertSetTimeout({state_timeout, _, heartbeat}),
     ?assertMatch(#{node2 := _, node3 := _}, StateA0#raft_state.next_indices),
-    ?assertCast(Name, node2, ?APPEND_ENTRIES_RPC(1, Name, Node, 0, 0, _, 0, 0)),
-    ?assertCast(Name, node3, ?APPEND_ENTRIES_RPC(1, Name, Node, 0, 0, _, 0, 0)),
-    ?assertNotCast(Name, node4, ?APPEND_ENTRIES_RPC(1, Name, Node, _, _, _, _, _)),
-    ?assertNotCast(Name, node5, ?APPEND_ENTRIES_RPC(1, Name, Node, _, _, _, _, _)),
+    ?assertCast(Name, node2, ?APPEND_ENTRIES_RPC(1, Name, Node, 0, 0, _, 0, 0, _)),
+    ?assertCast(Name, node3, ?APPEND_ENTRIES_RPC(1, Name, Node, 0, 0, _, 0, 0, _)),
+    ?assertNotCast(Name, node4, ?APPEND_ENTRIES_RPC(1, Name, Node, _, _, _, _, _, _)),
+    ?assertNotCast(Name, node5, ?APPEND_ENTRIES_RPC(1, Name, Node, _, _, _, _, _, _)),
 
     % Stop server
     ok = server_stop().
@@ -2226,10 +2282,10 @@ heartbeat_four_members(Config) ->
     {leader, StateB0, ok} = server_call(?PROMOTE_COMMAND(2, true)),
     ?assertSetTimeout({state_timeout, _, heartbeat}),
     ?assertMatch(#{node2 := _, node3 := _, node4 := _}, StateB0#raft_state.next_indices),
-    ?assertCast(Name, node2, ?APPEND_ENTRIES_RPC(2, Name, Node, 0, 0, _, 0, 0)),
-    ?assertCast(Name, node3, ?APPEND_ENTRIES_RPC(2, Name, Node, 0, 0, _, 0, 0)),
-    ?assertCast(Name, node4, ?APPEND_ENTRIES_RPC(2, Name, Node, 0, 0, _, 0, 0)),
-    ?assertNotCast(Name, node5, ?APPEND_ENTRIES_RPC(2, Name, Node, _, _, _, _, _)),
+    ?assertCast(Name, node2, ?APPEND_ENTRIES_RPC(2, Name, Node, 0, 0, _, 0, 0, _)),
+    ?assertCast(Name, node3, ?APPEND_ENTRIES_RPC(2, Name, Node, 0, 0, _, 0, 0, _)),
+    ?assertCast(Name, node4, ?APPEND_ENTRIES_RPC(2, Name, Node, 0, 0, _, 0, 0, _)),
+    ?assertNotCast(Name, node5, ?APPEND_ENTRIES_RPC(2, Name, Node, _, _, _, _, _, _)),
 
     % Stop server
     ok = server_stop().
@@ -2243,13 +2299,13 @@ replication_index(Config) ->
     % Setup server and promote to term 1
     {follower, _} = server_start_and_bootstrap(10, 1, Config),
     {leader, _, ok} = server_call(?PROMOTE_COMMAND(2, true)),
-    ?assertCast(Name, node2, ?APPEND_ENTRIES_RPC(2, Name, Node, 10, 1, [{2, _}], 10, _)),
+    ?assertCast(Name, node2, ?APPEND_ENTRIES_RPC(2, Name, Node, 10, 1, [{2, _}], 10, _, _)),
 
     % Add a log entry - pipelining
     clear_message_queue(),
     {leader, _} = server_cast(?COMMIT_COMMAND(?FROM(), {ref, noop}, high)),
     {leader, State0} = server_invoke(state_timeout, heartbeat),
-    ?assertCast(Name, node2, ?APPEND_ENTRIES_RPC(2, Name, Node, 11, 2, [{2, {ref, noop}}], 10, _)),
+    ?assertCast(Name, node2, ?APPEND_ENTRIES_RPC(2, Name, Node, 11, 2, [{2, {ref, noop}}], 10, _, _)),
     ?assertEqual(12, wa_raft_log:last_index(State0#raft_state.log_view)),
 
     % Follower reports an empty log - leader falls back to an empty heartbeat
@@ -2260,7 +2316,7 @@ replication_index(Config) ->
     ?assertEqual(#{}, State1#raft_state.match_indices),
     clear_message_queue(),
     {leader, _} = server_invoke(state_timeout, heartbeat),
-    ?assertCast(Name, node2, ?APPEND_ENTRIES_RPC(2, Name, Node, 12, 2, [], 10, _)),
+    ?assertCast(Name, node2, ?APPEND_ENTRIES_RPC(2, Name, Node, 12, 2, [], 10, _, _)),
 
     % Follower responds with lagging log - leader missing log
     %  * When the leader is missing a log entry to send, it sends a heartbeat
@@ -2271,7 +2327,7 @@ replication_index(Config) ->
     ?assertEqual(#{node2 => 9, node3 => 13, node4 => 13, node5 => 13}, State2#raft_state.next_indices),
     ?assertEqual(#{}, State2#raft_state.match_indices),
     {leader, _} = server_invoke(state_timeout, heartbeat),
-    ?assertCast(Name, node2, ?APPEND_ENTRIES_RPC(2, Name, Node, 12, 2, [], 10, _)),
+    ?assertCast(Name, node2, ?APPEND_ENTRIES_RPC(2, Name, Node, 12, 2, [], 10, _, _)),
 
     % Follower responds with advanced log (post-snapshot reset)
     %  * We need to allow the follower to notify the leader that it has applied a
@@ -2281,7 +2337,7 @@ replication_index(Config) ->
     ?assertEqual(#{node2 => 11, node3 => 13, node4 => 13, node5 => 13}, State3#raft_state.next_indices),
     ?assertEqual(#{}, State3#raft_state.match_indices),
     {leader, _} = server_invoke(state_timeout, heartbeat),
-    ?assertCast(Name, node2, ?APPEND_ENTRIES_RPC(2, Name, Node, 10, 1, [{2, _} | _], 10, _)),
+    ?assertCast(Name, node2, ?APPEND_ENTRIES_RPC(2, Name, Node, 10, 1, [{2, _} | _], 10, _, _)),
 
     % Follower replication is normal - pipelining
     clear_message_queue(),
@@ -2289,7 +2345,7 @@ replication_index(Config) ->
     ?assertEqual(#{node2 => 13, node3 => 13, node4 => 13, node5 => 13}, State4#raft_state.next_indices),
     ?assertEqual(#{node2 => 12}, State4#raft_state.match_indices),
     {leader, _} = server_invoke(state_timeout, heartbeat),
-    ?assertCast(Name, node2, ?APPEND_ENTRIES_RPC(2, Name, Node, 12, 2, [], 10, _)),
+    ?assertCast(Name, node2, ?APPEND_ENTRIES_RPC(2, Name, Node, 12, 2, [], 10, _, _)),
 
     % Follower out of order response - pipelining
     clear_message_queue(),
@@ -2297,7 +2353,7 @@ replication_index(Config) ->
     ?assertEqual(#{node2 => 13, node3 => 13, node4 => 13, node5 => 13}, State5#raft_state.next_indices),
     ?assertEqual(#{node2 => 11}, State5#raft_state.match_indices),
     {leader, _} = server_invoke(state_timeout, heartbeat),
-    ?assertCast(Name, node2, ?APPEND_ENTRIES_RPC(2, Name, Node, 12, 2, [], 10, _)),
+    ?assertCast(Name, node2, ?APPEND_ENTRIES_RPC(2, Name, Node, 12, 2, [], 10, _, _)),
 
     % Follower out of order response - missing log
     clear_message_queue(),
@@ -2305,7 +2361,7 @@ replication_index(Config) ->
     ?assertEqual(#{node2 => 12, node3 => 13, node4 => 13, node5 => 13}, State6#raft_state.next_indices),
     ?assertEqual(#{node2 => 11}, State6#raft_state.match_indices),
     {leader, _} = server_invoke(state_timeout, heartbeat),
-    ?assertCast(Name, node2, ?APPEND_ENTRIES_RPC(2, Name, Node, 11, 2, [{2, _} | _], 10, _)),
+    ?assertCast(Name, node2, ?APPEND_ENTRIES_RPC(2, Name, Node, 11, 2, [{2, _} | _], 10, _, _)),
 
     % Stop server
     ok = server_stop().
@@ -2324,7 +2380,7 @@ commit(Config) ->
     From0 = ?FROM(),
     clear_message_queue(),
     {leader, _} = server_cast(?COMMIT_COMMAND(From0, {ref0, noop}, high)),
-    ?assertNotCast(_, _, ?APPEND_ENTRIES_RPC(1, Name, Node, _, _, _, _, _)),
+    ?assertNotCast(_, _, ?APPEND_ENTRIES_RPC(1, Name, Node, _, _, _, _, _, _)),
 
     % A heartbeat timeout ends commit batching
     %  * Leader must persist batched log entries to log
@@ -2333,10 +2389,10 @@ commit(Config) ->
     ?assertEqual(#{2 => {From0, high}}, State0#raft_state.queued),
     ?assertEqual({ok, {1, {ref0, noop}}}, wa_raft_log:get(State0#raft_state.log_view, 2)),
     ?assertMatch(#{node2 := 3, node3 := 3, node4 := 3, node5 := 3}, State0#raft_state.next_indices),
-    ?assertCast(Name, node2, ?APPEND_ENTRIES_RPC(1, Name, Node, 1, 1, [{1, {ref0, noop}}], 0, 0)),
-    ?assertCast(Name, node3, ?APPEND_ENTRIES_RPC(1, Name, Node, 1, 1, [{1, {ref0, noop}}], 0, 0)),
-    ?assertCast(Name, node4, ?APPEND_ENTRIES_RPC(1, Name, Node, 1, 1, [{1, {ref0, noop}}], 0, 0)),
-    ?assertCast(Name, node5, ?APPEND_ENTRIES_RPC(1, Name, Node, 1, 1, [{1, {ref0, noop}}], 0, 0)),
+    ?assertCast(Name, node2, ?APPEND_ENTRIES_RPC(1, Name, Node, 1, 1, [{1, {ref0, noop}}], 0, 0, _)),
+    ?assertCast(Name, node3, ?APPEND_ENTRIES_RPC(1, Name, Node, 1, 1, [{1, {ref0, noop}}], 0, 0, _)),
+    ?assertCast(Name, node4, ?APPEND_ENTRIES_RPC(1, Name, Node, 1, 1, [{1, {ref0, noop}}], 0, 0, _)),
+    ?assertCast(Name, node5, ?APPEND_ENTRIES_RPC(1, Name, Node, 1, 1, [{1, {ref0, noop}}], 0, 0, _)),
 
     % Acknowledged log entries before quorum do not advance commit index
     clear_message_queue(),
@@ -2379,7 +2435,7 @@ commit_label(Config) ->
     {leader, _} = server_cast(?COMMIT_COMMAND(From0, {ref0, Command0}, high)),
     {leader, _} = server_cast(?COMMIT_COMMAND(From1, {ref1, Command1}, high)),
     {leader, _} = server_cast(?COMMIT_COMMAND(From2, {ref2, Command2}, high)),
-    ?assertNotCast(_, _, ?APPEND_ENTRIES_RPC(1, Name, Node, _, _, _, _, _)),
+    ?assertNotCast(_, _, ?APPEND_ENTRIES_RPC(1, Name, Node, _, _, _, _, _, _)),
 
     % A heartbeat timeout ends commit batching
     %  * Leader must persist batched log entries to log
@@ -2393,28 +2449,28 @@ commit_label(Config) ->
         Name,
         node2,
         ?APPEND_ENTRIES_RPC(
-            1, Name, Node, 1, 1, [{1, {ref0, 1, Command0}}, {1, {ref1, 2, Command1}}, {1, {ref2, 2, Command2}}], 0, 0
+            1, Name, Node, 1, 1, [{1, {ref0, 1, Command0}}, {1, {ref1, 2, Command1}}, {1, {ref2, 2, Command2}}], 0, 0, _
         )
     ),
     ?assertCast(
         Name,
         node3,
         ?APPEND_ENTRIES_RPC(
-            1, Name, Node, 1, 1, [{1, {ref0, 1, Command0}}, {1, {ref1, 2, Command1}}, {1, {ref2, 2, Command2}}], 0, 0
+            1, Name, Node, 1, 1, [{1, {ref0, 1, Command0}}, {1, {ref1, 2, Command1}}, {1, {ref2, 2, Command2}}], 0, 0, _
         )
     ),
     ?assertCast(
         Name,
         node4,
         ?APPEND_ENTRIES_RPC(
-            1, Name, Node, 1, 1, [{1, {ref0, 1, Command0}}, {1, {ref1, 2, Command1}}, {1, {ref2, 2, Command2}}], 0, 0
+            1, Name, Node, 1, 1, [{1, {ref0, 1, Command0}}, {1, {ref1, 2, Command1}}, {1, {ref2, 2, Command2}}], 0, 0, _
         )
     ),
     ?assertCast(
         Name,
         node5,
         ?APPEND_ENTRIES_RPC(
-            1, Name, Node, 1, 1, [{1, {ref0, 1, Command0}}, {1, {ref1, 2, Command1}}, {1, {ref2, 2, Command2}}], 0, 0
+            1, Name, Node, 1, 1, [{1, {ref0, 1, Command0}}, {1, {ref1, 2, Command1}}, {1, {ref2, 2, Command2}}], 0, 0, _
         )
     ),
 
@@ -2512,12 +2568,12 @@ snapshot_leader_witness(Config) ->
     % Setup server and promote to term 1
     {follower, _} = server_start_and_bootstrap(?SERVER_CLUSTER_CONFIG_WITH_WITNESS(Config), Config),
     {leader, _, ok} = server_call(?PROMOTE_COMMAND(1, true)),
-    ?assertCast(Name, node2, ?APPEND_ENTRIES_RPC(1, Name, Node, 0, 0, [{1, {_, noop}}], 0, 0)),
-    ?assertCast(Name, node3, ?APPEND_ENTRIES_RPC(1, Name, Node, 0, 0, [{1, {_, noop}}], 0, 0)),
+    ?assertCast(Name, node2, ?APPEND_ENTRIES_RPC(1, Name, Node, 0, 0, [{1, {_, noop}}], 0, 0, _)),
+    ?assertCast(Name, node3, ?APPEND_ENTRIES_RPC(1, Name, Node, 0, 0, [{1, {_, noop}}], 0, 0, _)),
     % No follower has acknowledged any entry yet (max follower match index 0),
     % so witnesses receive an empty heartbeat rather than the entry.
-    ?assertCast(Name, node4, ?APPEND_ENTRIES_RPC(1, Name, Node, 0, 0, [], 0, 0)),
-    ?assertCast(Name, node5, ?APPEND_ENTRIES_RPC(1, Name, Node, 0, 0, [], 0, 0)),
+    ?assertCast(Name, node4, ?APPEND_ENTRIES_RPC(1, Name, Node, 0, 0, [], 0, 0, _)),
+    ?assertCast(Name, node5, ?APPEND_ENTRIES_RPC(1, Name, Node, 0, 0, [], 0, 0, _)),
 
     {leader, _} = server_cast(?APPEND_ENTRIES_RESPONSE_RPC(1, Name, node2, 0, true, 1, 0)),
     {leader, State0} = server_cast(?APPEND_ENTRIES_RESPONSE_RPC(1, Name, node3, 0, true, 1, 0)),
@@ -2534,23 +2590,23 @@ snapshot_leader_witness(Config) ->
     {leader, State4} = server_invoke(state_timeout, heartbeat),
     ?assertEqual(1, State4#raft_state.commit_index),
 
-    ?assertCast(Name, node2, ?APPEND_ENTRIES_RPC(1, Name, Node, 1, 1, [{1, {refB1, noop}}], 1, _)),
-    ?assertCast(Name, node3, ?APPEND_ENTRIES_RPC(1, Name, Node, 1, 1, [{1, {refB1, noop}}], 1, _)),
+    ?assertCast(Name, node2, ?APPEND_ENTRIES_RPC(1, Name, Node, 1, 1, [{1, {refB1, noop}}], 1, _, _)),
+    ?assertCast(Name, node3, ?APPEND_ENTRIES_RPC(1, Name, Node, 1, 1, [{1, {refB1, noop}}], 1, _, _)),
     % The highest index any follower has acknowledged is 1, so the new entry at
     % index 2 is capped out and witnesses receive an empty heartbeat.
-    ?assertCast(Name, node4, ?APPEND_ENTRIES_RPC(1, Name, Node, 1, 1, [], 1, _)),
-    ?assertCast(Name, node5, ?APPEND_ENTRIES_RPC(1, Name, Node, 1, 1, [], 1, _)),
+    ?assertCast(Name, node4, ?APPEND_ENTRIES_RPC(1, Name, Node, 1, 1, [], 1, _, _)),
+    ?assertCast(Name, node5, ?APPEND_ENTRIES_RPC(1, Name, Node, 1, 1, [], 1, _, _)),
     {leader, State5} = server_cast(?APPEND_ENTRIES_RESPONSE_RPC(1, Name, node2, 1, true, 2, 1)),
     ?assertEqual(1, State5#raft_state.commit_index),
     {leader, State6} = server_invoke(state_timeout, heartbeat),
     ?assertEqual(1, State6#raft_state.commit_index),
-    ?assertCast(Name, node2, ?APPEND_ENTRIES_RPC(1, Name, Node, 2, 1, [], 1, _)),
-    ?assertCast(Name, node3, ?APPEND_ENTRIES_RPC(1, Name, Node, 2, 1, [], 1, _)),
+    ?assertCast(Name, node2, ?APPEND_ENTRIES_RPC(1, Name, Node, 2, 1, [], 1, _, _)),
+    ?assertCast(Name, node3, ?APPEND_ENTRIES_RPC(1, Name, Node, 2, 1, [], 1, _, _)),
     % node2 has now acknowledged index 2, raising the max follower match index
     % to 2, so the witnesses may finally hold that entry -- still one behind the
     % full replicas, whose next index already advanced past it.
-    ?assertCast(Name, node4, ?APPEND_ENTRIES_RPC(1, Name, Node, 1, 1, [{1, {refB1, noop}}], 1, _)),
-    ?assertCast(Name, node5, ?APPEND_ENTRIES_RPC(1, Name, Node, 1, 1, [{1, {refB1, noop}}], 1, _)),
+    ?assertCast(Name, node4, ?APPEND_ENTRIES_RPC(1, Name, Node, 1, 1, [{1, {refB1, noop}}], 1, _, _)),
+    ?assertCast(Name, node5, ?APPEND_ENTRIES_RPC(1, Name, Node, 1, 1, [{1, {refB1, noop}}], 1, _, _)),
 
     % Stop server
     ok = server_stop().
@@ -2575,8 +2631,8 @@ commit_two_witness(Config) ->
     {follower, _} = server_start_and_bootstrap(ConfigA, Config),
     {leader, StateA0, ok} = server_call(?PROMOTE_COMMAND(1, true)),
     ?assertEqual(0, StateA0#raft_state.commit_index),
-    ?assertCast(Name, node2, ?APPEND_ENTRIES_RPC(1, Name, Node, 0, 0, _, 0, _)),
-    ?assertCast(Name, node3, ?APPEND_ENTRIES_RPC(1, Name, Node, 0, 0, _, 0, _)),
+    ?assertCast(Name, node2, ?APPEND_ENTRIES_RPC(1, Name, Node, 0, 0, _, 0, _, _)),
+    ?assertCast(Name, node3, ?APPEND_ENTRIES_RPC(1, Name, Node, 0, 0, _, 0, _, _)),
     {leader, StateA1} = server_cast(?APPEND_ENTRIES_RESPONSE_RPC(1, Name, node2, 0, true, 1, 0)),
     ?assertEqual(1, StateA1#raft_state.commit_index),
     {leader, StateA2} = server_cast(?APPEND_ENTRIES_RESPONSE_RPC(1, Name, node3, 0, true, 1, 0)),
@@ -2591,8 +2647,8 @@ commit_two_witness(Config) ->
     {leader, _} = server_cast(?COMMIT_COMMAND(?FROM(), {refA1, noop}, high)),
     {leader, StateA5} = server_invoke(state_timeout, heartbeat),
     ?assertEqual(1, StateA5#raft_state.commit_index),
-    ?assertCast(Name, node2, ?APPEND_ENTRIES_RPC(1, Name, Node, 1, 1, [{1, {refA1, noop}}], 1, _)),
-    ?assertCast(Name, node3, ?APPEND_ENTRIES_RPC(1, Name, Node, 1, 1, [{1, {refA1, noop}}], 1, _)),
+    ?assertCast(Name, node2, ?APPEND_ENTRIES_RPC(1, Name, Node, 1, 1, [{1, {refA1, noop}}], 1, _, _)),
+    ?assertCast(Name, node3, ?APPEND_ENTRIES_RPC(1, Name, Node, 1, 1, [{1, {refA1, noop}}], 1, _, _)),
     {leader, StateA6} = server_cast(?APPEND_ENTRIES_RESPONSE_RPC(1, Name, node2, 1, true, 2, 1)),
     ?assertEqual(2, StateA6#raft_state.commit_index),
     {leader, StateA7} = server_cast(?APPEND_ENTRIES_RESPONSE_RPC(1, Name, node3, 1, true, 2, 1)),
@@ -2626,8 +2682,8 @@ commit_one_witness(Config) ->
     {follower, _} = server_start_and_bootstrap(ConfigB, Config),
     {leader, StateB0, ok} = server_call(?PROMOTE_COMMAND(2, true)),
     ?assertEqual(0, StateB0#raft_state.commit_index),
-    ?assertCast(Name, node2, ?APPEND_ENTRIES_RPC(2, Name, Node, 0, 0, _, 0, _)),
-    ?assertCast(Name, node3, ?APPEND_ENTRIES_RPC(2, Name, Node, 0, 0, _, 0, _)),
+    ?assertCast(Name, node2, ?APPEND_ENTRIES_RPC(2, Name, Node, 0, 0, _, 0, _, _)),
+    ?assertCast(Name, node3, ?APPEND_ENTRIES_RPC(2, Name, Node, 0, 0, _, 0, _, _)),
     {leader, StateB1} = server_cast(?APPEND_ENTRIES_RESPONSE_RPC(2, Name, node2, 0, true, 1, 0)),
     ?assertEqual(0, StateB1#raft_state.commit_index),
     {leader, StateB2} = server_cast(?APPEND_ENTRIES_RESPONSE_RPC(2, Name, node3, 0, true, 1, 0)),
@@ -2642,8 +2698,8 @@ commit_one_witness(Config) ->
     {leader, _} = server_cast(?COMMIT_COMMAND(?FROM(), {refB1, noop}, high)),
     {leader, StateB5} = server_invoke(state_timeout, heartbeat),
     ?assertEqual(1, StateB5#raft_state.commit_index),
-    ?assertCast(Name, node2, ?APPEND_ENTRIES_RPC(2, Name, Node, 1, 2, [{2, {refB1, noop}}], 1, _)),
-    ?assertCast(Name, node3, ?APPEND_ENTRIES_RPC(2, Name, Node, 1, 2, [{2, {refB1, noop}}], 1, _)),
+    ?assertCast(Name, node2, ?APPEND_ENTRIES_RPC(2, Name, Node, 1, 2, [{2, {refB1, noop}}], 1, _, _)),
+    ?assertCast(Name, node3, ?APPEND_ENTRIES_RPC(2, Name, Node, 1, 2, [{2, {refB1, noop}}], 1, _, _)),
     {leader, StateB6} = server_cast(?APPEND_ENTRIES_RESPONSE_RPC(2, Name, node2, 1, true, 2, 1)),
     ?assertEqual(1, StateB6#raft_state.commit_index),
     {leader, StateB7} = server_cast(?APPEND_ENTRIES_RESPONSE_RPC(2, Name, node3, 1, true, 2, 1)),
@@ -2672,8 +2728,8 @@ commit_three_members(Config) ->
     {follower, _} = server_start_and_bootstrap(ConfigA, Config),
     {leader, StateA0, ok} = server_call(?PROMOTE_COMMAND(1, true)),
     ?assertEqual(0, StateA0#raft_state.commit_index),
-    ?assertCast(Name, node2, ?APPEND_ENTRIES_RPC(1, Name, Node, 0, 0, _, 0, _)),
-    ?assertCast(Name, node3, ?APPEND_ENTRIES_RPC(1, Name, Node, 0, 0, _, 0, _)),
+    ?assertCast(Name, node2, ?APPEND_ENTRIES_RPC(1, Name, Node, 0, 0, _, 0, _, _)),
+    ?assertCast(Name, node3, ?APPEND_ENTRIES_RPC(1, Name, Node, 0, 0, _, 0, _, _)),
     {leader, StateA1} = server_cast(?APPEND_ENTRIES_RESPONSE_RPC(1, Name, node2, 0, true, 1, 0)),
     ?assertEqual(1, StateA1#raft_state.commit_index),
     {leader, StateA2} = server_cast(?APPEND_ENTRIES_RESPONSE_RPC(1, Name, node3, 0, true, 1, 0)),
@@ -2684,8 +2740,8 @@ commit_three_members(Config) ->
     {leader, _} = server_cast(?COMMIT_COMMAND(?FROM(), {refA1, noop}, high)),
     {leader, StateA3} = server_invoke(state_timeout, heartbeat),
     ?assertEqual(1, StateA3#raft_state.commit_index),
-    ?assertCast(Name, node2, ?APPEND_ENTRIES_RPC(1, Name, Node, 1, 1, [{1, {refA1, noop}}], 1, _)),
-    ?assertCast(Name, node3, ?APPEND_ENTRIES_RPC(1, Name, Node, 1, 1, [{1, {refA1, noop}}], 1, _)),
+    ?assertCast(Name, node2, ?APPEND_ENTRIES_RPC(1, Name, Node, 1, 1, [{1, {refA1, noop}}], 1, _, _)),
+    ?assertCast(Name, node3, ?APPEND_ENTRIES_RPC(1, Name, Node, 1, 1, [{1, {refA1, noop}}], 1, _, _)),
     {leader, StateA4} = server_cast(?APPEND_ENTRIES_RESPONSE_RPC(1, Name, node2, 1, true, 2, 1)),
     ?assertEqual(2, StateA4#raft_state.commit_index),
     {leader, StateA5} = server_cast(?APPEND_ENTRIES_RESPONSE_RPC(1, Name, node3, 1, true, 2, 1)),
@@ -2711,8 +2767,8 @@ commit_four_members(Config) ->
     {follower, _} = server_start_and_bootstrap(ConfigB, Config),
     {leader, StateB0, ok} = server_call(?PROMOTE_COMMAND(2, true)),
     ?assertEqual(0, StateB0#raft_state.commit_index),
-    ?assertCast(Name, node2, ?APPEND_ENTRIES_RPC(2, Name, Node, 0, 0, _, 0, _)),
-    ?assertCast(Name, node3, ?APPEND_ENTRIES_RPC(2, Name, Node, 0, 0, _, 0, _)),
+    ?assertCast(Name, node2, ?APPEND_ENTRIES_RPC(2, Name, Node, 0, 0, _, 0, _, _)),
+    ?assertCast(Name, node3, ?APPEND_ENTRIES_RPC(2, Name, Node, 0, 0, _, 0, _, _)),
     {leader, StateB1} = server_cast(?APPEND_ENTRIES_RESPONSE_RPC(2, Name, node2, 0, true, 1, 0)),
     ?assertEqual(0, StateB1#raft_state.commit_index),
     {leader, StateB2} = server_cast(?APPEND_ENTRIES_RESPONSE_RPC(2, Name, node3, 0, true, 1, 0)),
@@ -2723,8 +2779,8 @@ commit_four_members(Config) ->
     {leader, _} = server_cast(?COMMIT_COMMAND(?FROM(), {refB1, noop}, high)),
     {leader, StateB3} = server_invoke(state_timeout, heartbeat),
     ?assertEqual(1, StateB3#raft_state.commit_index),
-    ?assertCast(Name, node2, ?APPEND_ENTRIES_RPC(2, Name, Node, 1, 2, [{2, {refB1, noop}}], 1, _)),
-    ?assertCast(Name, node3, ?APPEND_ENTRIES_RPC(2, Name, Node, 1, 2, [{2, {refB1, noop}}], 1, _)),
+    ?assertCast(Name, node2, ?APPEND_ENTRIES_RPC(2, Name, Node, 1, 2, [{2, {refB1, noop}}], 1, _, _)),
+    ?assertCast(Name, node3, ?APPEND_ENTRIES_RPC(2, Name, Node, 1, 2, [{2, {refB1, noop}}], 1, _, _)),
     {leader, StateB4} = server_cast(?APPEND_ENTRIES_RESPONSE_RPC(2, Name, node2, 1, true, 2, 1)),
     ?assertEqual(1, StateB4#raft_state.commit_index),
     {leader, StateB5} = server_cast(?APPEND_ENTRIES_RESPONSE_RPC(2, Name, node3, 1, true, 2, 1)),
@@ -2774,10 +2830,10 @@ commit_candidate(Config) ->
     ?assertEqual({ok, {2, {ref1, noop}}}, wa_raft_log:get(State2#raft_state.log_view, 3)),
 
     % Leader entry heartbeat should have replicated the entries
-    ?assertCast(Name, node2, ?APPEND_ENTRIES_RPC(2, Name, Node, 1, 1, [{2, {ref0, noop}}, {2, {ref1, noop}}], 0, 0)),
-    ?assertCast(Name, node3, ?APPEND_ENTRIES_RPC(2, Name, Node, 1, 1, [{2, {ref0, noop}}, {2, {ref1, noop}}], 0, 0)),
-    ?assertCast(Name, node4, ?APPEND_ENTRIES_RPC(2, Name, Node, 1, 1, [{2, {ref0, noop}}, {2, {ref1, noop}}], 0, 0)),
-    ?assertCast(Name, node5, ?APPEND_ENTRIES_RPC(2, Name, Node, 1, 1, [{2, {ref0, noop}}, {2, {ref1, noop}}], 0, 0)),
+    ?assertCast(Name, node2, ?APPEND_ENTRIES_RPC(2, Name, Node, 1, 1, [{2, {ref0, noop}}, {2, {ref1, noop}}], 0, 0, _)),
+    ?assertCast(Name, node3, ?APPEND_ENTRIES_RPC(2, Name, Node, 1, 1, [{2, {ref0, noop}}, {2, {ref1, noop}}], 0, 0, _)),
+    ?assertCast(Name, node4, ?APPEND_ENTRIES_RPC(2, Name, Node, 1, 1, [{2, {ref0, noop}}, {2, {ref1, noop}}], 0, 0, _)),
+    ?assertCast(Name, node5, ?APPEND_ENTRIES_RPC(2, Name, Node, 1, 1, [{2, {ref0, noop}}, {2, {ref1, noop}}], 0, 0, _)),
 
     % Get quorum acks — commits should be applied
     clear_message_queue(),
@@ -2833,10 +2889,10 @@ read(Config) ->
     {follower, _} = server_start_and_bootstrap(Config),
     Queues = ?SERVER_QUEUES(Config),
     {leader, _, ok} = server_call(?PROMOTE_COMMAND(1, true)),
-    ?assertCast(Name, node2, ?APPEND_ENTRIES_RPC(1, Name, Node, 0, 0, [{1, {_, noop}}], 0, 0)),
-    ?assertCast(Name, node3, ?APPEND_ENTRIES_RPC(1, Name, Node, 0, 0, [{1, {_, noop}}], 0, 0)),
-    ?assertCast(Name, node4, ?APPEND_ENTRIES_RPC(1, Name, Node, 0, 0, [{1, {_, noop}}], 0, 0)),
-    ?assertCast(Name, node5, ?APPEND_ENTRIES_RPC(1, Name, Node, 0, 0, [{1, {_, noop}}], 0, 0)),
+    ?assertCast(Name, node2, ?APPEND_ENTRIES_RPC(1, Name, Node, 0, 0, [{1, {_, noop}}], 0, 0, _)),
+    ?assertCast(Name, node3, ?APPEND_ENTRIES_RPC(1, Name, Node, 0, 0, [{1, {_, noop}}], 0, 0, _)),
+    ?assertCast(Name, node4, ?APPEND_ENTRIES_RPC(1, Name, Node, 0, 0, [{1, {_, noop}}], 0, 0, _)),
+    ?assertCast(Name, node5, ?APPEND_ENTRIES_RPC(1, Name, Node, 0, 0, [{1, {_, noop}}], 0, 0, _)),
 
     % Get acks from followers
     {leader, _} = server_cast(?APPEND_ENTRIES_RESPONSE_RPC(1, Name, node2, 0, true, 1, 0)),
@@ -2858,10 +2914,10 @@ read(Config) ->
     ?assertEqual(1, State1#raft_state.pending_reads),
 
     {leader, _} = server_invoke(state_timeout, heartbeat),
-    ?assertCast(Name, node2, ?APPEND_ENTRIES_RPC(1, Name, Node, 1, 1, [{1, {?READ_OP, noop}}], 1, 0)),
-    ?assertCast(Name, node3, ?APPEND_ENTRIES_RPC(1, Name, Node, 1, 1, [{1, {?READ_OP, noop}}], 1, 0)),
-    ?assertCast(Name, node4, ?APPEND_ENTRIES_RPC(1, Name, Node, 1, 1, [{1, {?READ_OP, noop}}], 1, 0)),
-    ?assertCast(Name, node5, ?APPEND_ENTRIES_RPC(1, Name, Node, 1, 1, [{1, {?READ_OP, noop}}], 1, 0)),
+    ?assertCast(Name, node2, ?APPEND_ENTRIES_RPC(1, Name, Node, 1, 1, [{1, {?READ_OP, noop}}], 1, 0, _)),
+    ?assertCast(Name, node3, ?APPEND_ENTRIES_RPC(1, Name, Node, 1, 1, [{1, {?READ_OP, noop}}], 1, 0, _)),
+    ?assertCast(Name, node4, ?APPEND_ENTRIES_RPC(1, Name, Node, 1, 1, [{1, {?READ_OP, noop}}], 1, 0, _)),
+    ?assertCast(Name, node5, ?APPEND_ENTRIES_RPC(1, Name, Node, 1, 1, [{1, {?READ_OP, noop}}], 1, 0, _)),
 
     ok = application:set_env(?RAFT_APPLICATION, ?RAFT_MAX_PENDING_APPLIES, 0),
     try
@@ -2898,10 +2954,10 @@ read_after(Config) ->
     {follower, _} = server_start_and_bootstrap(Config),
     Queues = ?SERVER_QUEUES(Config),
     {leader, _, ok} = server_call(?PROMOTE_COMMAND(1, true)),
-    ?assertCast(Name, node2, ?APPEND_ENTRIES_RPC(1, Name, Node, 0, 0, [{1, {_, noop}}], 0, 0)),
-    ?assertCast(Name, node3, ?APPEND_ENTRIES_RPC(1, Name, Node, 0, 0, [{1, {_, noop}}], 0, 0)),
-    ?assertCast(Name, node4, ?APPEND_ENTRIES_RPC(1, Name, Node, 0, 0, [{1, {_, noop}}], 0, 0)),
-    ?assertCast(Name, node5, ?APPEND_ENTRIES_RPC(1, Name, Node, 0, 0, [{1, {_, noop}}], 0, 0)),
+    ?assertCast(Name, node2, ?APPEND_ENTRIES_RPC(1, Name, Node, 0, 0, [{1, {_, noop}}], 0, 0, _)),
+    ?assertCast(Name, node3, ?APPEND_ENTRIES_RPC(1, Name, Node, 0, 0, [{1, {_, noop}}], 0, 0, _)),
+    ?assertCast(Name, node4, ?APPEND_ENTRIES_RPC(1, Name, Node, 0, 0, [{1, {_, noop}}], 0, 0, _)),
+    ?assertCast(Name, node5, ?APPEND_ENTRIES_RPC(1, Name, Node, 0, 0, [{1, {_, noop}}], 0, 0, _)),
 
     % Reach commit_index = 1 so the base floor is max(1, FirstLogIndex) = 1
     {leader, _} = server_cast(?APPEND_ENTRIES_RESPONSE_RPC(1, Name, node2, 0, true, 1, 0)),
@@ -2940,10 +2996,10 @@ read_candidate(Config) ->
     {follower, _} = server_start_and_bootstrap(Config),
     Queues = ?SERVER_QUEUES(Config),
     {leader, _, ok} = server_call(?PROMOTE_COMMAND(1, true)),
-    ?assertCast(Name, node2, ?APPEND_ENTRIES_RPC(1, Name, Node, 0, 0, [{1, {_, noop}}], 0, 0)),
-    ?assertCast(Name, node3, ?APPEND_ENTRIES_RPC(1, Name, Node, 0, 0, [{1, {_, noop}}], 0, 0)),
-    ?assertCast(Name, node4, ?APPEND_ENTRIES_RPC(1, Name, Node, 0, 0, [{1, {_, noop}}], 0, 0)),
-    ?assertCast(Name, node5, ?APPEND_ENTRIES_RPC(1, Name, Node, 0, 0, [{1, {_, noop}}], 0, 0)),
+    ?assertCast(Name, node2, ?APPEND_ENTRIES_RPC(1, Name, Node, 0, 0, [{1, {_, noop}}], 0, 0, _)),
+    ?assertCast(Name, node3, ?APPEND_ENTRIES_RPC(1, Name, Node, 0, 0, [{1, {_, noop}}], 0, 0, _)),
+    ?assertCast(Name, node4, ?APPEND_ENTRIES_RPC(1, Name, Node, 0, 0, [{1, {_, noop}}], 0, 0, _)),
+    ?assertCast(Name, node5, ?APPEND_ENTRIES_RPC(1, Name, Node, 0, 0, [{1, {_, noop}}], 0, 0, _)),
 
     % Get acks from followers to establish quorum in term 1
     {leader, _} = server_cast(?APPEND_ENTRIES_RESPONSE_RPC(1, Name, node2, 0, true, 1, 0)),
@@ -2998,10 +3054,10 @@ read_after_candidate(Config) ->
     {follower, _} = server_start_and_bootstrap(Config),
     Queues = ?SERVER_QUEUES(Config),
     {leader, _, ok} = server_call(?PROMOTE_COMMAND(1, true)),
-    ?assertCast(Name, node2, ?APPEND_ENTRIES_RPC(1, Name, Node, 0, 0, [{1, {_, noop}}], 0, 0)),
-    ?assertCast(Name, node3, ?APPEND_ENTRIES_RPC(1, Name, Node, 0, 0, [{1, {_, noop}}], 0, 0)),
-    ?assertCast(Name, node4, ?APPEND_ENTRIES_RPC(1, Name, Node, 0, 0, [{1, {_, noop}}], 0, 0)),
-    ?assertCast(Name, node5, ?APPEND_ENTRIES_RPC(1, Name, Node, 0, 0, [{1, {_, noop}}], 0, 0)),
+    ?assertCast(Name, node2, ?APPEND_ENTRIES_RPC(1, Name, Node, 0, 0, [{1, {_, noop}}], 0, 0, _)),
+    ?assertCast(Name, node3, ?APPEND_ENTRIES_RPC(1, Name, Node, 0, 0, [{1, {_, noop}}], 0, 0, _)),
+    ?assertCast(Name, node4, ?APPEND_ENTRIES_RPC(1, Name, Node, 0, 0, [{1, {_, noop}}], 0, 0, _)),
+    ?assertCast(Name, node5, ?APPEND_ENTRIES_RPC(1, Name, Node, 0, 0, [{1, {_, noop}}], 0, 0, _)),
 
     {leader, _} = server_cast(?APPEND_ENTRIES_RESPONSE_RPC(1, Name, node2, 0, true, 1, 0)),
     {leader, State0} = server_cast(?APPEND_ENTRIES_RESPONSE_RPC(1, Name, node3, 0, true, 1, 0)),
@@ -3043,10 +3099,10 @@ setup_leader_with_quorum(Config) ->
 
     {follower, _} = server_start_and_bootstrap(Config),
     {leader, _, ok} = server_call(?PROMOTE_COMMAND(1, true)),
-    ?assertCast(Name, node2, ?APPEND_ENTRIES_RPC(1, Name, Node, 0, 0, [{1, {_, noop}}], 0, 0)),
-    ?assertCast(Name, node3, ?APPEND_ENTRIES_RPC(1, Name, Node, 0, 0, [{1, {_, noop}}], 0, 0)),
-    ?assertCast(Name, node4, ?APPEND_ENTRIES_RPC(1, Name, Node, 0, 0, [{1, {_, noop}}], 0, 0)),
-    ?assertCast(Name, node5, ?APPEND_ENTRIES_RPC(1, Name, Node, 0, 0, [{1, {_, noop}}], 0, 0)),
+    ?assertCast(Name, node2, ?APPEND_ENTRIES_RPC(1, Name, Node, 0, 0, [{1, {_, noop}}], 0, 0, _)),
+    ?assertCast(Name, node3, ?APPEND_ENTRIES_RPC(1, Name, Node, 0, 0, [{1, {_, noop}}], 0, 0, _)),
+    ?assertCast(Name, node4, ?APPEND_ENTRIES_RPC(1, Name, Node, 0, 0, [{1, {_, noop}}], 0, 0, _)),
+    ?assertCast(Name, node5, ?APPEND_ENTRIES_RPC(1, Name, Node, 0, 0, [{1, {_, noop}}], 0, 0, _)),
 
     {leader, _} = server_cast(?APPEND_ENTRIES_RESPONSE_RPC(1, Name, node2, 0, true, 1, 0)),
     {leader, State} = server_cast(?APPEND_ENTRIES_RESPONSE_RPC(1, Name, node3, 0, true, 1, 0)),
@@ -3097,7 +3153,7 @@ read_lease_hit(Config) ->
 
         %% Sanity: no APPEND_ENTRIES was cast for the read (nothing new to
         %% replicate — the read never touched the log).
-        ?assertNotCast(Name, _, ?APPEND_ENTRIES_RPC(Term, Name, _, _, _, [_ | _], _, _)),
+        ?assertNotCast(Name, _, ?APPEND_ENTRIES_RPC(Term, Name, _, _, _, [_ | _], _, _, _)),
 
         ok = server_stop()
     after
@@ -3339,7 +3395,7 @@ truncate(Config) ->
     {follower, State0} = server_cast(
         ?APPEND_ENTRIES_RPC(2, Name, node2, 100, 2, [{2, {101, noop}}, {2, {102, noop}}, {2, {103, noop}}], 101, 0)
     ),
-    ?assertCast(Name, node2, ?APPEND_ENTRIES_RESPONSE_RPC(2, Name, Node, 100, true, 103, 100)),
+    ?assertCast(Name, node2, ?APPEND_ENTRIES_RESPONSE_RPC(2, Name, Node, 100, true, 103, 100, _)),
     % current last log entry is 103
     ?assertEqual(103, wa_raft_log:last_index(State0#raft_state.log_view)),
     % last applied is 101
@@ -3351,7 +3407,7 @@ truncate(Config) ->
     {follower, State1} = server_cast(
         ?APPEND_ENTRIES_RPC(3, Name, node3, 101, 2, [{3, {102, noop}}, {3, {103, noop}}, {3, {104, noop}}], 101, 0)
     ),
-    ?assertCast(Name, node3, ?APPEND_ENTRIES_RESPONSE_RPC(3, Name, Node, 101, true, 104, 101)),
+    ?assertCast(Name, node3, ?APPEND_ENTRIES_RESPONSE_RPC(3, Name, Node, 101, true, 104, 101, _)),
     ?assertEqual(104, wa_raft_log:last_index(State1#raft_state.log_view)),
     % entry 101 is kept
     ?assertEqual({ok, {2, {101, noop}}}, wa_raft_log:get(State1#raft_state.log_view, 101)),
@@ -3368,7 +3424,7 @@ truncate(Config) ->
     {follower, State2} = server_cast(
         ?APPEND_ENTRIES_RPC(4, Name, node2, 102, 4, [{4, {103, noop}}, {4, {104, noop}}], 101, 0)
     ),
-    ?assertCast(Name, node2, ?APPEND_ENTRIES_RESPONSE_RPC(4, Name, Node, 102, false, 101, 101)),
+    ?assertCast(Name, node2, ?APPEND_ENTRIES_RESPONSE_RPC(4, Name, Node, 102, false, 101, 101, _)),
     % new entries are not appended
     ?assertEqual(101, wa_raft_log:last_index(State2#raft_state.log_view)),
     % entry 101 is unchanged
@@ -3767,7 +3823,7 @@ handover(Config) ->
     clear_message_queue(),
     {leader, State4} = server_invoke(state_timeout, heartbeat),
     ?assertEqual(Handover3, State4#raft_state.handover),
-    ?assertNotCast(_, _, ?APPEND_ENTRIES_RPC(_, Name, Node, _, _, _, _, _)),
+    ?assertNotCast(_, _, ?APPEND_ENTRIES_RPC(_, Name, Node, _, _, _, _, _, _)),
 
     % Handover times out after some time when the peer node does not become leader and replication resumes.
     clear_message_queue(),
@@ -3777,7 +3833,7 @@ handover(Config) ->
     {leader, State5} = server_invoke(state_timeout, heartbeat),
     ?assertEqual(Term, State5#raft_state.current_term),
     ?assertEqual(undefined, State5#raft_state.handover),
-    ?assertCast(Name, _, ?APPEND_ENTRIES_RPC(_, Name, Node, _, _, _, _, _)),
+    ?assertCast(Name, _, ?APPEND_ENTRIES_RPC(_, Name, Node, _, _, _, _, _, _)),
 
     % Attempt to handover but it is cancelled by a HandoverFailed
     %  * Only if we get a HandoverFailed RPC from the correct node with the
@@ -3813,7 +3869,7 @@ handover(Config) ->
     {leader, State13} = server_invoke(state_timeout, heartbeat),
     ?assertEqual([], State13#raft_state.pending_high),
     ?assertEqual(1, wa_raft_log:last_index(State13#raft_state.log_view)),
-    ?assertNotCast(_, _, ?APPEND_ENTRIES_RPC(_, Name, Node, _, _, _, _, _)),
+    ?assertNotCast(_, _, ?APPEND_ENTRIES_RPC(_, Name, Node, _, _, _, _, _, _)),
 
     % If the handover fails, no pending commits/reads to handle (already rejected).
     {leader, State14} = server_cast(?HANDOVER_FAILED_RPC(Term, Name, node2, Ref10)),
@@ -3836,7 +3892,7 @@ handover(Config) ->
     {follower, State16} = server_cast(?REQUEST_VOTE_RPC(NextTerm, Name, node2, force, 2, Term)),
     ?assertEqual(NextTerm, State16#raft_state.current_term),
     ?assertEqual(undefined, State16#raft_state.handover),
-    ?assertCast(Name, node2, ?VOTE_RPC(NextTerm, Name, Node, true)),
+    ?assertCast(Name, node2, ?VOTE_RPC(NextTerm, Name, Node, true, _)),
 
     % Stop server
     ok = server_stop().
@@ -3918,10 +3974,10 @@ handover_follower(Config) ->
     Ref1 = make_ref(),
     {candidate, State1} = server_cast(?HANDOVER_RPC(2, Name, node2, Ref1, 2, 2, [{2, {ref, noop}}])),
     ?assertEqual(3, wa_raft_log:last_index(State1#raft_state.log_view)),
-    ?assertCast(Name, node2, ?REQUEST_VOTE_RPC(3, Name, Node, force, _, _)),
-    ?assertCast(Name, node3, ?REQUEST_VOTE_RPC(3, Name, Node, force, _, _)),
-    ?assertCast(Name, node4, ?REQUEST_VOTE_RPC(3, Name, Node, force, _, _)),
-    ?assertCast(Name, node5, ?REQUEST_VOTE_RPC(3, Name, Node, force, _, _)),
+    ?assertCast(Name, node2, ?REQUEST_VOTE_RPC(3, Name, Node, force, _, _, _)),
+    ?assertCast(Name, node3, ?REQUEST_VOTE_RPC(3, Name, Node, force, _, _, _)),
+    ?assertCast(Name, node4, ?REQUEST_VOTE_RPC(3, Name, Node, force, _, _, _)),
+    ?assertCast(Name, node5, ?REQUEST_VOTE_RPC(3, Name, Node, force, _, _, _)),
 
     % Stop server
     ok = server_stop().
@@ -3983,11 +4039,11 @@ add_member(Config) ->
     % Leader should now replicate to an additional node
     clear_message_queue(),
     {leader, _} = server_invoke(state_timeout, heartbeat),
-    ?assertCast(Name, node2, ?APPEND_ENTRIES_RPC(1, Name, Node, _, _, _, _, _)),
-    ?assertCast(Name, node3, ?APPEND_ENTRIES_RPC(1, Name, Node, _, _, _, _, _)),
-    ?assertCast(Name, node4, ?APPEND_ENTRIES_RPC(1, Name, Node, _, _, _, _, _)),
-    ?assertCast(Name, node5, ?APPEND_ENTRIES_RPC(1, Name, Node, _, _, _, _, _)),
-    ?assertCast(Name, node6, ?APPEND_ENTRIES_RPC(1, Name, Node, _, _, _, _, _)),
+    ?assertCast(Name, node2, ?APPEND_ENTRIES_RPC(1, Name, Node, _, _, _, _, _, _)),
+    ?assertCast(Name, node3, ?APPEND_ENTRIES_RPC(1, Name, Node, _, _, _, _, _, _)),
+    ?assertCast(Name, node4, ?APPEND_ENTRIES_RPC(1, Name, Node, _, _, _, _, _, _)),
+    ?assertCast(Name, node5, ?APPEND_ENTRIES_RPC(1, Name, Node, _, _, _, _, _, _)),
+    ?assertCast(Name, node6, ?APPEND_ENTRIES_RPC(1, Name, Node, _, _, _, _, _, _)),
 
     % Let leader form a quorum committing the config (with 6 nodes now)
     {leader, State3} = server_cast(?APPEND_ENTRIES_RESPONSE_RPC(1, Name, node6, 1, true, 2, 1)),
@@ -4048,12 +4104,12 @@ add_member_follower(Config) ->
     {candidate, _} = server_cast(?VOTE_RPC(2, Name, node5, true)),
     clear_message_queue(),
     {leader, _} = server_cast(?VOTE_RPC(2, Name, node4, true)),
-    ?assertCast(Name, node2, ?APPEND_ENTRIES_RPC(2, Name, Node, _, _, _, _, _)),
-    ?assertCast(Name, node3, ?APPEND_ENTRIES_RPC(2, Name, Node, _, _, _, _, _)),
-    ?assertCast(Name, node4, ?APPEND_ENTRIES_RPC(2, Name, Node, _, _, _, _, _)),
-    ?assertCast(Name, node5, ?APPEND_ENTRIES_RPC(2, Name, Node, _, _, _, _, _)),
-    ?assertCast(Name, node6, ?APPEND_ENTRIES_RPC(2, Name, Node, _, _, _, _, _)),
-    ?assertCast(Name, node7, ?APPEND_ENTRIES_RPC(2, Name, Node, _, _, _, _, _)),
+    ?assertCast(Name, node2, ?APPEND_ENTRIES_RPC(2, Name, Node, _, _, _, _, _, _)),
+    ?assertCast(Name, node3, ?APPEND_ENTRIES_RPC(2, Name, Node, _, _, _, _, _, _)),
+    ?assertCast(Name, node4, ?APPEND_ENTRIES_RPC(2, Name, Node, _, _, _, _, _, _)),
+    ?assertCast(Name, node5, ?APPEND_ENTRIES_RPC(2, Name, Node, _, _, _, _, _, _)),
+    ?assertCast(Name, node6, ?APPEND_ENTRIES_RPC(2, Name, Node, _, _, _, _, _, _)),
+    ?assertCast(Name, node7, ?APPEND_ENTRIES_RPC(2, Name, Node, _, _, _, _, _, _)),
 
     % Uncommitted config is removed by subsequent leader
     {follower, State1} = server_cast(?APPEND_ENTRIES_RPC(3, Name, node3, 3, 3, [], 3, 0)),
@@ -4062,12 +4118,12 @@ add_member_follower(Config) ->
     % Follower times out and starts a new election (now with only 6 nodes because config was rolled back)
     clear_message_queue(),
     {candidate, _} = server_invoke(state_timeout, election),
-    ?assertCast(Name, node2, ?REQUEST_VOTE_RPC(4, Name, Node, normal, _, _)),
-    ?assertCast(Name, node3, ?REQUEST_VOTE_RPC(4, Name, Node, normal, _, _)),
-    ?assertCast(Name, node4, ?REQUEST_VOTE_RPC(4, Name, Node, normal, _, _)),
-    ?assertCast(Name, node5, ?REQUEST_VOTE_RPC(4, Name, Node, normal, _, _)),
-    ?assertCast(Name, node6, ?REQUEST_VOTE_RPC(4, Name, Node, normal, _, _)),
-    ?assertNotCast(Name, node7, ?REQUEST_VOTE_RPC(4, Name, Node, _, _, _)),
+    ?assertCast(Name, node2, ?REQUEST_VOTE_RPC(4, Name, Node, normal, _, _, _)),
+    ?assertCast(Name, node3, ?REQUEST_VOTE_RPC(4, Name, Node, normal, _, _, _)),
+    ?assertCast(Name, node4, ?REQUEST_VOTE_RPC(4, Name, Node, normal, _, _, _)),
+    ?assertCast(Name, node5, ?REQUEST_VOTE_RPC(4, Name, Node, normal, _, _, _)),
+    ?assertCast(Name, node6, ?REQUEST_VOTE_RPC(4, Name, Node, normal, _, _, _)),
+    ?assertNotCast(Name, node7, ?REQUEST_VOTE_RPC(4, Name, Node, _, _, _, _)),
     {candidate, _} = server_cast(?VOTE_RPC(4, Name, Node, true)),
     {candidate, _} = server_cast(?VOTE_RPC(4, Name, node6, true)),
     {candidate, _} = server_cast(?VOTE_RPC(4, Name, node5, true)),
@@ -4121,10 +4177,10 @@ remove_member(Config) ->
     % Leader should now replicate to an additional node
     clear_message_queue(),
     {leader, _} = server_invoke(state_timeout, heartbeat),
-    ?assertCast(Name, node2, ?APPEND_ENTRIES_RPC(1, Name, Node, _, _, _, _, _)),
-    ?assertCast(Name, node3, ?APPEND_ENTRIES_RPC(1, Name, Node, _, _, _, _, _)),
-    ?assertCast(Name, node4, ?APPEND_ENTRIES_RPC(1, Name, Node, _, _, _, _, _)),
-    ?assertNotCast(Name, node5, ?APPEND_ENTRIES_RPC(1, Name, Node, _, _, _, _, _)),
+    ?assertCast(Name, node2, ?APPEND_ENTRIES_RPC(1, Name, Node, _, _, _, _, _, _)),
+    ?assertCast(Name, node3, ?APPEND_ENTRIES_RPC(1, Name, Node, _, _, _, _, _, _)),
+    ?assertCast(Name, node4, ?APPEND_ENTRIES_RPC(1, Name, Node, _, _, _, _, _, _)),
+    ?assertNotCast(Name, node5, ?APPEND_ENTRIES_RPC(1, Name, Node, _, _, _, _, _, _)),
 
     % Let leader form a quorum committing the config (with 4 nodes now)
     {leader, State3} = server_cast(?APPEND_ENTRIES_RESPONSE_RPC(1, Name, node2, 1, true, 2, 1)),
@@ -4178,10 +4234,10 @@ remove_member_follower(Config) ->
     {candidate, _} = server_cast(?VOTE_RPC(2, Name, Node, true)),
     clear_message_queue(),
     {leader, _} = server_cast(?VOTE_RPC(2, Name, node2, true)),
-    ?assertCast(Name, node2, ?APPEND_ENTRIES_RPC(2, Name, Node, _, _, _, _, _)),
-    ?assertCast(Name, node3, ?APPEND_ENTRIES_RPC(2, Name, Node, _, _, _, _, _)),
-    ?assertNotCast(Name, node4, ?APPEND_ENTRIES_RPC(2, Name, Node, _, _, _, _, _)),
-    ?assertNotCast(Name, node5, ?APPEND_ENTRIES_RPC(2, Name, Node, _, _, _, _, _)),
+    ?assertCast(Name, node2, ?APPEND_ENTRIES_RPC(2, Name, Node, _, _, _, _, _, _)),
+    ?assertCast(Name, node3, ?APPEND_ENTRIES_RPC(2, Name, Node, _, _, _, _, _, _)),
+    ?assertNotCast(Name, node4, ?APPEND_ENTRIES_RPC(2, Name, Node, _, _, _, _, _, _)),
+    ?assertNotCast(Name, node5, ?APPEND_ENTRIES_RPC(2, Name, Node, _, _, _, _, _, _)),
 
     % Uncommitted config is removed by subsequent leader
     {follower, State1} = server_cast(?APPEND_ENTRIES_RPC(3, Name, node3, 3, 3, [], 3, 0)),
@@ -4190,10 +4246,10 @@ remove_member_follower(Config) ->
     % Follower times out and starts a new election (now with 4 nodes because config was rolled back)
     clear_message_queue(),
     {candidate, _} = server_invoke(state_timeout, election),
-    ?assertCast(Name, node2, ?REQUEST_VOTE_RPC(4, Name, Node, normal, _, _)),
-    ?assertCast(Name, node3, ?REQUEST_VOTE_RPC(4, Name, Node, normal, _, _)),
-    ?assertCast(Name, node4, ?REQUEST_VOTE_RPC(4, Name, Node, normal, _, _)),
-    ?assertNotCast(Name, node5, ?REQUEST_VOTE_RPC(4, Name, Node, _, _, _)),
+    ?assertCast(Name, node2, ?REQUEST_VOTE_RPC(4, Name, Node, normal, _, _, _)),
+    ?assertCast(Name, node3, ?REQUEST_VOTE_RPC(4, Name, Node, normal, _, _, _)),
+    ?assertCast(Name, node4, ?REQUEST_VOTE_RPC(4, Name, Node, normal, _, _, _)),
+    ?assertNotCast(Name, node5, ?REQUEST_VOTE_RPC(4, Name, Node, _, _, _, _)),
     {candidate, _} = server_cast(?VOTE_RPC(4, Name, Node, true)),
     {candidate, _} = server_cast(?VOTE_RPC(4, Name, node2, true)),
     {leader, _} = server_cast(?VOTE_RPC(4, Name, node3, true)),
@@ -4217,15 +4273,15 @@ commit_batch(Config) ->
     % Assert that one commit does not immediately trigger replication
     clear_message_queue(),
     {leader, _} = server_cast(?COMMIT_COMMAND(?FROM(), {2, noop}, high)),
-    ?assertNotCast(_, _, ?APPEND_ENTRIES_RPC(1, Name, Node, _, _, _, _, _)),
+    ?assertNotCast(_, _, ?APPEND_ENTRIES_RPC(1, Name, Node, _, _, _, _, _, _)),
 
     % More commits then trigger replication because the max batch limit is 2.
     {leader, _} = server_cast(?COMMIT_COMMAND(?FROM(), {3, noop}, high)),
     {leader, _} = server_cast(?COMMIT_COMMAND(?FROM(), {4, noop}, high)),
-    ?assertCast(Name, node2, ?APPEND_ENTRIES_RPC(1, Name, Node, 1, 1, _, _, _)),
-    ?assertCast(Name, node3, ?APPEND_ENTRIES_RPC(1, Name, Node, 1, 1, _, _, _)),
-    ?assertCast(Name, node4, ?APPEND_ENTRIES_RPC(1, Name, Node, 1, 1, _, _, _)),
-    ?assertCast(Name, node5, ?APPEND_ENTRIES_RPC(1, Name, Node, 1, 1, _, _, _)),
+    ?assertCast(Name, node2, ?APPEND_ENTRIES_RPC(1, Name, Node, 1, 1, _, _, _, _)),
+    ?assertCast(Name, node3, ?APPEND_ENTRIES_RPC(1, Name, Node, 1, 1, _, _, _, _)),
+    ?assertCast(Name, node4, ?APPEND_ENTRIES_RPC(1, Name, Node, 1, 1, _, _, _, _)),
+    ?assertCast(Name, node5, ?APPEND_ENTRIES_RPC(1, Name, Node, 1, 1, _, _, _, _)),
 
     % Stop server
     ok = server_stop().
@@ -4247,7 +4303,7 @@ read_batch(Config) ->
     {leader, State1} = server_cast(?READ_COMMAND(?FROM(Ref1), noop, undefined)),
     ?assertEqual(2, State1#raft_state.pending_reads),
     ?assertEqual(2, proplists:get_value(pending_reads, wa_raft_server:status(Name))),
-    ?assertNotCast(_, _, ?APPEND_ENTRIES_RPC(Term, Name, _, _, _, _, _, _)),
+    ?assertNotCast(_, _, ?APPEND_ENTRIES_RPC(Term, Name, _, _, _, _, _, _, _)),
 
     ok = wa_raft_queue:reserve_read(Queues),
     {leader, State2} = server_cast(?READ_COMMAND(?FROM(Ref2), noop, undefined)),
@@ -4255,8 +4311,8 @@ read_batch(Config) ->
     ?assertEqual(2, wa_raft_log:last_index(State2#raft_state.log_view)),
     ?assertEqual({ok, {Term, {?READ_OP, noop}}}, wa_raft_log:get(State2#raft_state.log_view, 2)),
     ?assertEqual(3, length(wa_raft_queue:query_reads(Queues, infinity))),
-    ?assertCast(Name, node2, ?APPEND_ENTRIES_RPC(Term, Name, _, 1, Term, [{Term, {?READ_OP, noop}}], 1, _)),
-    ?assertCast(Name, node3, ?APPEND_ENTRIES_RPC(Term, Name, _, 1, Term, [{Term, {?READ_OP, noop}}], 1, _)),
+    ?assertCast(Name, node2, ?APPEND_ENTRIES_RPC(Term, Name, _, 1, Term, [{Term, {?READ_OP, noop}}], 1, _, _)),
+    ?assertCast(Name, node3, ?APPEND_ENTRIES_RPC(Term, Name, _, 1, Term, [{Term, {?READ_OP, noop}}], 1, _, _)),
 
     clear_message_queue(),
     {leader, _} = server_cast(?APPEND_ENTRIES_RESPONSE_RPC(Term, Name, node2, 1, true, 2, 1)),
@@ -4284,7 +4340,7 @@ commit_read_batch(Config) ->
     {leader, _} = server_cast(?COMMIT_COMMAND(FromHigh, {ref_high, noop}, high)),
     {leader, State0} = server_cast(?COMMIT_COMMAND(FromLow, {ref_low, noop}, low)),
     ?assertEqual(0, State0#raft_state.pending_reads),
-    ?assertNotCast(_, _, ?APPEND_ENTRIES_RPC(Term, Name, _, _, _, _, _, _)),
+    ?assertNotCast(_, _, ?APPEND_ENTRIES_RPC(Term, Name, _, _, _, _, _, _, _)),
 
     RefRead0 = make_ref(),
     ok = wa_raft_queue:reserve_read(Queues),
@@ -4293,14 +4349,14 @@ commit_read_batch(Config) ->
     ?assertEqual([{FromHigh, {ref_high, noop}}], State1#raft_state.pending_high),
     ?assertEqual([{FromLow, {ref_low, noop}}], State1#raft_state.pending_low),
     ?assertEqual(1, wa_raft_log:last_index(State1#raft_state.log_view)),
-    ?assertNotCast(_, _, ?APPEND_ENTRIES_RPC(Term, Name, _, _, _, _, _, _)),
+    ?assertNotCast(_, _, ?APPEND_ENTRIES_RPC(Term, Name, _, _, _, _, _, _, _)),
 
     RefRead1 = make_ref(),
     ok = wa_raft_queue:reserve_read(Queues),
     {leader, State2} = server_cast(?READ_COMMAND(?FROM(RefRead1), noop, undefined)),
     ?assertEqual(2, State2#raft_state.pending_reads),
     ?assertEqual(1, wa_raft_log:last_index(State2#raft_state.log_view)),
-    ?assertNotCast(_, _, ?APPEND_ENTRIES_RPC(Term, Name, _, _, _, _, _, _)),
+    ?assertNotCast(_, _, ?APPEND_ENTRIES_RPC(Term, Name, _, _, _, _, _, _, _)),
 
     RefRead2 = make_ref(),
     ok = wa_raft_queue:reserve_read(Queues),
@@ -4311,8 +4367,8 @@ commit_read_batch(Config) ->
     ?assertEqual(3, wa_raft_log:last_index(State3#raft_state.log_view)),
     ?assertEqual({ok, {Term, {ref_high, noop}}}, wa_raft_log:get(State3#raft_state.log_view, 2)),
     ?assertEqual({ok, {Term, {ref_low, noop}}}, wa_raft_log:get(State3#raft_state.log_view, 3)),
-    ?assertCast(Name, node2, ?APPEND_ENTRIES_RPC(Term, Name, _, 1, Term, _, 1, _)),
-    ?assertCast(Name, node3, ?APPEND_ENTRIES_RPC(Term, Name, _, 1, Term, _, 1, _)),
+    ?assertCast(Name, node2, ?APPEND_ENTRIES_RPC(Term, Name, _, 1, Term, _, 1, _, _)),
+    ?assertCast(Name, node3, ?APPEND_ENTRIES_RPC(Term, Name, _, 1, Term, _, 1, _, _)),
 
     clear_message_queue(),
     {leader, _} = server_cast(?APPEND_ENTRIES_RESPONSE_RPC(Term, Name, node2, 1, true, 3, 1)),
@@ -4599,7 +4655,7 @@ participant_trim_index(Config) ->
     {leader, _} = server_cast(?APPEND_ENTRIES_RESPONSE_RPC(3, Name, node4, 100, true, 101, 100)),
     clear_message_queue(),
     {leader, _} = server_invoke(state_timeout, heartbeat),
-    ?assertCast(Name, node4, ?APPEND_ENTRIES_RPC(3, Name, Node, 101, 3, [], 101, 101)),
+    ?assertCast(Name, node4, ?APPEND_ENTRIES_RPC(3, Name, Node, 101, 3, [], 101, 101, _)),
 
     clear_message_queue(),
     {leader, _} = server_cast(?COMMIT_COMMAND(?FROM(), {ref, noop}, high)),
@@ -4627,7 +4683,7 @@ participant_trim_index(Config) ->
 
     clear_message_queue(),
     {leader, _} = server_invoke(state_timeout, heartbeat),
-    ?assertCast(Name, node4, ?APPEND_ENTRIES_RPC(3, Name, Node, 101, 3, [{3, _}], 102, 101)),
+    ?assertCast(Name, node4, ?APPEND_ENTRIES_RPC(3, Name, Node, 101, 3, [{3, _}], 102, 101, _)),
 
     ok = application:unset_env(?RAFT_APPLICATION, ?RAFT_HEARTBEAT_INTERVAL),
     ok = server_stop().
@@ -4648,18 +4704,18 @@ trim_index(Config) ->
     {follower, _} = server_cast(
         ?APPEND_ENTRIES_RPC(3, Name, node2, 100, 2, [{3, {101, noop}}, {3, {102, noop}}, {3, {103, noop}}], 100, 100)
     ),
-    ?assertCast(Name, node2, ?APPEND_ENTRIES_RESPONSE_RPC(3, Name, Node, 100, true, 103, 100)),
+    ?assertCast(Name, node2, ?APPEND_ENTRIES_RESPONSE_RPC(3, Name, Node, 100, true, 103, 100, _)),
 
     % Send an append with new commits
     {follower, _} = server_cast(?APPEND_ENTRIES_RPC(3, Name, node2, 103, 3, [], 102, 100)),
     % Heartbeat response is issued before apply occurs, so last applied index is only 100
-    ?assertCast(Name, node2, ?APPEND_ENTRIES_RESPONSE_RPC(3, Name, Node, 103, true, 103, 100)),
+    ?assertCast(Name, node2, ?APPEND_ENTRIES_RESPONSE_RPC(3, Name, Node, 103, true, 103, 100, _)),
 
     % Send an append with new commits and new trim index (so follower will apply and rotate)
     {follower, #raft_state{log_view = View0}} = server_cast(?APPEND_ENTRIES_RPC(3, Name, node2, 103, 3, [], 103, 102)),
     % Heartbeat response is issued before apply occurs, so last applied index is only 102.
     % As the log entry is not yet applied, follower will report 101.
-    ?assertCast(Name, node2, ?APPEND_ENTRIES_RESPONSE_RPC(3, Name, Node, 103, true, 103, _)),
+    ?assertCast(Name, node2, ?APPEND_ENTRIES_RESPONSE_RPC(3, Name, Node, 103, true, 103, _, _)),
     ?assertEqual(102, wa_raft_log:first_index(View0)),
 
     % Stop server
@@ -4746,8 +4802,8 @@ get_current_config_different_states(Config) ->
 
     % Test 3: get_current_config works after promoting to leader
     {leader, _, ok} = server_call(?PROMOTE_COMMAND(1, true)),
-    ?assertCast(Name, node2, ?APPEND_ENTRIES_RPC(1, Name, Node, 0, 0, [{1, {_, noop}}], 0, 0)),
-    ?assertCast(Name, node3, ?APPEND_ENTRIES_RPC(1, Name, Node, 0, 0, [{1, {_, noop}}], 0, 0)),
+    ?assertCast(Name, node2, ?APPEND_ENTRIES_RPC(1, Name, Node, 0, 0, [{1, {_, noop}}], 0, 0, _)),
+    ?assertCast(Name, node3, ?APPEND_ENTRIES_RPC(1, Name, Node, 0, 0, [{1, {_, noop}}], 0, 0, _)),
     {leader, _, ConfigLeader} = server_call(?CURRENT_CONFIG_COMMAND),
     ?assertEqual(ClusterConfig, ConfigLeader),
 
@@ -4788,8 +4844,8 @@ pre_vote_election(Config) ->
     ?assertCast(Name, node3, ?REQUEST_PRE_VOTE_RPC(1, Name, Node, Ref)),
     ?assertCast(Name, node4, ?REQUEST_PRE_VOTE_RPC(1, Name, Node, Ref)),
     ?assertCast(Name, node5, ?REQUEST_PRE_VOTE_RPC(1, Name, Node, Ref)),
-    ?assertNotCast(Name, Node, ?VOTE_RPC(_, Name, Node, _)),
-    ?assertNotCast(Name, node2, ?REQUEST_VOTE_RPC(_, Name, Node, _, _, _)),
+    ?assertNotCast(Name, Node, ?VOTE_RPC(_, Name, Node, _, _)),
+    ?assertNotCast(Name, node2, ?REQUEST_VOTE_RPC(_, Name, Node, _, _, _, _)),
 
     % First pre-vote response: node2 supports (self + node2 = 2/5, no majority yet)
     {candidate, State2} = server_cast(?PRE_VOTE_RPC(1, Name, node2, Ref, true, 0, 0)),
@@ -4802,11 +4858,11 @@ pre_vote_election(Config) ->
     clear_message_queue(),
     {candidate, State3} = server_cast(?PRE_VOTE_RPC(1, Name, node3, Ref, true, 0, 0)),
     ?assertEqual(2, State3#raft_state.current_term),
-    ?assertCast(Name, Node, ?VOTE_RPC(2, Name, Node, true)),
-    ?assertCast(Name, node2, ?REQUEST_VOTE_RPC(2, Name, Node, normal, 1, 1)),
-    ?assertCast(Name, node3, ?REQUEST_VOTE_RPC(2, Name, Node, normal, 1, 1)),
-    ?assertCast(Name, node4, ?REQUEST_VOTE_RPC(2, Name, Node, normal, 1, 1)),
-    ?assertCast(Name, node5, ?REQUEST_VOTE_RPC(2, Name, Node, normal, 1, 1)),
+    ?assertCast(Name, Node, ?VOTE_RPC(2, Name, Node, true, _)),
+    ?assertCast(Name, node2, ?REQUEST_VOTE_RPC(2, Name, Node, normal, 1, 1, _)),
+    ?assertCast(Name, node3, ?REQUEST_VOTE_RPC(2, Name, Node, normal, 1, 1, _)),
+    ?assertCast(Name, node4, ?REQUEST_VOTE_RPC(2, Name, Node, normal, 1, 1, _)),
+    ?assertCast(Name, node5, ?REQUEST_VOTE_RPC(2, Name, Node, normal, 1, 1, _)),
 
     % Issue 2 regression check: pre_vote_ref must be cleared by advance_term
     ?assertEqual(undefined, State3#raft_state.pre_vote_ref),
@@ -4886,4 +4942,250 @@ pre_vote_request(Config) ->
     ?assertNotCast(Name, node2, ?PRE_VOTE_RPC(_, Name, Node, Ref4, _, _, _)),
 
     % Stop server
+    ok = server_stop().
+
+-spec rpc_sender_timestamps(Config :: ct_suite:ct_config()) -> ok.
+rpc_sender_timestamps(Config) ->
+    Name = ?SERVER_NAME(Config),
+    Node = node(),
+    ok = application:set_env(wa_raft, raft_election_pre_vote, false),
+
+    {follower, _} = server_start_and_bootstrap(Config),
+    T0 = erlang:monotonic_time(millisecond),
+    {leader, State0, ok} = server_call(?PROMOTE_COMMAND(1, true)),
+    T1 = erlang:monotonic_time(millisecond),
+    {cast, {_, _, ?APPEND_ENTRIES_RPC(1, Name, Node, 0, 0, _, 0, 0, SendTs)}} =
+        ?assertCast(Name, node2, ?APPEND_ENTRIES_RPC(1, Name, Node, 0, 0, _, 0, 0, _)),
+    ?assert(is_integer(SendTs)),
+    ?assert(T0 =< SendTs),
+    ?assert(SendTs =< T1),
+    ?assertEqual(SendTs, maps:get(node2, State0#raft_state.heartbeat_send_ts)),
+
+    clear_message_queue(),
+    {follower, _, ok} = server_call(?RESIGN_COMMAND),
+    clear_message_queue(),
+    {candidate, _} = server_invoke(state_timeout, election),
+    {cast, {_, _, ?REQUEST_VOTE_RPC(2, Name, Node, normal, 1, 1, CandTs)}} =
+        ?assertCast(Name, node2, ?REQUEST_VOTE_RPC(2, Name, Node, normal, 1, 1, _)),
+    {cast, {_, _, ?VOTE_RPC(2, Name, Node, true, SelfTs)}} =
+        ?assertCast(Name, Node, ?VOTE_RPC(2, Name, Node, true, _)),
+    ?assert(is_integer(CandTs)),
+    ?assertEqual(CandTs, SelfTs),
+
+    ok = server_stop().
+
+-spec heartbeat_timestamp_echo(Config :: ct_suite:ct_config()) -> ok.
+heartbeat_timestamp_echo(Config) ->
+    Name = ?SERVER_NAME(Config),
+    Node = node(),
+
+    {follower, _} = server_start_and_bootstrap(100, 2, Config),
+    {follower, _} = server_cast(?APPEND_ENTRIES_RPC(2, Name, node2, 100, 2, [{2, {ref, noop}}], 101, 0, 111)),
+    ?assertCast(Name, node2, ?APPEND_ENTRIES_RESPONSE_RPC(2, Name, Node, 100, true, 101, 100, 111)),
+    {follower, _} = server_cast(?APPEND_ENTRIES_RPC(2, Name, node2, 105, 2, [{2, {ref, noop}}], 101, 0, 222)),
+    ?assertCast(Name, node2, ?APPEND_ENTRIES_RESPONSE_RPC(2, Name, Node, 105, false, 101, 101, 222)),
+    ok = server_stop().
+
+-spec heartbeat_timestamp_echo_witness(Config :: ct_suite:ct_config()) -> ok.
+heartbeat_timestamp_echo_witness(Config) ->
+    Name = ?SERVER_NAME(Config),
+    Node = node(),
+    {witness, _} = server_start_witness_and_bootstrap(100, 2, Config),
+    {witness, _} = server_cast(?APPEND_ENTRIES_RPC(2, Name, node2, 100, 2, [{2, {ref, noop}}], 101, 0, 333)),
+    ?assertCast(Name, node2, ?APPEND_ENTRIES_RESPONSE_RPC(2, Name, Node, 100, true, 101, 100, 333)),
+    clear_message_queue(),
+    {witness, _} = server_cast(?APPEND_ENTRIES_RPC(2, Name, node2, 150, 2, [{2, {ref, noop}}], 101, 0, 444)),
+    ?assertCast(Name, node2, ?APPEND_ENTRIES_RESPONSE_RPC(2, Name, Node, 150, false, 101, 101, 444)),
+    ok = server_stop().
+
+-spec heartbeat_timestamp_echo_stalled(Config :: ct_suite:ct_config()) -> ok.
+heartbeat_timestamp_echo_stalled(Config) ->
+    Name = ?SERVER_NAME(Config),
+    Node = node(),
+    {follower, _} = server_start_and_bootstrap(100, 2, Config),
+    {disabled, _, ok} = server_call(?DISABLE_COMMAND("Test heartbeat_timestamp_echo.")),
+    {stalled, _, ok} = server_call(?ENABLE_COMMAND),
+    clear_message_queue(),
+    {stalled, _} = server_cast(?APPEND_ENTRIES_RPC(2, Name, node2, 20, 2, [], 20, 0, 555)),
+    ?assertCast(Name, node2, ?APPEND_ENTRIES_RESPONSE_RPC(2, Name, Node, 20, false, 0, 0, 555)),
+    ok = server_stop().
+
+-spec request_vote_timestamp_echo(Config :: ct_suite:ct_config()) -> ok.
+request_vote_timestamp_echo(Config) ->
+    Name = ?SERVER_NAME(Config),
+    Node = node(),
+    ok = application:set_env(wa_raft, raft_election_pre_vote, false),
+
+    {follower, _} = server_start_and_bootstrap(100, 2, Config),
+    {follower, StateA0} = server_cast(?REQUEST_VOTE_RPC(2, Name, node2, normal, 100, 2, 4242)),
+    ?assertEqual(node2, StateA0#raft_state.voted_for),
+    ?assertCast(Name, node2, ?VOTE_RPC(2, Name, Node, true, 4242)),
+    {follower, _} = server_cast(?REQUEST_VOTE_RPC(2, Name, node3, normal, 100, 2, 9999)),
+    ?assertCast(Name, node3, ?VOTE_RPC(2, Name, Node, false, 9999)),
+
+    {leader, _, ok} = server_call(?PROMOTE_COMMAND(3, true)),
+    ok = clear_message_queue(),
+    {leader, _} = server_replace_state(
+        fun({SN, S}) -> {SN, S#raft_state{leader_commit_index_ts = erlang:monotonic_time(millisecond)}} end
+    ),
+    {leader, _} = server_cast(?REQUEST_VOTE_RPC(3, Name, node2, normal, 10, 10, 7777)),
+    ?assertCast(Name, node2, ?VOTE_RPC(3, Name, Node, false, 7777)),
+
+    {follower, _, ok} = server_call(?RESIGN_COMMAND),
+    clear_message_queue(),
+    {candidate, _} = server_invoke(state_timeout, election),
+    clear_message_queue(),
+    {candidate, _} = server_cast(?REQUEST_VOTE_RPC(4, Name, node2, force, 10, 10, 5555)),
+    ?assertCast(Name, node2, ?VOTE_RPC(4, Name, Node, false, 5555)),
+
+    ok = server_stop().
+
+-spec delayed_heartbeat_reply_three_members(Config :: ct_suite:ct_config()) -> ok.
+delayed_heartbeat_reply_three_members(Config) ->
+    Name = ?SERVER_NAME(Config),
+    Now = erlang:monotonic_time(millisecond),
+    OlderTs = Now - 10_000,
+    NewerTs = Now - 5_000,
+    FailureTs = Now - 15_000,
+    ConfigA = wa_raft_server:make_config([
+        #raft_identity{name = Name, node = node()},
+        #raft_identity{name = Name, node = node2},
+        #raft_identity{name = Name, node = node3}
+    ]),
+    {follower, _} = server_start_and_bootstrap(ConfigA, Config),
+    {leader, State0, ok} = server_call(?PROMOTE_COMMAND(1, true)),
+    ?assertNotEqual(undefined, State0#raft_state.leader_quorum_ts),
+    clear_message_queue(),
+
+    {leader, State1} = server_cast(?APPEND_ENTRIES_RESPONSE_RPC(1, Name, node2, 0, true, 1, 0, OlderTs)),
+    ?assertEqual(#{node2 => OlderTs}, State1#raft_state.heartbeat_reply_ts),
+    ?assertEqual(OlderTs, State1#raft_state.leader_quorum_ts),
+
+    {leader, State2} = server_cast(?APPEND_ENTRIES_RESPONSE_RPC(1, Name, node3, 0, true, 1, 0, NewerTs)),
+    ?assertEqual(#{node2 => OlderTs, node3 => NewerTs}, State2#raft_state.heartbeat_reply_ts),
+    ?assertEqual(NewerTs, State2#raft_state.leader_quorum_ts),
+
+    {leader, State3} = server_cast(?APPEND_ENTRIES_RESPONSE_RPC(1, Name, node2, 0, false, 0, 0, FailureTs)),
+    ?assertEqual(#{node2 => FailureTs, node3 => NewerTs}, State3#raft_state.heartbeat_reply_ts),
+    ?assertEqual(NewerTs, State3#raft_state.leader_quorum_ts),
+
+    ok = server_stop().
+
+-spec delayed_heartbeat_reply_five_members(Config :: ct_suite:ct_config()) -> ok.
+delayed_heartbeat_reply_five_members(Config) ->
+    Name = ?SERVER_NAME(Config),
+    Now = erlang:monotonic_time(millisecond),
+    OlderTs = Now - 10_000,
+    NewerTs = Now - 5_000,
+    FailureTs = Now - 15_000,
+    {follower, _} = server_start_and_bootstrap(Config),
+    {leader, State0, ok} = server_call(?PROMOTE_COMMAND(1, true)),
+    QuorumTs0 = State0#raft_state.leader_quorum_ts,
+    ?assertNotEqual(undefined, QuorumTs0),
+    clear_message_queue(),
+
+    {leader, State1} = server_cast(?APPEND_ENTRIES_RESPONSE_RPC(1, Name, node2, 0, true, 1, 0, OlderTs)),
+    ?assertEqual(#{node2 => OlderTs}, State1#raft_state.heartbeat_reply_ts),
+    ?assertEqual(QuorumTs0, State1#raft_state.leader_quorum_ts),
+
+    {leader, State2} = server_cast(?APPEND_ENTRIES_RESPONSE_RPC(1, Name, node3, 0, true, 1, 0, NewerTs)),
+    ?assertEqual(#{node2 => OlderTs, node3 => NewerTs}, State2#raft_state.heartbeat_reply_ts),
+    ?assertEqual(OlderTs, State2#raft_state.leader_quorum_ts),
+
+    {leader, State3} = server_cast(?APPEND_ENTRIES_RESPONSE_RPC(1, Name, node4, 0, false, 0, 0, FailureTs)),
+    ?assertEqual(#{node2 => OlderTs, node3 => NewerTs, node4 => FailureTs}, State3#raft_state.heartbeat_reply_ts),
+    ?assertEqual(OlderTs, State3#raft_state.leader_quorum_ts),
+
+    ok = server_stop().
+
+-spec vote_reply_timestamps_three_members(Config :: ct_suite:ct_config()) -> ok.
+vote_reply_timestamps_three_members(Config) ->
+    Name = ?SERVER_NAME(Config),
+    Node = node(),
+    Now = erlang:monotonic_time(millisecond),
+    SelfTs = Now - 20_000,
+    Peer2Ts = Now - 15_000,
+    ok = application:set_env(wa_raft, raft_election_pre_vote, false),
+
+    ConfigA = wa_raft_server:make_config([
+        #raft_identity{name = Name, node = Node},
+        #raft_identity{name = Name, node = node2},
+        #raft_identity{name = Name, node = node3}
+    ]),
+    {follower, _} = server_start_and_bootstrap(ConfigA, Config),
+    {candidate, _} = server_invoke(state_timeout, election),
+    clear_message_queue(),
+    {candidate, StateA1} = server_cast(?VOTE_RPC(2, Name, Node, true, SelfTs)),
+    ?assertEqual(#{Node => true}, StateA1#raft_state.votes),
+    ?assertEqual(#{Node => SelfTs}, StateA1#raft_state.heartbeat_reply_ts),
+    ?assertEqual(undefined, StateA1#raft_state.leader_quorum_ts),
+    {leader, StateA2} = server_cast(?VOTE_RPC(2, Name, node2, true, Peer2Ts)),
+    ?assertEqual(#{}, StateA2#raft_state.heartbeat_reply_ts),
+    ?assertNotEqual(undefined, StateA2#raft_state.leader_quorum_ts),
+    ok = server_stop().
+
+-spec vote_reply_timestamps(Config :: ct_suite:ct_config()) -> ok.
+vote_reply_timestamps(Config) ->
+    Name = ?SERVER_NAME(Config),
+    Node = node(),
+    Now = erlang:monotonic_time(millisecond),
+    SelfTs = Now - 20_000,
+    Peer2Ts = Now - 15_000,
+    Peer3Ts = Now - 10_000,
+    Peer4Ts = Now - 5_000,
+    ok = application:set_env(wa_raft, raft_election_pre_vote, false),
+    {follower, _} = server_start_and_bootstrap(Config),
+    {candidate, _} = server_invoke(state_timeout, election),
+    clear_message_queue(),
+    {candidate, StateB1} = server_cast(?VOTE_RPC(2, Name, Node, true, SelfTs)),
+    ?assertEqual(#{Node => SelfTs}, StateB1#raft_state.heartbeat_reply_ts),
+    ?assertEqual(undefined, StateB1#raft_state.leader_quorum_ts),
+    {candidate, StateB2} = server_cast(?VOTE_RPC(2, Name, node2, false, Peer2Ts)),
+    ?assertEqual(#{Node => SelfTs, node2 => Peer2Ts}, StateB2#raft_state.heartbeat_reply_ts),
+    ?assertEqual(undefined, StateB2#raft_state.leader_quorum_ts),
+    {candidate, StateB3} = server_cast(?VOTE_RPC(2, Name, node3, false, Peer3Ts)),
+    ?assertEqual(#{Node => SelfTs, node2 => Peer2Ts, node3 => Peer3Ts}, StateB3#raft_state.heartbeat_reply_ts),
+    ?assertEqual(Peer2Ts, StateB3#raft_state.leader_quorum_ts),
+    {follower, StateB4} = server_cast(?VOTE_RPC(2, Name, node4, false, Peer4Ts)),
+    ?assertEqual(
+        #{Node => SelfTs, node2 => Peer2Ts, node3 => Peer3Ts, node4 => Peer4Ts}, StateB4#raft_state.heartbeat_reply_ts
+    ),
+    ?assertEqual(Peer3Ts, StateB4#raft_state.leader_quorum_ts),
+    ok = server_stop().
+
+-spec legacy_missing_timestamp(Config :: ct_suite:ct_config()) -> ok.
+legacy_missing_timestamp(Config) ->
+    Name = ?SERVER_NAME(Config),
+    ok = application:set_env(wa_raft, raft_election_pre_vote, false),
+
+    ConfigA = wa_raft_server:make_config([
+        #raft_identity{name = Name, node = node()},
+        #raft_identity{name = Name, node = node2},
+        #raft_identity{name = Name, node = node3}
+    ]),
+    {follower, _} = server_start_and_bootstrap(ConfigA, Config),
+    {leader, _, ok} = server_call(?PROMOTE_COMMAND(1, true)),
+    clear_message_queue(),
+    Before = erlang:monotonic_time(millisecond),
+    {leader, State0} = server_cast(?APPEND_ENTRIES_RESPONSE_RPC(1, Name, node2, 0, true, 1, 0)),
+    After = erlang:monotonic_time(millisecond),
+    ReplyTs = maps:get(node2, State0#raft_state.heartbeat_reply_ts),
+    ?assert(Before =< ReplyTs),
+    ?assert(ReplyTs =< After),
+    ?assertEqual(ReplyTs, State0#raft_state.leader_quorum_ts),
+    ok = server_stop().
+
+-spec legacy_vote_missing_timestamp(Config :: ct_suite:ct_config()) -> ok.
+legacy_vote_missing_timestamp(Config) ->
+    Name = ?SERVER_NAME(Config),
+    ok = application:set_env(wa_raft, raft_election_pre_vote, false),
+    {follower, _} = server_start_and_bootstrap(Config),
+    {candidate, _} = server_invoke(state_timeout, election),
+    clear_message_queue(),
+    VoteBefore = erlang:monotonic_time(millisecond),
+    {candidate, State1} = server_cast(?VOTE_RPC(2, Name, node2, true)),
+    VoteAfter = erlang:monotonic_time(millisecond),
+    VoteTs = maps:get(node2, State1#raft_state.heartbeat_reply_ts),
+    ?assert(VoteBefore =< VoteTs),
+    ?assert(VoteTs =< VoteAfter),
     ok = server_stop().

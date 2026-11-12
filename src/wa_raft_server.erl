@@ -754,7 +754,7 @@ init(
     {ok, Last} = wa_raft_storage:open(Storage),
     {ok, View} = wa_raft_log:open(Log, Last),
 
-    Now = erlang:monotonic_time(millisecond),
+    LocalMTimeMs = erlang:monotonic_time(millisecond),
     Data0 = #raft_state{
         application = Application,
         name = Name,
@@ -772,7 +772,7 @@ init(
         commit_index = Last#raft_log_pos.index,
         last_applied = Last#raft_log_pos.index,
         current_term = Last#raft_log_pos.term,
-        state_start_ts = Now
+        state_start_ts = LocalMTimeMs
     },
     Data1 = load_config(Data0),
     % TODO T246543655 When we have proper error handling for data corruption
@@ -819,12 +819,12 @@ terminate(Reason, State, #raft_state{name = Name, table = Table, partition = Par
 -type procedure()  :: ?PROCEDURE(atom(), tuple()).
 
 -type normalized_procedure() :: append_entries() | append_entries_response() | request_pre_vote() | pre_vote() | request_vote() | vote() | handover() | handover_failed() | notify_term().
--type append_entries()          :: ?APPEND_ENTRIES         (wa_raft_log:log_index(), wa_raft_log:log_term(), [wa_raft_log:log_entry() | binary()], wa_raft_log:log_index(), wa_raft_log:log_index()).
--type append_entries_response() :: ?APPEND_ENTRIES_RESPONSE(wa_raft_log:log_index(), boolean(), wa_raft_log:log_index(), wa_raft_log:log_index() | undefined).
+-type append_entries()          :: ?APPEND_ENTRIES         (wa_raft_log:log_index(), wa_raft_log:log_term(), [wa_raft_log:log_entry() | binary()], wa_raft_log:log_index(), wa_raft_log:log_index(), integer() | undefined).
+-type append_entries_response() :: ?APPEND_ENTRIES_RESPONSE(wa_raft_log:log_index(), boolean(), wa_raft_log:log_index(), wa_raft_log:log_index() | undefined, integer() | undefined).
 -type request_pre_vote()        :: ?REQUEST_PRE_VOTE       (reference()).
 -type pre_vote()                :: ?PRE_VOTE               (reference(), boolean(), wa_raft_log:log_index(), wa_raft_log:log_term()).
--type request_vote()            :: ?REQUEST_VOTE           (election_type(), wa_raft_log:log_index(), wa_raft_log:log_term()).
--type vote()                    :: ?VOTE                   (boolean()).
+-type request_vote()            :: ?REQUEST_VOTE           (election_type(), wa_raft_log:log_index(), wa_raft_log:log_term(), integer() | undefined).
+-type vote()                    :: ?VOTE                   (boolean(), integer() | undefined).
 -type handover()                :: ?HANDOVER               (reference(), wa_raft_log:log_index(), wa_raft_log:log_term(), [wa_raft_log:log_entry() | binary()]).
 -type handover_failed()         :: ?HANDOVER_FAILED        (reference()).
 -type notify_term()             :: ?NOTIFY_TERM            ().
@@ -832,12 +832,12 @@ terminate(Reason, State, #raft_state{name = Name, table = Table, partition = Par
 -spec protocol() -> #{atom() => procedure()}.
 protocol() ->
     #{
-        ?APPEND_ENTRIES          => ?APPEND_ENTRIES(0, 0, [], 0, 0),
-        ?APPEND_ENTRIES_RESPONSE => ?APPEND_ENTRIES_RESPONSE(0, false, 0, undefined),
+        ?APPEND_ENTRIES          => ?APPEND_ENTRIES(0, 0, [], 0, 0, undefined),
+        ?APPEND_ENTRIES_RESPONSE => ?APPEND_ENTRIES_RESPONSE(0, false, 0, undefined, undefined),
         ?REQUEST_PRE_VOTE        => ?REQUEST_PRE_VOTE(undefined),
         ?PRE_VOTE                => ?PRE_VOTE(undefined, false, 0, 0),
-        ?REQUEST_VOTE            => ?REQUEST_VOTE(normal, 0, 0),
-        ?VOTE                    => ?VOTE(false),
+        ?REQUEST_VOTE            => ?REQUEST_VOTE(normal, 0, 0, undefined),
+        ?VOTE                    => ?VOTE(false, undefined),
         ?HANDOVER                => ?HANDOVER(undefined, 0, 0, []),
         ?HANDOVER_FAILED         => ?HANDOVER_FAILED(undefined)
     }.
@@ -900,7 +900,16 @@ handle_rpc_impl(Type, Event, ?REQUEST_VOTE, Term, Sender, Payload, State, #raft_
                 "rejecting normal vote request from ~p because leader was still active ~p ms ago (allowed ~p ms).",
                 [Sender, Delay, AllowedDelay]
             ),
-            send_rpc(Sender, Term, ?VOTE(false), Data),
+            % For forwards and backwards compatibility, attempt to extract the timestamp to
+            % echo back to the sender.
+            CandidateMTimeMs =
+                try element(4, Payload) of
+                    Ts when is_integer(Ts) -> Ts;
+                    _ -> undefined
+                catch
+                    _:_ -> undefined
+                end,
+            send_rpc(Sender, Term, ?VOTE(false, CandidateMTimeMs), Data),
             keep_state_and_data
     end;
 %% [General Rules] Advance to the newer term and reset state when seeing a newer term in an incoming RPC
@@ -941,7 +950,7 @@ handle_rpc_normalization(Type, Key, Sender, Payload, State, #raft_state{table = 
 ) -> gen_statem:event_handler_result(state(), #raft_state{}).
 
 %% [AppendEntries RPC] If we haven't discovered leader for this term, record it
-handle_procedure(Type, ?REMOTE(Sender, ?APPEND_ENTRIES(_, _, _, _, _)) = Procedure, State, #raft_state{leader = undefined} = Data) ->
+handle_procedure(Type, ?REMOTE(Sender, ?APPEND_ENTRIES(_, _, _, _, _, _)) = Procedure, State, #raft_state{leader = undefined} = Data) ->
     ?SERVER_LOG_NOTICE(State, Data, "leader is now ~0p.", [identity_to_server(Sender)]),
     NewData = Data#raft_state{leader = Sender},
     update_current_term_info(State, NewData),
@@ -1015,7 +1024,7 @@ stalled(Type, Event, #raft_state{} = State) when is_tuple(Event), element(1, Eve
     handle_rpc(Type, Event, ?FUNCTION_NAME, State);
 
 %% [AppendEntries RPC] Stalled nodes always discard heartbeats
-stalled(_, ?REMOTE(Sender, ?APPEND_ENTRIES(PrevLogIndex, _, _, LeaderCommitIndex, _)), #raft_state{} = State) ->
+stalled(_, ?REMOTE(Sender, ?APPEND_ENTRIES(PrevLogIndex, _, _, LeaderCommitIndex, _, LeaderMTimeMs)), #raft_state{} = State) ->
     %% Stalled clause rejects the AppendEntries (it cannot adopt log
     %% entries), but it now records both the leader's commit index and the
     %% timestamp so that a follower/witness transition inherits fresh
@@ -1024,7 +1033,7 @@ stalled(_, ?REMOTE(Sender, ?APPEND_ENTRIES(PrevLogIndex, _, _, LeaderCommitIndex
         leader_commit_index = LeaderCommitIndex,
         leader_commit_index_ts = erlang:monotonic_time(millisecond)
     },
-    send_rpc(Sender, ?APPEND_ENTRIES_RESPONSE(PrevLogIndex, false, 0, 0), NewState),
+    send_rpc(Sender, ?APPEND_ENTRIES_RESPONSE(PrevLogIndex, false, 0, 0, LeaderMTimeMs), NewState),
     {keep_state, NewState};
 
 stalled({call, From}, ?TRIGGER_ELECTION_COMMAND(_), #raft_state{} = State) ->
@@ -1211,7 +1220,7 @@ leader(Type, Event, #raft_state{} = State) when is_tuple(Event), element(1, Even
     handle_rpc(Type, Event, ?FUNCTION_NAME, State);
 
 %% [AppendEntries RPC] Leaders should not act upon any incoming heartbeats (5.1, 5.2)
-leader(_, ?REMOTE(_, ?APPEND_ENTRIES(_, _, _, _, _)), #raft_state{}) ->
+leader(_, ?REMOTE(_, ?APPEND_ENTRIES(_, _, _, _, _, _)), #raft_state{}) ->
     keep_state_and_data;
 
 %% [Leader] Handle AppendEntries RPC responses (5.2, 5.3, 7).
@@ -1220,7 +1229,7 @@ leader(
     cast,
     ?REMOTE(
         ?IDENTITY_REQUIRES_MIGRATION(_, FollowerId) = Sender,
-        ?APPEND_ENTRIES_RESPONSE(_, true, FollowerMatchIndex, FollowerLastAppliedIndex)
+        ?APPEND_ENTRIES_RESPONSE(_, true, FollowerMatchIndex, FollowerLastAppliedIndex, LeaderMTimeMs)
     ),
     #raft_state{
         table = Table,
@@ -1234,7 +1243,7 @@ leader(
     StartT = erlang:monotonic_time(microsecond),
     ?SERVER_LOG_DEBUG(State0, "at commit index ~0p completed append to ~0p whose log now matches up to ~0p.",
         [CommitIndex, Sender, FollowerMatchIndex]),
-    State1 = update_heartbeat_reply_ts(FollowerId, State0),
+    State1 = update_heartbeat_reply_ts(FollowerId, LeaderMTimeMs, State0),
 
     NextIndex = maps:get(FollowerId, NextIndices, TermStartIndex),
     NewMatchIndices = MatchIndices#{FollowerId => FollowerMatchIndex},
@@ -1259,7 +1268,7 @@ leader(
     cast,
     ?REMOTE(
         ?IDENTITY_REQUIRES_MIGRATION(_, FollowerId) = Sender,
-        ?APPEND_ENTRIES_RESPONSE(_, false, FollowerEndIndex, FollowerLastAppliedIndex)
+        ?APPEND_ENTRIES_RESPONSE(_, false, FollowerEndIndex, FollowerLastAppliedIndex, LeaderMTimeMs)
     ),
     #raft_state{
         table = Table,
@@ -1271,7 +1280,7 @@ leader(
     ?RAFT_COUNT(Table, 'leader.append.failure'),
     ?SERVER_LOG_DEBUG(State0, "at commit index ~0p failed append to ~0p whose log now ends at ~0p.",
         [CommitIndex, Sender, FollowerEndIndex]),
-    State1 = update_heartbeat_reply_ts(FollowerId, State0),
+    State1 = update_heartbeat_reply_ts(FollowerId, LeaderMTimeMs, State0),
 
     % Check to see if we should request a snapshot due to this failure
     leader_maybe_request_snapshot(FollowerId, FollowerEndIndex, FollowerLastAppliedIndex, State1),
@@ -1302,12 +1311,12 @@ leader(_, ?REMOTE(_, ?PRE_VOTE(_, _, _, _)), #raft_state{}) ->
     keep_state_and_data;
 
 %% [RequestVote RPC] Reject any vote requests as leadership is already established (5.1, 5.2)
-leader(_, ?REMOTE(Sender, ?REQUEST_VOTE(_, _, _)), #raft_state{} = Data) ->
-    send_rpc(Sender, ?VOTE(false), Data),
+leader(_, ?REMOTE(Sender, ?REQUEST_VOTE(_, _, _, CandidateMTimeMs)), #raft_state{} = Data) ->
+    send_rpc(Sender, ?VOTE(false, CandidateMTimeMs), Data),
     keep_state_and_data;
 
 %% [Vote RPC] Votes are only useful to candidates
-leader(_, ?REMOTE(_, ?VOTE(_)), #raft_state{}) ->
+leader(_, ?REMOTE(_, ?VOTE(_, _)), #raft_state{}) ->
     keep_state_and_data;
 
 %% [Handover][Handover RPC] We are already leader so ignore any handover requests.
@@ -1336,8 +1345,8 @@ leader(_, ?REMOTE(_, ?HANDOVER_FAILED(_)), #raft_state{}) ->
 
 %% [Timeout] Suspend periodic heartbeat to followers while handover is active
 leader(state_timeout = Type, Event, #raft_state{handover = {Peer, _, Timeout}} = State) ->
-    NowMillis = erlang:monotonic_time(millisecond),
-    case NowMillis > Timeout of
+    LocalMTimeMs = erlang:monotonic_time(millisecond),
+    case LocalMTimeMs > Timeout of
         true ->
             ?SERVER_LOG_NOTICE(State, "handover to ~0p times out.", [Peer]),
             %% On timeout, the target's state is unknown and pre-timeout
@@ -1660,13 +1669,13 @@ follower(Type, Event, #raft_state{} = State) when is_tuple(Event), element(1, Ev
 %% [AppendEntries RPC] Handle incoming heartbeats (5.2, 5.3)
 follower(
     _,
-    ?REMOTE(Leader, ?APPEND_ENTRIES(PrevLogIndex, PrevLogTerm, Entries, CommitIndex, TrimIndex)),
+    ?REMOTE(Leader, ?APPEND_ENTRIES(PrevLogIndex, PrevLogTerm, Entries, CommitIndex, TrimIndex, LeaderMTimeMs)),
     #raft_state{} = State
 ) ->
-    handle_heartbeat(?FUNCTION_NAME, Leader, PrevLogIndex, PrevLogTerm, Entries, CommitIndex, TrimIndex, State);
+    handle_heartbeat(?FUNCTION_NAME, Leader, PrevLogIndex, PrevLogTerm, Entries, CommitIndex, TrimIndex, LeaderMTimeMs, State);
 
 %% [AppendEntriesResponse RPC] Followers should not act upon any incoming heartbeat responses (5.2)
-follower(_, ?REMOTE(_, ?APPEND_ENTRIES_RESPONSE(_, _, _, _)), #raft_state{}) ->
+follower(_, ?REMOTE(_, ?APPEND_ENTRIES_RESPONSE(_, _, _, _, _)), #raft_state{}) ->
     keep_state_and_data;
 
 %% [RequestPreVote RPC] Respond to pre-vote
@@ -1678,11 +1687,11 @@ follower(_, ?REMOTE(_, ?PRE_VOTE(_, _, _, _)), #raft_state{}) ->
     keep_state_and_data;
 
 %% [RequestVote RPC] Handle incoming vote requests (5.2)
-follower(_, ?REMOTE(Candidate, ?REQUEST_VOTE(_, CandidateIndex, CandidateTerm)), #raft_state{} = State) ->
-    handle_request_vote(?FUNCTION_NAME, Candidate, CandidateIndex, CandidateTerm, State);
+follower(_, ?REMOTE(Candidate, ?REQUEST_VOTE(_, CandidateIndex, CandidateTerm, CandidateMTimeMs)), #raft_state{} = State) ->
+    handle_request_vote(?FUNCTION_NAME, Candidate, CandidateIndex, CandidateTerm, CandidateMTimeMs, State);
 
 %% [Vote RPC] Votes are only useful to candidates
-follower(_, ?REMOTE(_, ?VOTE(_)), #raft_state{}) ->
+follower(_, ?REMOTE(_, ?VOTE(_, _)), #raft_state{}) ->
     keep_state_and_data;
 
 %% [Handover][Handover RPC] The leader is requesting this follower to take over leadership in a new term
@@ -1848,7 +1857,7 @@ candidate(Type, Event, #raft_state{} = State) when is_tuple(Event), element(1, E
     handle_rpc(Type, Event, ?FUNCTION_NAME, State);
 
 %% [AppendEntries RPC] Switch to follower because current term now has a leader (5.2, 5.3)
-candidate(Type, ?REMOTE(Sender, ?APPEND_ENTRIES(_, _, _, _, _)) = Event, #raft_state{} = State) ->
+candidate(Type, ?REMOTE(Sender, ?APPEND_ENTRIES(_, _, _, _, _, _)) = Event, #raft_state{} = State) ->
     ?SERVER_LOG_NOTICE(State, "switching to follower after receiving heartbeat from ~0p.", [Sender]),
     {next_state, follower_or_witness(State), State, {next_event, Type, Event}};
 
@@ -1868,7 +1877,7 @@ candidate(
         pre_votes = PreVotes
     } = Data
 ) ->
-    Now = erlang:monotonic_time(millisecond),
+    LocalMTimeMs = erlang:monotonic_time(millisecond),
     LastIndex = wa_raft_log:last_index(View),
     {ok, LastTerm} = wa_raft_log:term(View, LastIndex),
     Result = Vote andalso {LastTerm, LastIndex} >= {PeerLastTerm, PeerLastIndex},
@@ -1877,7 +1886,7 @@ candidate(
     case find_member_majority(NewPreVotes, config(NewData)) of
         {found, Outcome} ->
             % If a majority is found, then the pre-vote round is over, either accepted or rejected.
-            Duration = Now - StateStart,
+            Duration = LocalMTimeMs - StateStart,
             case Outcome of
                 true ->
                     Support = [Peer || Peer := true <- NewPreVotes],
@@ -1907,14 +1916,14 @@ candidate(_, ?REMOTE(_, ?PRE_VOTE(_, _, _, _)), #raft_state{}) ->
     keep_state_and_data;
 
 %% [RequestVote RPC] Candidates should reject incoming vote requests as they always vote for themselves (5.2)
-candidate(_, ?REMOTE(Sender, ?REQUEST_VOTE(_, _, _)), #raft_state{} = Data) ->
-    send_rpc(Sender, ?VOTE(false), Data),
+candidate(_, ?REMOTE(Sender, ?REQUEST_VOTE(_, _, _, CandidateMTimeMs)), #raft_state{} = Data) ->
+    send_rpc(Sender, ?VOTE(false, CandidateMTimeMs), Data),
     keep_state_and_data;
 
 %% [Vote RPC] Candidate receives a vote (5.2)
 candidate(
     cast,
-    ?REMOTE(?IDENTITY_REQUIRES_MIGRATION(_, Node), ?VOTE(Vote)),
+    ?REMOTE(?IDENTITY_REQUIRES_MIGRATION(_, Node), ?VOTE(Vote, CandidateMTimeMs)),
     #raft_state{
         table = Table,
         log_view = View,
@@ -1924,12 +1933,12 @@ candidate(
 ) ->
     NewVotes = Votes#{Node => Vote},
     Data1 = Data0#raft_state{votes = NewVotes},
-    Data2 = update_heartbeat_reply_ts(Node, Data1),
+    Data2 = update_heartbeat_reply_ts(Node, CandidateMTimeMs, Data1),
     case find_member_majority(NewVotes, config(Data2)) of
         {found, Outcome} ->
             % If a majority is found, then the election is over, either accepted or rejected.
-            Now = erlang:monotonic_time(millisecond),
-            Duration = Now - StateStart,
+            LocalMTimeMs = erlang:monotonic_time(millisecond),
+            Duration = LocalMTimeMs - StateStart,
             LastIndex = wa_raft_log:last_index(View),
             {ok, LastTerm} = wa_raft_log:term(View, LastIndex),
             case Outcome of
@@ -2101,7 +2110,7 @@ disabled(Type, Event, #raft_state{} = State) when is_tuple(Event), element(1, Ev
 
 %% [AppendEntries RPC] Disabled servers should not act upon any incoming heartbeats as they should
 %%                     behave as if dead to the cluster
-disabled(_, ?REMOTE(_, ?APPEND_ENTRIES(_, _, _, _, _)), #raft_state{}) ->
+disabled(_, ?REMOTE(_, ?APPEND_ENTRIES(_, _, _, _, _, _)), #raft_state{}) ->
     keep_state_and_data;
 
 %% [RequestPreVote RPC]
@@ -2116,12 +2125,12 @@ disabled(_, ?REMOTE(_, ?PRE_VOTE(_, _, _, _)), #raft_state{}) ->
 
 %% [RequestVote RPC] Disabled servers should reject any vote requests as they should behave
 %%                   as if dead to the cluster
-disabled(_, ?REMOTE(Sender, ?REQUEST_VOTE(_, _, _)), #raft_state{} = Data) ->
-    send_rpc(Sender, ?VOTE(false), Data),
+disabled(_, ?REMOTE(Sender, ?REQUEST_VOTE(_, _, _, CandidateMTimeMs)), #raft_state{} = Data) ->
+    send_rpc(Sender, ?VOTE(false, CandidateMTimeMs), Data),
     keep_state_and_data;
 
 %% [Vote RPC] Votes are only useful to candidates
-disabled(_, ?REMOTE(_, ?VOTE(_)), #raft_state{}) ->
+disabled(_, ?REMOTE(_, ?VOTE(_, _)), #raft_state{}) ->
     keep_state_and_data;
 
 disabled({call, From}, ?TRIGGER_ELECTION_COMMAND(_), #raft_state{}) ->
@@ -2195,13 +2204,13 @@ witness(Type, Event, #raft_state{} = State) when is_tuple(Event), element(1, Eve
 %% [AppendEntries RPC] Handle incoming heartbeats (5.2, 5.3)
 witness(
     _,
-    ?REMOTE(Leader, ?APPEND_ENTRIES(PrevLogIndex, PrevLogTerm, Entries, CommitIndex, TrimIndex)),
+    ?REMOTE(Leader, ?APPEND_ENTRIES(PrevLogIndex, PrevLogTerm, Entries, CommitIndex, TrimIndex, LeaderMTimeMs)),
     #raft_state{} = State
 ) ->
-    handle_heartbeat(?FUNCTION_NAME, Leader, PrevLogIndex, PrevLogTerm, Entries, CommitIndex, TrimIndex, State);
+    handle_heartbeat(?FUNCTION_NAME, Leader, PrevLogIndex, PrevLogTerm, Entries, CommitIndex, TrimIndex, LeaderMTimeMs, State);
 
 %% [AppendEntriesResponse RPC] Witnesses should not act upon any incoming heartbeat responses (5.2)
-witness(_, ?REMOTE(_, ?APPEND_ENTRIES_RESPONSE(_, _, _, _)), #raft_state{}) ->
+witness(_, ?REMOTE(_, ?APPEND_ENTRIES_RESPONSE(_, _, _, _, _)), #raft_state{}) ->
     keep_state_and_data;
 
 %% [Handover][Handover RPC] Witnesses should not receive handover requests
@@ -2228,11 +2237,11 @@ witness(_, ?REMOTE(_, ?PRE_VOTE(_, _, _, _)), #raft_state{}) ->
     keep_state_and_data;
 
 %% [RequestVote RPC] Handle incoming vote requests (5.2)
-witness(_, ?REMOTE(Candidate, ?REQUEST_VOTE(_, CandidateIndex, CandidateTerm)), #raft_state{} = State) ->
-    handle_request_vote(?FUNCTION_NAME, Candidate, CandidateIndex, CandidateTerm, State);
+witness(_, ?REMOTE(Candidate, ?REQUEST_VOTE(_, CandidateIndex, CandidateTerm, CandidateMTimeMs)), #raft_state{} = State) ->
+    handle_request_vote(?FUNCTION_NAME, Candidate, CandidateIndex, CandidateTerm, CandidateMTimeMs, State);
 
 %% [Vote RPC] Votes are only useful to candidates
-witness(_, ?REMOTE(_, ?VOTE(_)), #raft_state{}) ->
+witness(_, ?REMOTE(_, ?VOTE(_, _)), #raft_state{}) ->
     keep_state_and_data;
 
 %% [State Timeout] Check liveness, but do not restart state.
@@ -3268,8 +3277,9 @@ candidate_start_election(
 
     % Request a vote from all peers and also vote for ourselves.
     % Candidates always vote for themselves at the start of an election.
-    send_rpc_to_all_members(?REQUEST_VOTE(ElectionType, LastLogIndex, LastLogTerm), NewData),
-    send_rpc(Self, ?VOTE(true), NewData),
+    LocalMTimeMs = erlang:monotonic_time(millisecond),
+    send_rpc_to_all_members(?REQUEST_VOTE(ElectionType, LastLogIndex, LastLogTerm, LocalMTimeMs), NewData),
+    send_rpc(Self, ?VOTE(true, LocalMTimeMs), NewData),
 
     {keep_state, NewData, ?ELECTION_TIMEOUT(NewData)}.
 
@@ -3353,15 +3363,15 @@ leader_replicate_to_peer(
         first_current_term_log_index = TermStartIndex
     } = State0
 ) ->
+    LocalMTimeMs = erlang:monotonic_time(millisecond),
     FollowerNextIndex = maps:get(FollowerId, NextIndices, TermStartIndex),
     PrevLogIndex = FollowerNextIndex - 1,
     PrevLogTermRes = wa_raft_log:term(View, PrevLogIndex),
     FollowerMatchIndex = maps:get(FollowerId, MatchIndices, 0),
     FollowerMatchIndex =/= 0 andalso
         ?RAFT_GATHER(Table, 'leader.follower.lag', CommitIndex - FollowerMatchIndex),
-    NowTs = erlang:monotonic_time(millisecond),
     LastFollowerHeartbeatSendTs = maps:get(FollowerId, HeartbeatSendTs, undefined),
-    State1 = State0#raft_state{heartbeat_send_ts = HeartbeatSendTs#{FollowerId => NowTs}},
+    State1 = State0#raft_state{heartbeat_send_ts = HeartbeatSendTs#{FollowerId => LocalMTimeMs}},
     LastIndex = wa_raft_log:last_index(View),
     case PrevLogTermRes of %% no log entry to replicate
         not_found ->
@@ -3370,7 +3380,7 @@ leader_replicate_to_peer(
                 [CommitIndex, FollowerId, FollowerNextIndex]),
             % Send append entries request.
             {ok, LastTerm} = wa_raft_log:term(View, LastIndex),
-            send_rpc(Sender, ?APPEND_ENTRIES(LastIndex, LastTerm, [], CommitIndex, 0), State1),
+            send_rpc(Sender, ?APPEND_ENTRIES(LastIndex, LastTerm, [], CommitIndex, 0, LocalMTimeMs), State1),
             LastFollowerHeartbeatSendTs =/= undefined andalso
                 ?RAFT_GATHER(Table, 'leader.heartbeat.interval_ms', erlang:monotonic_time(millisecond) - LastFollowerHeartbeatSendTs),
             State1;
@@ -3398,7 +3408,7 @@ leader_replicate_to_peer(
             % Compute trim index.
             TrimIndex = lists:min(to_participant_list(MatchIndices#{node() => LastIndex}, 0, config(State1))),
             % Send append entries request.
-            CastResult = send_rpc(Sender, ?APPEND_ENTRIES(PrevLogIndex, PrevLogTerm, Entries, CommitIndex, TrimIndex), State1),
+            CastResult = send_rpc(Sender, ?APPEND_ENTRIES(PrevLogIndex, PrevLogTerm, Entries, CommitIndex, TrimIndex, LocalMTimeMs), State1),
             NewNextIndices =
                 case CastResult of
                     ok ->
@@ -3851,6 +3861,7 @@ open_snapshot(Root, Position, #raft_state{storage = Storage} = Data) ->
     Entries :: [wa_raft_log:log_entry() | binary()],
     CommitIndex :: wa_raft_log:log_index(),
     TrimIndex :: wa_raft_log:log_index(),
+    LeaderMTimeMs :: integer() | undefined,
     Data :: #raft_state{}
 ) -> gen_statem:event_handler_result(state(), #raft_state{}).
 
@@ -3862,6 +3873,7 @@ handle_heartbeat(
     Entries,
     LeaderCommitIndex,
     TrimIndex,
+    LeaderMTimeMs,
     #raft_state{
         application = App,
         table = Table,
@@ -3881,7 +3893,7 @@ handle_heartbeat(
     case append_entries(State, PrevLogIndex, PrevLogTerm, Entries, EntryCount, Data0) of
         {ok, Accepted, NewMatchIndex, Data1} ->
             AdjustedLastApplied = max(0, LastApplied - wa_raft_queue:apply_queue_size(Queues)),
-            send_rpc(Leader, ?APPEND_ENTRIES_RESPONSE(PrevLogIndex, Accepted, NewMatchIndex, AdjustedLastApplied), Data1),
+            send_rpc(Leader, ?APPEND_ENTRIES_RESPONSE(PrevLogIndex, Accepted, NewMatchIndex, AdjustedLastApplied, LeaderMTimeMs), Data1),
 
             Data2 = Data1#raft_state{
                 leader_commit_index_ts = erlang:monotonic_time(millisecond),
@@ -4101,6 +4113,7 @@ handle_request_pre_vote(
     Candidate :: #raft_identity{},
     CandidateIndex :: wa_raft_log:log_index(),
     CandidateTerm :: wa_raft_log:log_term(),
+    CandidateMTimeMs :: integer() | undefined,
     Data :: #raft_state{}
 ) -> gen_statem:event_handler_result(state(), #raft_state{}).
 %% A replica with an available vote in the current term should allocate its vote
@@ -4110,6 +4123,7 @@ handle_request_vote(
     ?IDENTITY_REQUIRES_MIGRATION(_, CandidateId) = Candidate,
     CandidateIndex,
     CandidateTerm,
+    CandidateMTimeMs,
     #raft_state{
         log_view = View,
         voted_for = VotedFor
@@ -4131,11 +4145,11 @@ handle_request_vote(
                     % persist the vote before responding. (Fig. 2)
                     NewData = Data#raft_state{voted_for = CandidateId},
                     wa_raft_durable_state:store(NewData),
-                    send_rpc(Candidate, ?VOTE(true), NewData),
+                    send_rpc(Candidate, ?VOTE(true, CandidateMTimeMs), NewData),
                     {keep_state, NewData};
                 CandidateId ->
                     % Otherwise, the vote allocation did not change, so just send the response.
-                    send_rpc(Candidate, ?VOTE(true), Data),
+                    send_rpc(Candidate, ?VOTE(true, CandidateMTimeMs), Data),
                     keep_state_and_data
             end;
         false ->
@@ -4145,19 +4159,19 @@ handle_request_vote(
                 "refuses to vote for candidate ~0p with outdated log at ~0p:~0p versus local log at ~0p:~0p.",
                 [Candidate, CandidateIndex, CandidateTerm, Index, Term]
             ),
-            send_rpc(Candidate, ?VOTE(false), Data),
+            send_rpc(Candidate, ?VOTE(false, CandidateMTimeMs), Data),
             keep_state_and_data
     end;
 %% A replica that was already allocated its vote to a specific candidate in the
 %% current term should ignore vote requests from other candidates. (5.4.1)
-handle_request_vote(State, Candidate, _, _,  #raft_state{voted_for = VotedFor} = Data) ->
+handle_request_vote(State, Candidate, _, _, CandidateMTimeMs, #raft_state{voted_for = VotedFor} = Data) ->
     ?SERVER_LOG_NOTICE(
         State,
         Data,
         "refusing to vote for candidate ~0p after previously voting for candidate ~0p in the current term.",
         [Candidate, VotedFor]
     ),
-    send_rpc(Candidate, ?VOTE(false), Data),
+    send_rpc(Candidate, ?VOTE(false, CandidateMTimeMs), Data),
     keep_state_and_data.
 
 %%------------------------------------------------------------------------------
@@ -4258,12 +4272,16 @@ update_current_term_info(
     ok.
 
 %% Update the heartbeat reply timestamp for a peer and recompute the quorum timestamp.
--spec update_heartbeat_reply_ts(Peer :: node(), Data :: #raft_state{}) -> #raft_state{}.
-update_heartbeat_reply_ts(Peer, #raft_state{heartbeat_reply_ts = HeartbeatReply} = Data) ->
-    NowTs = erlang:monotonic_time(millisecond),
-    NewHeartbeatReply = HeartbeatReply#{Peer => NowTs},
+-spec update_heartbeat_reply_ts(Peer :: node(), LeaderMTimeMs :: integer() | undefined, Data :: #raft_state{}) -> #raft_state{}.
+update_heartbeat_reply_ts(Peer, LeaderMTimeMs, #raft_state{heartbeat_reply_ts = HeartbeatReply} = Data) ->
+    LocalMTimeMs = erlang:monotonic_time(millisecond),
+    EffectiveTimestamp = case LeaderMTimeMs of
+        undefined -> LocalMTimeMs;
+        _         -> LeaderMTimeMs
+    end,
+    NewHeartbeatReply = HeartbeatReply#{Peer => EffectiveTimestamp},
     NewData = Data#raft_state{heartbeat_reply_ts = NewHeartbeatReply},
-    update_quorum_ts(NowTs, NewData).
+    update_quorum_ts(LocalMTimeMs, NewData).
 
 %% Recompute the quorum timestamp from the current heartbeat reply timestamps.
 -spec update_quorum_ts(Data :: #raft_state{}) -> #raft_state{}.
@@ -4272,11 +4290,11 @@ update_quorum_ts(Data) ->
 
 %% Recompute the quorum timestamp from the current heartbeat reply timestamps.
 -spec update_quorum_ts(
-    NowTs :: integer(),
+    LocalMTimeMs :: integer(),
     Data :: #raft_state{}
 ) -> #raft_state{}.
-update_quorum_ts(NowTs, #raft_state{self = #raft_identity{node = Node}, heartbeat_reply_ts = HeartbeatReply} = Data) ->
-    case compute_member_quorum(HeartbeatReply#{Node => NowTs}, config(Data)) of
+update_quorum_ts(LocalMTimeMs, #raft_state{self = #raft_identity{node = Node}, heartbeat_reply_ts = HeartbeatReply} = Data) ->
+    case compute_member_quorum(HeartbeatReply#{Node => LocalMTimeMs}, config(Data)) of
         {quorum, QuorumTs} ->
             %% A successful quorum computation after a handover-timeout
             %% clears the `pending_reconfirmation` hold. `heartbeat_reply_ts`
