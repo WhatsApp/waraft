@@ -17,8 +17,7 @@
     end_per_suite/1,
     init_per_group/2,
     end_per_group/2,
-    init_per_testcase/2,
-    end_per_testcase/2
+    init_per_testcase/2
 ]).
 
 %% Unit tests
@@ -54,10 +53,6 @@ end_per_group(_, _) ->
 -spec init_per_testcase(Testcase :: atom(), Config :: ct_suite:ct_config()) -> ct_suite:ct_config().
 init_per_testcase(Testcase, Config) ->
     [{testcase, Testcase} | Config].
-
--spec end_per_testcase(Testcase :: atom(), Config :: ct_suite:ct_config()) -> ok.
-end_per_testcase(_, _) ->
-    ok.
 
 -spec all() -> [ct_suite:ct_test_def()].
 all() ->

@@ -16,8 +16,7 @@
     end_per_suite/1,
     init_per_group/2,
     end_per_group/2,
-    init_per_testcase/2,
-    end_per_testcase/2
+    init_per_testcase/2
 ]).
 
 -export([
@@ -76,10 +75,6 @@ init_per_testcase(Testcase, Config0) ->
     % Reset the cluster by wiping and bootstrapping
     wa_raft_cluster_test_helper:reset_cluster(Config1),
     Config1.
-
--spec end_per_testcase(Testcase :: atom(), Config :: ct_suite:ct_config()) -> ok.
-end_per_testcase(_, _) ->
-    ok.
 
 -spec all() -> [ct_suite:ct_test_def()].
 all() ->
