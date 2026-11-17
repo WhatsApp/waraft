@@ -21,7 +21,8 @@
     traversal_paths_rejected/1,
     absolute_paths_rejected/1,
     worker_failures/1,
-    worker_shutdown/1
+    worker_shutdown/1,
+    may_accept/1
 ]).
 
 %% Transport worker behavior callbacks
@@ -49,7 +50,8 @@ groups() ->
             traversal_paths_rejected,
             absolute_paths_rejected,
             worker_failures,
-            worker_shutdown
+            worker_shutdown,
+            may_accept
         ]}
     ].
 
@@ -166,6 +168,36 @@ worker_shutdown(_Config) ->
         ?assertEqual({'DOWN', Monitor, process, Linked, linked_crash}, receive_message()),
         ok = gen_server:stop(Supervisor)
     after
+        process_flag(trap_exit, PreviousTrapExit)
+    end.
+
+-spec may_accept(Config :: ct_suite:ct_config()) -> ok.
+may_accept(_Config) ->
+    PreviousTrapExit = process_flag(trap_exit, true),
+    try
+        {ok, Transport} = wa_raft_transport:start_link(),
+        ok = application:set_env(wa_raft, raft_max_incoming_snapshot_transfers, 1),
+        ok = application:set_env(wa_raft, raft_max_incoming_witness_snapshot_transfers, 1),
+        ?assertEqual(ok, wa_raft_transport:may_accept(node(), false, 1000)),
+        ?assertEqual(ok, wa_raft_transport:may_accept(node(), true, 1000)),
+        ok = application:set_env(wa_raft, raft_max_incoming_snapshot_transfers, 0),
+        ?assertEqual({error, receiver_overloaded}, wa_raft_transport:may_accept(node(), false, 1000)),
+        ?assertEqual(ok, wa_raft_transport:may_accept(node(), true, 1000)),
+        ok = application:set_env(wa_raft, raft_max_incoming_witness_snapshot_transfers, 0),
+        ?assertEqual({error, receiver_overloaded}, wa_raft_transport:may_accept(node(), true, 1000)),
+        ?assertEqual({error, unavailable}, wa_raft_transport:may_accept('nonexistent@nohost', false, 1000)),
+        ok = gen_server:stop(Transport),
+        ?assertEqual({error, unavailable}, wa_raft_transport:may_accept(node(), false, 1000)),
+        Stub = spawn_link(fun() ->
+            receive
+                {'$gen_call', From, _Request} -> gen_server:reply(From, {error, unknown_reason})
+            end
+        end),
+        true = register(wa_raft_transport, Stub),
+        ?assertEqual({error, unavailable}, wa_raft_transport:may_accept(node(), false, 1000))
+    after
+        application:unset_env(wa_raft, raft_max_incoming_snapshot_transfers),
+        application:unset_env(wa_raft, raft_max_incoming_witness_snapshot_transfers),
         process_flag(trap_exit, PreviousTrapExit)
     end.
 

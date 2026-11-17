@@ -344,18 +344,16 @@ transfer(Peer, Table, Partition, Root, Timeout) ->
 %% Ask a peer whether it currently has capacity to accept an incoming snapshot
 %% transport. This is advisory and reserves nothing: the peer performs the
 %% authoritative check again when the transport is offered, so a concurrent
-%% sender may still consume the last slot in between. Peers that do not support
-%% the query answer 'unsupported' so that callers fall back to offering the
-%% transport directly.
+%% sender may still consume the last slot in between.
 -spec may_accept(Peer :: atom(), Witness :: boolean(), Timeout :: timeout()) ->
-    ok | {error, receiver_overloaded} | {error, unsupported}.
+    ok | {error, receiver_overloaded} | {error, unavailable}.
 may_accept(Peer, Witness, Timeout) ->
     try gen_server:call({?MODULE, Peer}, ?MAY_ACCEPT(Witness), Timeout) of
-        ok                                  -> ok;
-        {error, receiver_overloaded}        -> {error, receiver_overloaded};
-        _                                   -> {error, unsupported}
+        ok                           -> ok;
+        {error, receiver_overloaded} -> {error, receiver_overloaded};
+        {error, _}                   -> {error, unavailable}
     catch
-        exit:_ -> {error, unsupported}
+        exit:_ -> {error, unavailable}
     end.
 
 -spec start_snapshot_transfer(

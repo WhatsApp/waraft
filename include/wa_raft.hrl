@@ -318,7 +318,7 @@
 %% creating the storage snapshot destined for it. The follower still performs the
 %% authoritative check when the transport itself is offered.
 -define(RAFT_SNAPSHOT_CATCHUP_PRECHECK, raft_snapshot_catchup_precheck).
--define(RAFT_SNAPSHOT_CATCHUP_PRECHECK(App, Table), ?RAFT_TABLE_CONFIG(App, Table, ?RAFT_SNAPSHOT_CATCHUP_PRECHECK, false) =:= true).
+-define(RAFT_SNAPSHOT_CATCHUP_PRECHECK(App, Table), ?RAFT_TABLE_CONFIG(App, Table, ?RAFT_SNAPSHOT_CATCHUP_PRECHECK, true) =:= true).
 %% Number of milliseconds to wait for a follower to answer the snapshot catchup
 %% precheck before falling back to creating the snapshot.
 -define(RAFT_SNAPSHOT_CATCHUP_PRECHECK_TIMEOUT_MS, raft_snapshot_catchup_precheck_timeout_ms).

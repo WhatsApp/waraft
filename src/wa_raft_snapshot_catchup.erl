@@ -218,19 +218,22 @@ terminate(_Reason, #state{transports = Transports, snapshots = Snapshots}) ->
     ok.
 
 -spec precheck(App :: atom(), Node :: node(), Table :: wa_raft:table(), Witness :: boolean()) ->
-    ok | {error, Reason :: term()}.
+    ok | {error, receiver_overloaded}.
 precheck(App, Node, Table, Witness) ->
     case ?RAFT_SNAPSHOT_CATCHUP_PRECHECK(App, Table) of
         false ->
             ok;
         true ->
             case wa_raft_transport:may_accept(Node, Witness, ?RAFT_SNAPSHOT_CATCHUP_PRECHECK_TIMEOUT_MS(App, Table)) of
+                ok ->
+                    ok;
                 {error, receiver_overloaded} ->
                     ?RAFT_COUNT(Table, 'snapshot_catchup.precheck.rejected'),
                     {error, receiver_overloaded};
-                _ ->
+                {error, unavailable} ->
                     % Peers that cannot answer the precheck are treated as accepting so that
                     % the authoritative check made when the transport is offered still decides.
+                    ?RAFT_COUNT(Table, 'snapshot_catchup.precheck.unavailable'),
                     ok
             end
     end.
