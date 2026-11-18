@@ -31,6 +31,8 @@
 -define(REQUEST_VOTE,            request_vote).
 -define(VOTE,                    vote).
 -define(HANDOVER,                handover).
+-define(HANDOVER_PROCEEDING,     handover_proceeding).
+-define(HANDOVER_PROCEEDING_RESPONSE, handover_proceeding_response).
 -define(HANDOVER_FAILED,         handover_failed).
 -define(NOTIFY_TERM,             notify_term).
 
@@ -42,7 +44,10 @@
 -define(PRE_VOTE(Ref, Vote, LastLogIndex, LastLogTerm),                                              ?PROCEDURE(?PRE_VOTE, {Ref, Vote, LastLogIndex, LastLogTerm})).
 -define(REQUEST_VOTE(ElectionType, LastLogIndex, LastLogTerm, CandidateMTimeMs),                     ?PROCEDURE(?REQUEST_VOTE, {ElectionType, LastLogIndex, LastLogTerm, CandidateMTimeMs})).
 -define(VOTE(Vote, CandidateMTimeMs),                                                                ?PROCEDURE(?VOTE, {Vote, CandidateMTimeMs})).
--define(HANDOVER(Ref, PrevLogIndex, PrevLogTerm, Entries),                                           ?PROCEDURE(?HANDOVER, {Ref, PrevLogIndex, PrevLogTerm, Entries})).
+-define(HANDOVER(Ref, PrevLogIndex, PrevLogTerm, Entries), ?PROCEDURE(?HANDOVER, {Ref, PrevLogIndex, PrevLogTerm, Entries})).
+-define(HANDOVER(Ref, PrevLogIndex, PrevLogTerm, Entries, LeaseEnabled), ?PROCEDURE(?HANDOVER, {Ref, PrevLogIndex, PrevLogTerm, Entries, LeaseEnabled})).
+-define(HANDOVER_PROCEEDING(Ref), ?PROCEDURE(?HANDOVER_PROCEEDING, {Ref})).
+-define(HANDOVER_PROCEEDING_RESPONSE(Ref), ?PROCEDURE(?HANDOVER_PROCEEDING_RESPONSE, {Ref})).
 -define(HANDOVER_FAILED(Ref),                                                                        ?PROCEDURE(?HANDOVER_FAILED, {Ref})).
 -define(NOTIFY_TERM(),                                                                               ?PROCEDURE(?NOTIFY_TERM, {})).
 

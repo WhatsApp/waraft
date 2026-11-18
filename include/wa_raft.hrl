@@ -525,7 +525,9 @@
     %% The status of the pre-votes for the current round of pre-votes.
     pre_votes = #{} :: #{node() => boolean()},
     %% The type of the next election
-    next_election_type = normal :: wa_raft_server:election_type(),
+    next_election_type = normal :: wa_raft_server:election_type() | handover,
+    %% [Follower] A lease-safe handover must be acknowledged before force votes.
+    handover_wait :: undefined | reference(),
     %% The leader of the current RAFT term if known
     leader :: undefined | #raft_identity{},
 

@@ -287,7 +287,7 @@ implement a replicated state machine in a distributed cluster.
 -type internal_event() :: advance_term_event().
 -type advance_term_event() :: ?ADVANCE_TERM(wa_raft_log:log_term()).
 
--type timeout_type() :: election | heartbeat.
+-type timeout_type() :: election | heartbeat | handover_proceeding.
 
 -type refresh_action() :: refresh.
 -type membership_action() ::
@@ -819,14 +819,16 @@ terminate(Reason, State, #raft_state{name = Name, table = Table, partition = Par
 -type remote(Call) :: ?REMOTE(#raft_identity{}, Call).
 -type procedure()  :: ?PROCEDURE(atom(), tuple()).
 
--type normalized_procedure() :: append_entries() | append_entries_response() | request_pre_vote() | pre_vote() | request_vote() | vote() | handover() | handover_failed() | notify_term().
+-type normalized_procedure() :: append_entries() | append_entries_response() | request_pre_vote() | pre_vote() | request_vote() | vote() | handover() | handover_proceeding() | handover_proceeding_response() | handover_failed() | notify_term().
 -type append_entries()          :: ?APPEND_ENTRIES         (wa_raft_log:log_index(), wa_raft_log:log_term(), [wa_raft_log:log_entry() | binary()], wa_raft_log:log_index(), wa_raft_log:log_index(), integer() | undefined).
 -type append_entries_response() :: ?APPEND_ENTRIES_RESPONSE(wa_raft_log:log_index(), boolean(), wa_raft_log:log_index(), wa_raft_log:log_index() | undefined, integer() | undefined).
 -type request_pre_vote()        :: ?REQUEST_PRE_VOTE       (reference()).
 -type pre_vote()                :: ?PRE_VOTE               (reference(), boolean(), wa_raft_log:log_index(), wa_raft_log:log_term()).
 -type request_vote()            :: ?REQUEST_VOTE           (election_type(), wa_raft_log:log_index(), wa_raft_log:log_term(), integer() | undefined).
 -type vote()                    :: ?VOTE                   (boolean(), integer() | undefined).
--type handover()                :: ?HANDOVER               (reference(), wa_raft_log:log_index(), wa_raft_log:log_term(), [wa_raft_log:log_entry() | binary()]).
+-type handover()                :: ?HANDOVER               (reference(), wa_raft_log:log_index(), wa_raft_log:log_term(), [wa_raft_log:log_entry() | binary()]) | ?HANDOVER(reference(), wa_raft_log:log_index(), wa_raft_log:log_term(), [wa_raft_log:log_entry() | binary()], boolean()).
+-type handover_proceeding() :: ?HANDOVER_PROCEEDING(reference()).
+-type handover_proceeding_response() :: ?HANDOVER_PROCEEDING_RESPONSE(reference()).
 -type handover_failed()         :: ?HANDOVER_FAILED        (reference()).
 -type notify_term()             :: ?NOTIFY_TERM            ().
 
@@ -839,7 +841,9 @@ protocol() ->
         ?PRE_VOTE                => ?PRE_VOTE(undefined, false, 0, 0),
         ?REQUEST_VOTE            => ?REQUEST_VOTE(normal, 0, 0, undefined),
         ?VOTE                    => ?VOTE(false, undefined),
-        ?HANDOVER                => ?HANDOVER(undefined, 0, 0, []),
+        ?HANDOVER                => ?HANDOVER(undefined, 0, 0, [], false),
+        ?HANDOVER_PROCEEDING => ?HANDOVER_PROCEEDING(undefined),
+        ?HANDOVER_PROCEEDING_RESPONSE => ?HANDOVER_PROCEEDING_RESPONSE(undefined),
         ?HANDOVER_FAILED         => ?HANDOVER_FAILED(undefined)
     }.
 
@@ -950,6 +954,14 @@ handle_rpc_normalization(Type, Key, Sender, Payload, State, #raft_state{table = 
     Data :: #raft_state{}
 ) -> gen_statem:event_handler_result(state(), #raft_state{}).
 
+handle_procedure(_, ?REMOTE(Sender, ?HANDOVER_PROCEEDING(Ref)), _, Data) when is_reference(Ref) ->
+    send_rpc(Sender, ?HANDOVER_PROCEEDING_RESPONSE(Ref), Data),
+    keep_state_and_data;
+%% Only a matching response in follower state may authorize force votes.
+handle_procedure(Type, ?REMOTE(_, ?HANDOVER_PROCEEDING_RESPONSE(_)) = Procedure, follower, Data) ->
+    {keep_state, Data, {next_event, Type, Procedure}};
+handle_procedure(_, ?REMOTE(_, ?HANDOVER_PROCEEDING_RESPONSE(_)), _, _) ->
+    keep_state_and_data;
 %% [AppendEntries RPC] If we haven't discovered leader for this term, record it
 handle_procedure(Type, ?REMOTE(Sender, ?APPEND_ENTRIES(_, _, _, _, _, _)) = Procedure, State, #raft_state{leader = undefined} = Data) ->
     ?SERVER_LOG_NOTICE(State, Data, "leader is now ~0p.", [identity_to_server(Sender)]),
@@ -957,7 +969,7 @@ handle_procedure(Type, ?REMOTE(Sender, ?APPEND_ENTRIES(_, _, _, _, _, _)) = Proc
     update_current_term_info(State, NewData),
     {keep_state, NewData, {next_event, Type, Procedure}};
 %% [Handover][Handover RPC] If we haven't discovered leader for this term, record it
-handle_procedure(Type, ?REMOTE(Sender, ?HANDOVER(_, _, _, _)) = Procedure, State, #raft_state{leader = undefined} = Data) ->
+handle_procedure(Type, ?REMOTE(Sender, ?HANDOVER(_, _, _, _, _)) = Procedure, State, #raft_state{leader = undefined} = Data) ->
     ?SERVER_LOG_NOTICE(State, Data, "leader is now ~0p.", [identity_to_server(Sender)]),
     NewData = Data#raft_state{leader = Sender},
     update_current_term_info(State, NewData),
@@ -1321,7 +1333,7 @@ leader(_, ?REMOTE(_, ?VOTE(_, _)), #raft_state{}) ->
     keep_state_and_data;
 
 %% [Handover][Handover RPC] We are already leader so ignore any handover requests.
-leader(_, ?REMOTE(Sender, ?HANDOVER(Reference, _, _, _)), #raft_state{} = State) ->
+leader(_, ?REMOTE(Sender, ?HANDOVER(Reference, _, _, _, _)), #raft_state{} = State) ->
     send_rpc(Sender, ?HANDOVER_FAILED(Reference), State),
     keep_state_and_data;
 
@@ -1673,7 +1685,8 @@ follower(
     ?REMOTE(Leader, ?APPEND_ENTRIES(PrevLogIndex, PrevLogTerm, Entries, CommitIndex, TrimIndex, LeaderMTimeMs)),
     #raft_state{} = State
 ) ->
-    handle_heartbeat(?FUNCTION_NAME, Leader, PrevLogIndex, PrevLogTerm, Entries, CommitIndex, TrimIndex, LeaderMTimeMs, State);
+    handle_heartbeat(?FUNCTION_NAME, Leader, PrevLogIndex, PrevLogTerm, Entries, CommitIndex, TrimIndex, LeaderMTimeMs,
+        State#raft_state{handover_wait = undefined});
 
 %% [AppendEntriesResponse RPC] Followers should not act upon any incoming heartbeat responses (5.2)
 follower(_, ?REMOTE(_, ?APPEND_ENTRIES_RESPONSE(_, _, _, _, _)), #raft_state{}) ->
@@ -1700,7 +1713,7 @@ follower(
     _,
     ?REMOTE(
         Sender,
-        ?HANDOVER(Ref, PrevLogIndex, PrevLogTerm, LogEntries)
+        ?HANDOVER(Ref, PrevLogIndex, PrevLogTerm, LogEntries, LeaseEnabled)
     ),
     #raft_state{
         application = App,
@@ -1716,8 +1729,18 @@ follower(
                 {ok, true, _, State1} ->
                     case is_self_witness(State1) of
                         false ->
-                            ?SERVER_LOG_NOTICE(State1, "immediately starting new election due to append success during handover RPC.", []),
-                            {next_state, candidate, State1#raft_state{next_election_type = force}};
+                            case LeaseEnabled of
+                                true ->
+                                    NewTerm = State1#raft_state.current_term + 1,
+                                    State2 = advance_term(follower, NewTerm, node(), State1),
+                                    State3 = State2#raft_state{handover_wait = Ref},
+                                    ?SERVER_LOG_NOTICE(State3, "waiting for handover initiator ~0p to acknowledge term ~0p.", [Sender, NewTerm]),
+                                    send_rpc(Sender, ?HANDOVER_PROCEEDING(Ref), State3),
+                                    {keep_state, State3, {state_timeout, ?RAFT_HANDOVER_TIMEOUT(App, Table), handover_proceeding}};
+                                false ->
+                                    ?SERVER_LOG_NOTICE(State1, "immediately starting new election due to append success during handover RPC.", []),
+                                    {next_state, candidate, State1#raft_state{next_election_type = force}}
+                            end;
                         true ->
                             ?SERVER_LOG_NOTICE(State1, "failing handover as a witness after handover append.", []),
                             send_rpc(Sender, ?HANDOVER_FAILED(Ref), State1),
@@ -1739,6 +1762,22 @@ follower(
             send_rpc(Sender, ?HANDOVER_FAILED(Ref), State0),
             {keep_state, State0}
     end;
+
+%% [Handover] The recipient remains a follower until the initiator has stepped down.
+follower(_, ?REMOTE(_, ?HANDOVER_PROCEEDING_RESPONSE(Ref)),
+    #raft_state{handover_wait = Ref, current_term = Term, application = App} = State) when is_reference(Ref) ->
+    case ?RAFT_LEADER_ELIGIBLE(App) andalso ?RAFT_ELECTION_WEIGHT(App) =/= 0 of
+        true ->
+            ?SERVER_LOG_NOTICE(State, "handover initiator acknowledged term ~0p; starting force election.", [Term]),
+            {next_state, candidate, State#raft_state{handover_wait = undefined, next_election_type = handover}};
+        false ->
+            {keep_state, State#raft_state{handover_wait = undefined}, ?ELECTION_TIMEOUT(State)}
+    end;
+follower(_, ?REMOTE(_, ?HANDOVER_PROCEEDING_RESPONSE(_)), _) ->
+    keep_state_and_data;
+follower(state_timeout, handover_proceeding, #raft_state{handover_wait = Ref} = State) when is_reference(Ref) ->
+    ?SERVER_LOG_NOTICE(State, "handover acknowledgment timed out; abandoning force election.", []),
+    {keep_state, State#raft_state{handover_wait = undefined}, ?ELECTION_TIMEOUT(State)};
 
 %% [Handover][HandoverFailed RPC] Followers should not act upon any incoming failed handover
 follower(_, ?REMOTE(_, ?HANDOVER_FAILED(_)), #raft_state{}) ->
@@ -1801,6 +1840,13 @@ follower(Type, Event, #raft_state{} = State) ->
         Data :: #raft_state{}
     ) -> gen_statem:event_handler_result(state(), #raft_state{}).
 
+%% Acknowledged handovers have already advanced and voted in this term.
+candidate(enter, LastState, #raft_state{next_election_type = handover, table = Table} = State0) ->
+    ?RAFT_COUNT(Table, 'candidate.enter'),
+    ?RAFT_COUNT(Table, 'leader.election_started'),
+    ?SERVER_LOG_NOTICE(State0, "becomes candidate from state ~0p for acknowledged handover.", [LastState]),
+    State1 = enter_state(candidate, State0#raft_state{next_election_type = normal}),
+    candidate_request_votes(force, State1);
 %% [Enter] Node starts a new election upon entering the candidate state.
 candidate(
     enter,
@@ -1810,7 +1856,7 @@ candidate(
         table = Table,
         next_election_type = ElectionType
     } = State0
-) ->
+) when ElectionType =:= normal; ElectionType =:= force; ElectionType =:= allowed ->
     ?RAFT_COUNT(Table, 'leader.election_started'),
     ?RAFT_COUNT(Table, 'candidate.enter'),
     ?FUNCTION_NAME =/= LastState andalso
@@ -1988,7 +2034,7 @@ candidate(
     end;
 
 %% [Handover][Handover RPC] Switch to follower because current term now has a leader (5.2, 5.3)
-candidate(Type, ?REMOTE(_, ?HANDOVER(_, _, _, _)) = Event, #raft_state{} = State) ->
+candidate(Type, ?REMOTE(_, ?HANDOVER(_, _, _, _, _)) = Event, #raft_state{} = State) ->
     ?SERVER_LOG_NOTICE(State, "ends election to handle handover.", []),
     {next_state, follower_or_witness(State), State, {next_event, Type, Event}};
 
@@ -2229,7 +2275,7 @@ witness(_, ?REMOTE(_, ?APPEND_ENTRIES_RESPONSE(_, _, _, _, _)), #raft_state{}) -
     keep_state_and_data;
 
 %% [Handover][Handover RPC] Witnesses should not receive handover requests
-witness(_, ?REMOTE(Sender, ?HANDOVER(Reference, _, _, _)), #raft_state{} = State) ->
+witness(_, ?REMOTE(Sender, ?HANDOVER(Reference, _, _, _, _)), #raft_state{} = State) ->
     send_rpc(Sender, ?HANDOVER_FAILED(Reference), State),
     keep_state_and_data;
 
@@ -3153,7 +3199,7 @@ follower_or_witness(Data) ->
 -spec enter_state(State :: state(), Data :: #raft_state{}) -> #raft_state{}.
 enter_state(State, Data0) ->
     Now = erlang:monotonic_time(millisecond),
-    Data1 = Data0#raft_state{state_start_ts = Now},
+    Data1 = Data0#raft_state{state_start_ts = Now, handover_wait = undefined},
     Data2 = set_leader_upon_entry(State, Data1),
     Data3 = cancel_pending_upon_entry(State, Data2),
     %% Leader entry unconditionally seeds `leader_quorum_ts = Now` and clears
@@ -3218,6 +3264,7 @@ advance_term(
         last_applied_indices = #{},
         heartbeat_send_ts = #{},
         handover = undefined,
+        handover_wait = undefined,
         handover_lease_state = unaffected
         %% `heartbeat_reply_ts` is deliberately not reset here. It records
         %% recent peer liveness independent of term: a peer that answered a
@@ -3279,16 +3326,13 @@ election_allowed(_, _, _) ->
     ElectionType :: election_type(),
     Data :: #raft_state{}
 ) -> gen_statem:state_enter_result(state(), #raft_state{}).
-candidate_start_election(
-    ElectionType,
-    #raft_state{
-        self = Self,
-        log_view = View,
-        current_term = CurrentTerm
-    } = Data
-) ->
-    % Advance the term and record that we will vote for ourselves.
+candidate_start_election(ElectionType, #raft_state{current_term = CurrentTerm} = Data) ->
     NewData = advance_term(candidate, CurrentTerm + 1, node(), Data),
+    candidate_request_votes(ElectionType, NewData).
+
+-spec candidate_request_votes(ElectionType :: election_type(), Data :: #raft_state{}) ->
+    gen_statem:state_enter_result(state(), #raft_state{}).
+candidate_request_votes(ElectionType, #raft_state{self = Self, log_view = View} = NewData) ->
 
     % Determine the log index and term at which the election will occur.
     LastLogIndex = wa_raft_log:last_index(View),
@@ -3297,7 +3341,7 @@ candidate_start_election(
     ?SERVER_LOG_NOTICE(
         candidate,
         NewData,
-        "advances to new term and starts ~0p election at ~0p:~0p.",
+        "starts ~0p election at ~0p:~0p.",
         [ElectionType, LastLogIndex, LastLogTerm]
     ),
 

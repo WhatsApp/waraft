@@ -110,6 +110,13 @@
     forced_handover/1,
     handover_send_failure/1,
     handover_follower/1,
+    handover_acknowledged/1,
+    handover_ack_timeout/1,
+    handover_ack_superseded/1,
+    handover_ack_ineligible/1,
+    handover_initiator_stepdown/1,
+    handover_proceeding_same_term/1,
+    handover_ack_newer_term/1,
     handover_witness/1,
     add_member/1,
     add_member_follower/1,
@@ -305,6 +312,13 @@ server_groups() ->
             forced_handover,
             handover_send_failure,
             handover_follower,
+            handover_acknowledged,
+            handover_ack_timeout,
+            handover_ack_superseded,
+            handover_ack_ineligible,
+            handover_initiator_stepdown,
+            handover_proceeding_same_term,
+            handover_ack_newer_term,
             handover_witness,
             add_member,
             add_member_follower,
@@ -1381,6 +1395,15 @@ clear_message_queue() ->
 
 -define(HANDOVER_RPC(Term, SenderName, SenderNode, Ref, PrevLogIndex, PrevLogTerm, Entries),
     ?RAFT_NAMED_RPC(handover, Term, SenderName, SenderNode, {Ref, PrevLogIndex, PrevLogTerm, Entries})
+).
+-define(HANDOVER_RPC(Term, SenderName, SenderNode, Ref, PrevLogIndex, PrevLogTerm, Entries, LeaseEnabled),
+    ?RAFT_NAMED_RPC(handover, Term, SenderName, SenderNode, {Ref, PrevLogIndex, PrevLogTerm, Entries, LeaseEnabled})
+).
+-define(HANDOVER_PROCEEDING_RPC(Term, SenderName, SenderNode, Ref),
+    ?RAFT_NAMED_RPC(handover_proceeding, Term, SenderName, SenderNode, {Ref})
+).
+-define(HANDOVER_PROCEEDING_RESPONSE_RPC(Term, SenderName, SenderNode, Ref),
+    ?RAFT_NAMED_RPC(handover_proceeding_response, Term, SenderName, SenderNode, {Ref})
 ).
 -define(HANDOVER_FAILED_RPC(Term, SenderName, SenderNode, Ref),
     ?RAFT_NAMED_RPC(handover_failed, Term, SenderName, SenderNode, {Ref})
@@ -4264,6 +4287,119 @@ handover_follower(Config) ->
     ?assertCast(Name, node5, ?REQUEST_VOTE_RPC(3, Name, Node, force, _, _, _)),
 
     % Stop server
+    ok = server_stop().
+
+-spec handover_acknowledged(Config :: ct_suite:ct_config()) -> ok.
+handover_acknowledged(Config) ->
+    Name = ?SERVER_NAME(Config),
+    Node = node(),
+    {follower, _} = server_start_and_bootstrap(2, 2, Config),
+    Ref = make_ref(),
+    {follower, Waiting} = server_cast(?HANDOVER_RPC(2, Name, node2, Ref, 2, 2, [], true)),
+    ?assertEqual(3, Waiting#raft_state.current_term),
+    ?assertEqual(Node, Waiting#raft_state.voted_for),
+    ?assertEqual(Ref, Waiting#raft_state.handover_wait),
+    ?assertCast(Name, node2, ?HANDOVER_PROCEEDING_RPC(3, Name, Node, Ref)),
+    ?assertNotCast(_, _, ?REQUEST_VOTE_RPC(_, _, _, _, _, _, _), 0),
+    ?assertNotCast(_, _, ?VOTE_RPC(_, _, _, true, _), 0),
+    {follower, Waiting} = server_cast(?HANDOVER_PROCEEDING_RESPONSE_RPC(3, Name, node2, make_ref())),
+    {follower, Waiting} = server_cast(?HANDOVER_PROCEEDING_RESPONSE_RPC(2, Name, node2, Ref)),
+    {candidate, Voting} = server_cast(?HANDOVER_PROCEEDING_RESPONSE_RPC(3, Name, node2, Ref)),
+    ?assertEqual(3, Voting#raft_state.current_term),
+    ?assertEqual(undefined, Voting#raft_state.handover_wait),
+    ?assertCast(Name, node2, ?REQUEST_VOTE_RPC(3, Name, Node, force, 2, 2, _)),
+    {candidate, Duplicate} = server_cast(?HANDOVER_PROCEEDING_RESPONSE_RPC(3, Name, node2, Ref)),
+    ?assertEqual(3, Duplicate#raft_state.current_term),
+    ok = server_stop().
+
+-spec handover_ack_timeout(Config :: ct_suite:ct_config()) -> ok.
+handover_ack_timeout(Config) ->
+    Name = ?SERVER_NAME(Config),
+    Node = node(),
+    {follower, _} = server_start_and_bootstrap(2, 2, Config),
+    Ref = make_ref(),
+    {follower, _} = server_cast(?HANDOVER_RPC(2, Name, node2, Ref, 2, 2, [], true)),
+    clear_message_queue(),
+    {follower, TimedOut} = server_invoke(state_timeout, handover_proceeding),
+    ?assertEqual(undefined, TimedOut#raft_state.handover_wait),
+    {follower, TimedOut} = server_cast(?HANDOVER_PROCEEDING_RESPONSE_RPC(3, Name, node2, Ref)),
+    ?assertNotCast(_, _, ?REQUEST_VOTE_RPC(_, _, _, _, _, _, _), 0),
+    {candidate, Ordinary} = server_election_timeout(),
+    ?assertEqual(4, Ordinary#raft_state.current_term),
+    ?assertCast(Name, node2, ?REQUEST_VOTE_RPC(4, Name, Node, normal, 2, 2, _)),
+    ok = server_stop().
+
+-spec handover_ack_superseded(Config :: ct_suite:ct_config()) -> ok.
+handover_ack_superseded(Config) ->
+    Name = ?SERVER_NAME(Config),
+    {follower, _} = server_start_and_bootstrap(2, 2, Config),
+    Ref = make_ref(),
+    {follower, _} = server_cast(?HANDOVER_RPC(2, Name, node2, Ref, 2, 2, [], true)),
+    {follower, Heartbeat} = server_cast(?APPEND_ENTRIES_RPC(3, Name, node3, 2, 2, [], 2, 0)),
+    ?assertEqual(undefined, Heartbeat#raft_state.handover_wait),
+    {follower, _} = server_cast(?HANDOVER_PROCEEDING_RESPONSE_RPC(3, Name, node2, Ref)),
+    {follower, Advanced} = server_cast(?NOTIFY_TERM_RPC(4, Name, node4)),
+    ?assertEqual(undefined, Advanced#raft_state.handover_wait),
+    {follower, _} = server_cast(?HANDOVER_PROCEEDING_RESPONSE_RPC(3, Name, node2, Ref)),
+    ?assertNotCast(_, _, ?REQUEST_VOTE_RPC(_, _, _, _, _, _, _), 0),
+    ok = server_stop().
+
+-spec handover_ack_ineligible(Config :: ct_suite:ct_config()) -> ok.
+handover_ack_ineligible(Config) ->
+    Name = ?SERVER_NAME(Config),
+    {follower, _} = server_start_and_bootstrap(2, 2, Config),
+    Ref = make_ref(),
+    {follower, _} = server_cast(?HANDOVER_RPC(2, Name, node2, Ref, 2, 2, [], true)),
+    ok = application:set_env(?RAFT_APPLICATION, ?RAFT_ELECTION_WEIGHT, 0),
+    {follower, Ineligible} = server_cast(?HANDOVER_PROCEEDING_RESPONSE_RPC(3, Name, node2, Ref)),
+    ?assertEqual(undefined, Ineligible#raft_state.handover_wait),
+    ?assertNotCast(_, _, ?REQUEST_VOTE_RPC(_, _, _, _, _, _, _), 0),
+    ok = server_stop().
+
+-spec handover_initiator_stepdown(Config :: ct_suite:ct_config()) -> ok.
+handover_initiator_stepdown(Config) ->
+    Node = node(),
+    {leader, Name, Term, _} = setup_leader_with_quorum(Config),
+    Ref = make_ref(),
+    NewTerm = Term + 1,
+    {follower, SteppedDown} = server_cast(?HANDOVER_PROCEEDING_RPC(NewTerm, Name, node2, Ref)),
+    ?assertEqual(Term + 1, SteppedDown#raft_state.current_term),
+    ?assertEqual(undefined, SteppedDown#raft_state.leader),
+    ?assertCast(Name, node2, ?HANDOVER_PROCEEDING_RESPONSE_RPC(NewTerm, Name, Node, Ref)),
+    {follower, _} = server_cast(?HANDOVER_PROCEEDING_RPC(Term + 1, Name, node2, Ref)),
+    ?assertCast(Name, node2, ?HANDOVER_PROCEEDING_RESPONSE_RPC(NewTerm, Name, Node, Ref)),
+    ok = server_stop().
+
+-spec handover_proceeding_same_term(Config :: ct_suite:ct_config()) -> ok.
+handover_proceeding_same_term(Config) ->
+    Node = node(),
+    {leader, Name, Term, _} = setup_leader_with_quorum(Config),
+    Ref = make_ref(),
+    {leader, StillLeader} = server_cast(?HANDOVER_PROCEEDING_RPC(Term, Name, node2, Ref)),
+    ?assertEqual(Term, StillLeader#raft_state.current_term),
+    ?assertCast(Name, node2, ?HANDOVER_PROCEEDING_RESPONSE_RPC(Term, Name, Node, Ref)),
+    {follower, _, ok} = server_call(?RESIGN_COMMAND),
+    {candidate, Candidate} = server_election_timeout(),
+    CandidateTerm = Candidate#raft_state.current_term,
+    clear_message_queue(),
+    {candidate, StillCandidate} = server_cast(?HANDOVER_PROCEEDING_RPC(CandidateTerm, Name, node2, Ref)),
+    ?assertEqual(CandidateTerm, StillCandidate#raft_state.current_term),
+    ?assertCast(Name, node2, ?HANDOVER_PROCEEDING_RESPONSE_RPC(CandidateTerm, Name, Node, Ref)),
+    ok = server_stop().
+
+-spec handover_ack_newer_term(Config :: ct_suite:ct_config()) -> ok.
+handover_ack_newer_term(Config) ->
+    Name = ?SERVER_NAME(Config),
+    {follower, _} = server_start_and_bootstrap(2, 2, Config),
+    Ref = make_ref(),
+    {follower, Waiting} = server_cast(?HANDOVER_RPC(2, Name, node2, Ref, 2, 2, [], true)),
+    ?assertNotEqual(undefined, Waiting#raft_state.handover_wait),
+    {follower, Advanced} = server_cast(?NOTIFY_TERM_RPC(4, Name, node3)),
+    ?assertEqual(4, Advanced#raft_state.current_term),
+    ?assertEqual(undefined, Advanced#raft_state.handover_wait),
+    {follower, _} = server_cast(?HANDOVER_PROCEEDING_RESPONSE_RPC(3, Name, node2, Ref)),
+    {follower, _} = server_cast(?HANDOVER_PROCEEDING_RESPONSE_RPC(4, Name, node2, Ref)),
+    ?assertNotCast(_, _, ?REQUEST_VOTE_RPC(_, _, _, _, _, _, _), 0),
     ok = server_stop().
 
 -spec handover_witness(Config :: ct_suite:ct_config()) -> ok.
