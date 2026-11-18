@@ -224,6 +224,10 @@
 %% greater than the maximum expected network delay.
 -define(RAFT_ELECTION_TIMEOUT_MIN, raft_election_timeout_ms).
 -define(RAFT_ELECTION_TIMEOUT_MIN(App, Table), ?RAFT_TABLE_CONFIG(App, Table, ?RAFT_ELECTION_TIMEOUT_MIN, 5000)).
+%% Startup protection may be extended, but must not be shorter than the election
+%% minimum because pre-restart leader promises are not persisted.
+-define(RAFT_STARTUP_GRACE_PERIOD_MS, raft_startup_grace_period_ms).
+-define(RAFT_STARTUP_GRACE_PERIOD_MS(App, Table), ?RAFT_TABLE_CONFIG(App, Table, ?RAFT_STARTUP_GRACE_PERIOD_MS, ?RAFT_ELECTION_TIMEOUT_MIN(App, Table))).
 %% Maximum time in milliseconds since receiving the last valid leader heartbeat
 %% before triggering a new election due to term timeout. The difference between this
 %% time and the minimum election timeout should be much greater than the expected
@@ -495,7 +499,7 @@
     %% (`leader_eligible/1`, `try_lease_read/2`, and the leader clause of
     %% `update_status/2`). Not touched on non-leader `enter_state`; a
     %% recently-stepped-down leader's value survives as commit-index freshness
-    %% evidence for `update_status/2` and `is_leader_missing/1`.
+    %% evidence for `update_status/2` and `leader_delay/2`.
     leader_quorum_ts :: undefined | integer(),
     %% The most recently seen commit index from a leader heartbeat
     leader_commit_index :: undefined | non_neg_integer(),
@@ -525,6 +529,9 @@
     %% The leader of the current RAFT term if known
     leader :: undefined | #raft_identity{},
 
+    %% Startup is not leader-liveness evidence, but lost pre-restart promises
+    %% must expire before this server supports a normal election.
+    server_start_ts :: undefined | integer(),
     %% The timestamp (milliseconds monotonic clock) that the current state of
     %% this RAFT replica was reached
     state_start_ts :: non_neg_integer(),

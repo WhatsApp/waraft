@@ -78,8 +78,35 @@ bootstrap(Config) ->
     Position = #raft_log_pos{index = 1, term = 1},
     ClusterConfig = wa_raft_server:make_config(Members),
     [wa_raft_server:bootstrap({Server, Node}, Position, ClusterConfig, #{}) || Node <- Nodes],
-    wa_raft_server:trigger_election({Server, Leader}),
-    ok.
+    wait_for_bootstrap_leader(Server, Leader, erlang:monotonic_time(millisecond) + 10_000).
+
+-spec wait_for_bootstrap_leader(Server :: atom(), Leader :: node(), Deadline :: integer()) -> ok.
+wait_for_bootstrap_leader(Server, Leader, Deadline) ->
+    case wa_raft_server:status({Server, Leader}, state) of
+        candidate ->
+            ok;
+        leader ->
+            ok;
+        _ ->
+            case wa_raft_server:trigger_election({Server, Leader}) of
+                ok -> ok;
+                {error, rejected} -> ok
+            end
+    end,
+    case erpc:call(Leader, wa_raft_info, get_leader, [?TABLE, ?PARTITION]) of
+        Leader ->
+            ok;
+        _ ->
+            case Deadline - erlang:monotonic_time(millisecond) of
+                Remaining when Remaining > 0 ->
+                    receive
+                    after min(20, Remaining) ->
+                        wait_for_bootstrap_leader(Server, Leader, Deadline)
+                    end;
+                _ ->
+                    ct:fail({bootstrap_election_timeout, {Server, Leader}})
+            end
+    end.
 
 -spec wait_for_node(Node :: node()) -> ok.
 wait_for_node(Node) ->

@@ -772,6 +772,7 @@ init(
         commit_index = Last#raft_log_pos.index,
         last_applied = Last#raft_log_pos.index,
         current_term = Last#raft_log_pos.term,
+        server_start_ts = LocalMTimeMs,
         state_start_ts = LocalMTimeMs
     },
     Data1 = load_config(Data0),
@@ -884,21 +885,21 @@ handle_rpc_impl(Type, _, ?REQUEST_PRE_VOTE, _, Sender, Payload, State, Data) ->
 %%                   replicating to peers so we check if we have recently received
 %%                   a heartbeat. (4.2.3)
 handle_rpc_impl(Type, Event, ?REQUEST_VOTE, Term, Sender, Payload, State, #raft_state{table = Table} = Data) when is_tuple(Payload), element(1, Payload) =:= normal ->
-    case is_leader_missing(Data) of
-        {true, _, _} ->
-            % We have not gotten a heartbeat from the leader recently so allow this vote request
-            % to go through by reraising it with the special 'allowed' election type.
+    LocalMTimeMs = erlang:monotonic_time(millisecond),
+    case leader_contact_expired(LocalMTimeMs, Data) andalso startup_holdoff_expired(LocalMTimeMs, Data) of
+        true ->
+            % Neither startup nor recent leader contact still protects this replica.
+            % Continue the vote request with the special 'allowed' election type.
             handle_rpc_impl(Type, Event, ?REQUEST_VOTE, Term, Sender, setelement(1, Payload, allowed), State, Data);
-        {false, Delay, AllowedDelay} ->
-            % We have gotten a heartbeat recently so drop this vote request.
-            % Log this at debug level because we may end up with a lot of these when we have
-            % removed a server from the cluster but not yet shut it down.
+        false ->
             ?RAFT_COUNT(Table, 'server.request_vote.drop'),
             ?SERVER_LOG_DEBUG(
                 State,
                 Data,
-                "rejecting normal vote request from ~p because leader was still active ~p ms ago (allowed ~p ms).",
-                [Sender, Delay, AllowedDelay]
+                "rejecting normal vote request from ~p because election protection is active "
+                "(leader delay ~p ms, election grace ~p ms, startup delay ~p ms, startup grace ~p ms).",
+                [Sender, leader_delay(LocalMTimeMs, Data), ?RAFT_ELECTION_TIMEOUT_MIN(Data#raft_state.application, Table),
+                 timestamp_delay(LocalMTimeMs, Data#raft_state.server_start_ts), startup_grace(Data)]
             ),
             % For forwards and backwards compatibility, attempt to extract the timestamp to
             % echo back to the sender.
@@ -1028,7 +1029,7 @@ stalled(_, ?REMOTE(Sender, ?APPEND_ENTRIES(PrevLogIndex, _, _, LeaderCommitIndex
     %% Stalled clause rejects the AppendEntries (it cannot adopt log
     %% entries), but it now records both the leader's commit index and the
     %% timestamp so that a follower/witness transition inherits fresh
-    %% liveness evidence for `is_leader_missing/1` and the promote-gate.
+    %% liveness evidence for `leader_delay/2` and the promote-gate.
     NewState = State#raft_state{
         leader_commit_index = LeaderCommitIndex,
         leader_commit_index_ts = erlang:monotonic_time(millisecond)
@@ -1766,7 +1767,7 @@ follower(state_timeout, _, #raft_state{
             ),
             {next_state, candidate, State};
         false ->
-            ?SERVER_LOG_NOTICE(State, "is not timing out due to being ineligible or having zero election weight.", []),
+            ?SERVER_LOG_NOTICE(State, "is not starting an election due to ineligibility, zero election weight, or active normal-election protection.", []),
             {repeat_state, State}
     end;
 
@@ -1817,8 +1818,11 @@ candidate(
 
     State1 = enter_state(?FUNCTION_NAME, State0#raft_state{next_election_type = normal}),
 
-    case ElectionType =:= normal andalso ?RAFT_ELECTION_PRE_VOTE(App, Table) of
-        true ->
+    LocalMTimeMs = erlang:monotonic_time(millisecond),
+    case {election_allowed(LocalMTimeMs, ElectionType, State1), ElectionType =:= normal andalso ?RAFT_ELECTION_PRE_VOTE(App, Table)} of
+        {false, _} ->
+            {keep_state, State1, ?ELECTION_TIMEOUT(State1)};
+        {true, true} ->
             ?SERVER_LOG_NOTICE(State1, "advances to new term and starts pre-vote.", []),
 
             % When pre-vote is enabled, a round of pre-votes must first be issued
@@ -1833,7 +1837,7 @@ candidate(
             send_rpc_to_all_members(?REQUEST_PRE_VOTE(Ref), State2),
 
             {keep_state, State2, ?ELECTION_TIMEOUT(State2)};
-        false ->
+        {true, false} ->
             % Otherwise, immediately start the election.
             candidate_start_election(ElectionType, State1)
     end;
@@ -1889,14 +1893,25 @@ candidate(
             Duration = LocalMTimeMs - StateStart,
             case Outcome of
                 true ->
-                    Support = [Peer || Peer := true <- NewPreVotes],
-                    ?SERVER_LOG_NOTICE(
-                        NewData,
-                        "is proceeding to election after ~0p ms with pre-votes from ~0p.",
-                        [Duration, Support]
-                    ),
-                    ?RAFT_COUNT(Table, 'candidate.pre_vote.passed'),
-                    candidate_start_election(normal, NewData);
+                    case election_allowed(LocalMTimeMs, normal, NewData) of
+                        true ->
+                            Support = [Peer || Peer := true <- NewPreVotes],
+                            ?SERVER_LOG_NOTICE(
+                                NewData,
+                                "is proceeding to election after ~0p ms with pre-votes from ~0p.",
+                                [Duration, Support]
+                            ),
+                            ?RAFT_COUNT(Table, 'candidate.pre_vote.passed'),
+                            candidate_start_election(normal, NewData);
+                        false ->
+                            ?SERVER_LOG_NOTICE(
+                                NewData,
+                                "passed pre-vote after ~0p ms but is deferring election while normal-election protection is active.",
+                                [Duration]
+                            ),
+                            ?RAFT_COUNT(Table, 'candidate.pre_vote.election_guarded'),
+                            {keep_state, NewData, ?ELECTION_TIMEOUT(NewData)}
+                    end;
                 false ->
                     Opposition = [Peer || Peer := false <- NewPreVotes],
                     ?SERVER_LOG_NOTICE(
@@ -2370,7 +2385,7 @@ command(State, {call, From}, ?STATUS_COMMAND, #raft_state{} = Data) ->
     ],
     {keep_state_and_data, {reply, From, Status}};
 
-%% [Promote] Request full replica nodes to start a new election.
+%% [TriggerElection] Request full replica nodes to start a normal election.
 command(
     State,
     {call, From},
@@ -2388,9 +2403,10 @@ command(
     end,
     case is_integer(Term) andalso Term >= CurrentTerm of
         true ->
-            case ?RAFT_LEADER_ELIGIBLE(App) of
-                true ->
-                    ?SERVER_LOG_NOTICE(State, Data, "switching to candidate after promotion request.", []),
+            LocalMTimeMs = erlang:monotonic_time(millisecond),
+            case {?RAFT_LEADER_ELIGIBLE(App), election_allowed(LocalMTimeMs, normal, Data)} of
+                {true, true} ->
+                    ?SERVER_LOG_NOTICE(State, Data, "switching to candidate after normal election request.", []),
                     NewData = case Term > CurrentTerm of
                         true -> advance_term(State, Term, undefined, Data);
                         false -> Data
@@ -2399,9 +2415,12 @@ command(
                         candidate -> {repeat_state, NewData, {reply, From, ok}};
                         _         -> {next_state, candidate, NewData, {reply, From, ok}}
                     end;
-                false ->
+                {false, _} ->
                     ?SERVER_LOG_WARNING(State, Data, "cannot be promoted as candidate while ineligible.", []),
-                    {keep_state_and_data, {reply, From, {error, ineligible}}}
+                    {keep_state_and_data, {reply, From, {error, ineligible}}};
+                {true, false} ->
+                    ?SERVER_LOG_NOTICE(State, Data, "rejecting election request while the normal-election guard is active.", []),
+                    {keep_state_and_data, {reply, From, {error, rejected}}}
             end;
         false ->
             ?SERVER_LOG_WARNING(State, Data, "refusing to promote to current, older, or invalid term ~0p.", [Term]),
@@ -3242,12 +3261,19 @@ leader_eligible(#raft_state{application = App, table = Table, leader_quorum_ts =
             end
     end.
 
-%% Whether or not the local replica is eligible to start elections.
-%% Generally, this requires that the replica is a member of the cluster, is
-%% eligible to be leader and has a non-zero election weight.
+%% Whether or not the local replica is eligible to start normal elections.
 -spec candidate_eligible(Data :: #raft_state{}) -> boolean().
 candidate_eligible(#raft_state{application = App} = Data) ->
-    ?RAFT_LEADER_ELIGIBLE(App) andalso is_self_member(Data) andalso ?RAFT_ELECTION_WEIGHT(App) =/= 0.
+    LocalMTimeMs = erlang:monotonic_time(millisecond),
+    ?RAFT_LEADER_ELIGIBLE(App) andalso is_self_member(Data) andalso ?RAFT_ELECTION_WEIGHT(App) =/= 0
+        andalso election_allowed(LocalMTimeMs, normal, Data).
+
+-spec election_allowed(LocalMTimeMs :: integer(), ElectionType :: election_type(), Data :: #raft_state{}) -> boolean().
+election_allowed(LocalMTimeMs, normal, #raft_state{self = Self} = Data) ->
+    leader_contact_expired(LocalMTimeMs, Data) andalso
+        (is_single_member(Self, config(Data)) orelse startup_holdoff_expired(LocalMTimeMs, Data));
+election_allowed(_, _, _) ->
+    true.
 
 -spec candidate_start_election(
     ElectionType :: election_type(),
@@ -4103,8 +4129,9 @@ handle_request_pre_vote(
 ) ->
     Index = wa_raft_log:last_index(View),
     {ok, Term} = wa_raft_log:term(View, Index),
-    {Missing, _, _} = is_leader_missing(Data),
-    send_rpc(Candidate, ?PRE_VOTE(Ref, Missing, Index, Term), Data),
+    LocalMTimeMs = erlang:monotonic_time(millisecond),
+    Allowed = leader_contact_expired(LocalMTimeMs, Data) andalso startup_holdoff_expired(LocalMTimeMs, Data),
+    send_rpc(Candidate, ?PRE_VOTE(Ref, Allowed, Index, Term), Data),
     keep_state_and_data.
 
 %% [RequestVote RPC]
@@ -4516,16 +4543,25 @@ elapsed_since(undefined, _) -> unknown;
 elapsed_since(_, undefined) -> unknown;
 elapsed_since(Now, Then) -> Now - Then.
 
-%% Check if the leader has not been seen for at least the minimum election timeout.
--spec is_leader_missing(Data :: #raft_state{}) -> {Missing :: boolean(), Delay :: infinity | integer(), AllowedDelay :: integer()}.
-is_leader_missing(#raft_state{application = App, table = Table, leader_quorum_ts = LeaderQuorumTs, leader_commit_index_ts = LeaderCommitIndexTs}) ->
-    AllowedDelay = ?RAFT_ELECTION_TIMEOUT_MIN(App, Table),
-    LastLivenessTs = latest_liveness_ts(LeaderQuorumTs, LeaderCommitIndexTs),
-    Delay = case LastLivenessTs of
-        undefined -> infinity;
-        _         -> erlang:monotonic_time(millisecond) - LastLivenessTs
-    end,
-    {Delay > AllowedDelay, Delay, AllowedDelay}.
+-spec startup_holdoff_expired(LocalMTimeMs :: integer(), Data :: #raft_state{}) -> boolean().
+startup_holdoff_expired(LocalMTimeMs, #raft_state{server_start_ts = ServerStartTs} = Data) ->
+    timestamp_delay(LocalMTimeMs, ServerStartTs) > startup_grace(Data).
+
+-spec leader_contact_expired(LocalMTimeMs :: integer(), Data :: #raft_state{}) -> boolean().
+leader_contact_expired(LocalMTimeMs, #raft_state{application = App, table = Table} = Data) ->
+    leader_delay(LocalMTimeMs, Data) > ?RAFT_ELECTION_TIMEOUT_MIN(App, Table).
+
+-spec startup_grace(Data :: #raft_state{}) -> integer().
+startup_grace(#raft_state{application = App, table = Table}) ->
+    max(?RAFT_STARTUP_GRACE_PERIOD_MS(App, Table), ?RAFT_ELECTION_TIMEOUT_MIN(App, Table)).
+
+-spec leader_delay(LocalMTimeMs :: integer(), Data :: #raft_state{}) -> infinity | integer().
+leader_delay(LocalMTimeMs, #raft_state{leader_quorum_ts = LeaderQuorumTs, leader_commit_index_ts = LeaderCommitIndexTs}) ->
+    timestamp_delay(LocalMTimeMs, latest_liveness_ts(LeaderQuorumTs, LeaderCommitIndexTs)).
+
+-spec timestamp_delay(LocalMTimeMs :: integer(), Timestamp :: undefined | integer()) -> infinity | integer().
+timestamp_delay(_, undefined) -> infinity;
+timestamp_delay(LocalMTimeMs, Timestamp) -> LocalMTimeMs - Timestamp.
 
 %% Return the more recent of the two liveness timestamps, treating `undefined`
 %% as `-infinity`. If both are `undefined`, returns `undefined`. Used by call

@@ -41,6 +41,14 @@
     init/1,
     init_witness/1,
     init_empty/1,
+    restart_vote_guard/1,
+    restart_vote_guard_witness/1,
+    normal_election_guard/1,
+    normal_election_guard_pre_vote/1,
+    election_grace_periods/1,
+    startup_grace_floor/1,
+    single_member_startup_guard/1,
+    single_full_member_with_witness_startup_guard/1,
     named_rpc/1,
     advance_term/1,
     advance_term_vote/1,
@@ -110,6 +118,7 @@
     get_current_config/1,
     get_current_config_different_states/1,
     pre_vote_election/1,
+    pre_vote_rechecks_election_guard/1,
     pre_vote_rejected/1,
     pre_vote_request/1,
     rpc_sender_timestamps/1,
@@ -227,6 +236,14 @@ server_groups() ->
             init,
             init_witness,
             init_empty,
+            restart_vote_guard,
+            restart_vote_guard_witness,
+            normal_election_guard,
+            normal_election_guard_pre_vote,
+            election_grace_periods,
+            startup_grace_floor,
+            single_member_startup_guard,
+            single_full_member_with_witness_startup_guard,
             named_rpc,
             advance_term,
             advance_term_vote,
@@ -299,6 +316,7 @@ server_groups() ->
             get_current_config,
             get_current_config_different_states,
             pre_vote_election,
+            pre_vote_rechecks_election_guard,
             pre_vote_rejected,
             pre_vote_request,
             rpc_sender_timestamps,
@@ -1030,6 +1048,30 @@ server_init_per_testcase(Config) ->
 server_invoke(Type, Event) ->
     server_cast({'$override', Type, Event}).
 
+-spec server_election_timeout() -> {atom(), #raft_state{}}.
+server_election_timeout() ->
+    server_expire_election_guard(),
+    server_invoke(state_timeout, election).
+
+%% Synthetic expired timeouts must also expire the promises that real timers wait out.
+-spec server_expire_election_guard() -> {atom(), #raft_state{}}.
+server_expire_election_guard() ->
+    server_replace_state(fun({State, #raft_state{application = App, table = Table} = Data}) ->
+        Now = erlang:monotonic_time(millisecond),
+        ElectionGrace = ?RAFT_ELECTION_TIMEOUT_MIN(App, Table),
+        StartupGrace = max(?RAFT_STARTUP_GRACE_PERIOD_MS(App, Table), ElectionGrace),
+        ExpiredTs = Now - ElectionGrace - 1,
+        {State, Data#raft_state{
+            server_start_ts = expire_election_ts(Data#raft_state.server_start_ts, Now - StartupGrace - 1),
+            leader_quorum_ts = expire_election_ts(Data#raft_state.leader_quorum_ts, ExpiredTs),
+            leader_commit_index_ts = expire_election_ts(Data#raft_state.leader_commit_index_ts, ExpiredTs)
+        }}
+    end).
+
+-spec expire_election_ts(Ts :: integer() | undefined, ExpiredTs :: integer()) -> integer() | undefined.
+expire_election_ts(undefined, _) -> undefined;
+expire_election_ts(Ts, ExpiredTs) -> min(Ts, ExpiredTs).
+
 %% Send a cast to the RAFT server and return the server state afterwards.
 -spec server_cast(Event :: term()) -> {atom(), #raft_state{}}.
 server_cast(Event) ->
@@ -1408,6 +1450,245 @@ init_empty(Config) ->
     {candidate, _} = server_restart(Config),
     ok = server_stop().
 
+-spec restart_vote_guard(Config :: ct_suite:ct_config()) -> ok.
+restart_vote_guard(Config) ->
+    restart_vote_guard(follower, Config).
+
+-spec restart_vote_guard_witness(Config :: ct_suite:ct_config()) -> ok.
+restart_vote_guard_witness(Config) ->
+    restart_vote_guard(witness, Config).
+
+-spec restart_vote_guard(State :: follower | witness, Config :: ct_suite:ct_config()) -> ok.
+restart_vote_guard(State, Config) ->
+    Name = ?SERVER_NAME(Config),
+    Node = node(),
+    {State, _} =
+        case State of
+            follower -> server_start_and_bootstrap(100, 2, Config);
+            witness -> server_start_witness_and_bootstrap(100, 2, Config)
+        end,
+    {State, _} = server_cast(?APPEND_ENTRIES_RPC(2, Name, node2, 100, 2, [], 100, 0)),
+    ?assertCast(Name, node2, ?APPEND_ENTRIES_RESPONSE_RPC(2, Name, Node, 100, true, _, _, _)),
+    ok = server_stop_only_server(),
+
+    Before = erlang:monotonic_time(millisecond),
+    {State, Restarted} = server_restart(Config),
+    StartTs = Restarted#raft_state.server_start_ts,
+    ?assert(is_integer(StartTs)),
+    ?assert(Before =< StartTs),
+    ?assert(StartTs =< erlang:monotonic_time(millisecond)),
+    ?assertEqual(undefined, Restarted#raft_state.leader_quorum_ts),
+    ?assertEqual(undefined, Restarted#raft_state.leader_commit_index_ts),
+    ?assertEqual(true, wa_raft_info:get_stale(?SERVER_TABLE(Config), ?SERVER_PARTITION(Config))),
+
+    {State, Rejected} = server_cast(?REQUEST_VOTE_RPC(3, Name, node3, normal, 100, 2, 123)),
+    ?assertEqual(2, Rejected#raft_state.current_term),
+    ?assertEqual(undefined, Rejected#raft_state.voted_for),
+    ?assertCast(Name, node3, ?VOTE_RPC(3, Name, Node, false, 123)),
+    Ref = make_ref(),
+    {State, _} = server_cast(?REQUEST_PRE_VOTE_RPC(3, Name, node3, Ref)),
+    ?assertCast(Name, node3, ?PRE_VOTE_RPC(2, Name, Node, Ref, false, 100, 2)),
+
+    {State, Advanced} = server_cast(?NOTIFY_TERM_RPC(3, Name, node2)),
+    ?assertEqual(StartTs, Advanced#raft_state.server_start_ts),
+    {State, StillRejected} = server_cast(?REQUEST_VOTE_RPC(4, Name, node3, normal, 100, 2)),
+    ?assertEqual(3, StillRejected#raft_state.current_term),
+    ?assertCast(Name, node3, ?VOTE_RPC(4, Name, Node, false, _)),
+    {State, Forced} = server_cast(?REQUEST_VOTE_RPC(4, Name, node4, force, 100, 2)),
+    ?assertEqual(4, Forced#raft_state.current_term),
+    ?assertEqual(StartTs, Forced#raft_state.server_start_ts),
+    ?assertCast(Name, node4, ?VOTE_RPC(4, Name, Node, true, _)),
+
+    {State, Expired} = server_expire_election_guard(),
+    {State, Allowed} = server_cast(?REQUEST_VOTE_RPC(5, Name, node3, normal, 100, 2)),
+    ?assertEqual(node3, Allowed#raft_state.voted_for),
+    ?assertEqual(Expired#raft_state.server_start_ts, Allowed#raft_state.server_start_ts),
+    ?assertCast(Name, node3, ?VOTE_RPC(5, Name, Node, true, _)),
+    {State, _} = server_cast(?REQUEST_VOTE_RPC(6, Name, node3, normal, 100, 2)),
+    ?assertCast(Name, node3, ?VOTE_RPC(6, Name, Node, true, _)),
+    ok = server_stop().
+
+-spec normal_election_guard(Config :: ct_suite:ct_config()) -> ok.
+normal_election_guard(Config) ->
+    normal_election_guard(false, Config).
+
+-spec normal_election_guard_pre_vote(Config :: ct_suite:ct_config()) -> ok.
+normal_election_guard_pre_vote(Config) ->
+    normal_election_guard(true, Config).
+
+-spec normal_election_guard(PreVote :: boolean(), Config :: ct_suite:ct_config()) -> ok.
+normal_election_guard(PreVote, Config) ->
+    Name = ?SERVER_NAME(Config),
+    Node = node(),
+    ok = application:set_env(?RAFT_APPLICATION, ?RAFT_ELECTION_PRE_VOTE, PreVote),
+    {follower, _} = server_start_and_bootstrap(100, 2, Config),
+    {follower, Startup, {error, rejected}} = server_call(?TRIGGER_ELECTION_COMMAND(next)),
+    ?assertEqual(2, Startup#raft_state.current_term),
+    {follower, _} = server_invoke(state_timeout, election),
+
+    server_expire_election_guard(),
+    {follower, Heartbeat} = server_cast(?APPEND_ENTRIES_RPC(2, Name, node2, 100, 2, [], 100, 0)),
+    clear_message_queue(),
+    {follower, Heartbeat, {error, rejected}} = server_call(?TRIGGER_ELECTION_COMMAND(current)),
+    {follower, Heartbeat, {error, rejected}} = server_call(?TRIGGER_ELECTION_COMMAND(next)),
+    {follower, StillFollower} = server_invoke(state_timeout, election),
+    ?assertEqual(2, StillFollower#raft_state.current_term),
+    ?assertEqual(undefined, StillFollower#raft_state.pre_vote_ref),
+    ?assertEqual(#{}, StillFollower#raft_state.votes),
+    ?assertNotCast(_, _, ?REQUEST_VOTE_RPC(_, _, _, _, _, _, _)),
+    ?assertNotCast(_, _, ?REQUEST_PRE_VOTE_RPC(_, _, _, _)),
+    ?assertNotCast(_, _, ?VOTE_RPC(_, _, _, true, _)),
+
+    server_expire_election_guard(),
+    {candidate, Candidate, ok} = server_call(?TRIGGER_ELECTION_COMMAND(current)),
+    {candidate, Voting} =
+        case PreVote of
+            false ->
+                {candidate, Candidate};
+            true ->
+                Ref = Candidate#raft_state.pre_vote_ref,
+                ?assertEqual(#{Node => true}, Candidate#raft_state.pre_votes),
+                ?assertCast(Name, node2, ?REQUEST_PRE_VOTE_RPC(2, Name, Node, Ref)),
+                {candidate, _} = server_cast(?PRE_VOTE_RPC(2, Name, node2, Ref, true, 100, 2)),
+                server_cast(?PRE_VOTE_RPC(2, Name, node3, Ref, true, 100, 2))
+        end,
+    ?assertEqual(3, Voting#raft_state.current_term),
+    ?assertEqual(Node, Voting#raft_state.voted_for),
+    ?assertCast(Name, Node, ?VOTE_RPC(3, Name, Node, true, _)),
+    ?assertCast(Name, node2, ?REQUEST_VOTE_RPC(3, Name, Node, normal, 100, 2, _)),
+    {candidate, _} = server_cast(?VOTE_RPC(3, Name, Node, true)),
+    {candidate, _} = server_cast(?VOTE_RPC(3, Name, node2, true)),
+    {leader, Leader} = server_cast(?VOTE_RPC(3, Name, node3, true)),
+    {leader, Leader, {error, rejected}} = server_call(?TRIGGER_ELECTION_COMMAND(current)),
+    ok = server_stop().
+
+-spec election_grace_periods(Config :: ct_suite:ct_config()) -> ok.
+election_grace_periods(Config) ->
+    Name = ?SERVER_NAME(Config),
+    Node = node(),
+    ok = application:set_env(?RAFT_APPLICATION, ?RAFT_ELECTION_TIMEOUT_MIN, 60_000),
+    ok = application:set_env(?RAFT_APPLICATION, ?RAFT_ELECTION_TIMEOUT_MAX, 60_001),
+    ok = application:set_env(?RAFT_APPLICATION, ?RAFT_STARTUP_GRACE_PERIOD_MS, 120_000),
+    {follower, _} = server_start_and_bootstrap(100, 2, Config),
+    Now = erlang:monotonic_time(millisecond),
+    {follower, _} = server_replace_state(fun({State, Data}) ->
+        {State, Data#raft_state{server_start_ts = Now - 90_000}}
+    end),
+    {follower, _, {error, rejected}} = server_call(?TRIGGER_ELECTION_COMMAND(current)),
+    {follower, StartupGuarded} = server_cast(?REQUEST_VOTE_RPC(3, Name, node3, normal, 100, 2)),
+    ?assertEqual(2, StartupGuarded#raft_state.current_term),
+    ?assertCast(Name, node3, ?VOTE_RPC(3, Name, Node, false, _)),
+    Ref = make_ref(),
+    {follower, _} = server_cast(?REQUEST_PRE_VOTE_RPC(3, Name, node3, Ref)),
+    ?assertCast(Name, node3, ?PRE_VOTE_RPC(2, Name, Node, Ref, false, 100, 2)),
+
+    {follower, _} = server_expire_election_guard(),
+    {follower, _} = server_cast(?APPEND_ENTRIES_RPC(2, Name, node2, 100, 2, [], 100, 0)),
+    {follower, _, {error, rejected}} = server_call(?TRIGGER_ELECTION_COMMAND(current)),
+    {follower, LeaderGuarded} = server_cast(?REQUEST_VOTE_RPC(3, Name, node3, normal, 100, 2)),
+    ?assertEqual(2, LeaderGuarded#raft_state.current_term),
+    ?assertCast(Name, node3, ?VOTE_RPC(3, Name, Node, false, _)),
+    {follower, _} = server_cast(?REQUEST_PRE_VOTE_RPC(3, Name, node3, Ref)),
+    ?assertCast(Name, node3, ?PRE_VOTE_RPC(2, Name, Node, Ref, false, 100, 2)),
+
+    % Leader contact need not outlast the longer grace that applies only to startup.
+    {follower, _} = server_replace_state(fun({State, Data}) ->
+        {State, Data#raft_state{leader_commit_index_ts = Now - 90_000}}
+    end),
+    {follower, _} = server_cast(?REQUEST_PRE_VOTE_RPC(3, Name, node3, Ref)),
+    ?assertCast(Name, node3, ?PRE_VOTE_RPC(2, Name, Node, Ref, true, 100, 2)),
+    {follower, Allowed} = server_cast(?REQUEST_VOTE_RPC(3, Name, node3, normal, 100, 2)),
+    ?assertEqual(node3, Allowed#raft_state.voted_for),
+    ?assertCast(Name, node3, ?VOTE_RPC(3, Name, Node, true, _)),
+    {candidate, Voting, ok} = server_call(?TRIGGER_ELECTION_COMMAND(current)),
+    ?assertEqual(4, Voting#raft_state.current_term),
+    ?assertCast(Name, Node, ?VOTE_RPC(4, Name, Node, true, _)),
+    ok = server_stop().
+
+-spec startup_grace_floor(Config :: ct_suite:ct_config()) -> ok.
+startup_grace_floor(Config) ->
+    Name = ?SERVER_NAME(Config),
+    Node = node(),
+    Table = ?SERVER_TABLE(Config),
+    ok = application:set_env(?RAFT_APPLICATION, ?RAFT_ELECTION_TIMEOUT_MIN, 60_000),
+    ok = application:set_env(?RAFT_APPLICATION, ?RAFT_ELECTION_TIMEOUT_MAX, 60_001),
+    ok = application:set_env(
+        ?RAFT_APPLICATION,
+        ?RAFT_STARTUP_GRACE_PERIOD_MS,
+        {table_overrides, #{Table => 0}, 120_000}
+    ),
+    {follower, _} = server_start_and_bootstrap(100, 2, Config),
+    Now = erlang:monotonic_time(millisecond),
+    {follower, _} = server_replace_state(fun({State, Data}) ->
+        {State, Data#raft_state{server_start_ts = Now - 30_000}}
+    end),
+    {follower, _, {error, rejected}} = server_call(?TRIGGER_ELECTION_COMMAND(current)),
+    {follower, Guarded} = server_cast(?REQUEST_VOTE_RPC(3, Name, node3, normal, 100, 2)),
+    ?assertEqual(2, Guarded#raft_state.current_term),
+    ?assertCast(Name, node3, ?VOTE_RPC(3, Name, Node, false, _)),
+    {follower, _} = server_replace_state(fun({State, Data}) ->
+        {State, Data#raft_state{server_start_ts = Now - 90_000}}
+    end),
+    {candidate, Voting, ok} = server_call(?TRIGGER_ELECTION_COMMAND(current)),
+    ?assertEqual(3, Voting#raft_state.current_term),
+    ?assertCast(Name, Node, ?VOTE_RPC(3, Name, Node, true, _)),
+    ok = server_stop().
+
+-spec single_member_startup_guard(Config :: ct_suite:ct_config()) -> ok.
+single_member_startup_guard(Config) ->
+    Name = ?SERVER_NAME(Config),
+    Node = node(),
+    {leader, _} = server_start_and_bootstrap(1, 1, ?SERVER_SINGLE_CONFIG(Config), Config),
+    ok = server_stop_only_server(),
+    clear_message_queue(),
+    {candidate, Startup} = server_restart(Config),
+    ?assertEqual(2, Startup#raft_state.current_term),
+    ?assertEqual(Node, Startup#raft_state.voted_for),
+    ?assert(is_integer(Startup#raft_state.server_start_ts)),
+    ?assertEqual(undefined, Startup#raft_state.leader_quorum_ts),
+    ?assertEqual(undefined, Startup#raft_state.leader_commit_index_ts),
+    ?assertCast(Name, Node, ?VOTE_RPC(2, Name, Node, true, _)),
+
+    {candidate, Startup} = server_cast(?REQUEST_VOTE_RPC(3, Name, node2, normal, 2, 1, 777)),
+    ?assertCast(Name, node2, ?VOTE_RPC(3, Name, Node, false, 777)),
+    Ref = make_ref(),
+    {candidate, Startup} = server_cast(?REQUEST_PRE_VOTE_RPC(3, Name, node2, Ref)),
+    ?assertCast(Name, node2, ?PRE_VOTE_RPC(2, Name, Node, Ref, false, _, _)),
+
+    {leader, Ready} = server_cast(?VOTE_RPC(2, Name, Node, true)),
+    ?assertEqual(Startup#raft_state.server_start_ts, Ready#raft_state.server_start_ts),
+    ?assertEqual(false, wa_raft_info:get_stale(?SERVER_TABLE(Config), ?SERVER_PARTITION(Config))),
+    {follower, _, ok} = server_call(?RESIGN_COMMAND),
+    {follower, Guarded, {error, rejected}} = server_call(?TRIGGER_ELECTION_COMMAND(current)),
+    ?assertEqual(2, Guarded#raft_state.current_term),
+    {follower, StillGuarded} = server_invoke(state_timeout, election),
+    ?assertEqual(2, StillGuarded#raft_state.current_term),
+    server_expire_election_guard(),
+    {candidate, Voting, ok} = server_call(?TRIGGER_ELECTION_COMMAND(current)),
+    ?assertEqual(3, Voting#raft_state.current_term),
+    ?assertCast(Name, Node, ?VOTE_RPC(3, Name, Node, true, _)),
+    {leader, _} = server_cast(?VOTE_RPC(3, Name, Node, true)),
+    ok = server_stop().
+
+-spec single_full_member_with_witness_startup_guard(Config :: ct_suite:ct_config()) -> ok.
+single_full_member_with_witness_startup_guard(Config) ->
+    Name = ?SERVER_NAME(Config),
+    Self = #raft_identity{name = Name, node = node()},
+    Witness = #raft_identity{name = Name, node = node2},
+    Membership = wa_raft_server:make_config([Self, Witness], [Witness]),
+    {follower, _} = server_start_and_bootstrap(1, 1, Membership, Config),
+    {follower, Guarded, {error, rejected}} = server_call(?TRIGGER_ELECTION_COMMAND(current)),
+    ?assertEqual(1, Guarded#raft_state.current_term),
+    ?assertEqual(undefined, Guarded#raft_state.voted_for),
+    {follower, StillGuarded} = server_invoke(state_timeout, election),
+    ?assertEqual(1, StillGuarded#raft_state.current_term),
+    ?assertNotCast(_, _, ?REQUEST_VOTE_RPC(_, _, _, _, _, _, _), 0),
+    server_expire_election_guard(),
+    {candidate, Voting, ok} = server_call(?TRIGGER_ELECTION_COMMAND(current)),
+    ?assertEqual(2, Voting#raft_state.current_term),
+    ?assertCast(Name, node2, ?REQUEST_VOTE_RPC(2, Name, _, normal, 1, 1, _)),
+    ok = server_stop().
+
 -spec advance_term(Config :: ct_suite:ct_config()) -> ok.
 advance_term(Config) ->
     Node = node(),
@@ -1423,7 +1704,7 @@ advance_term(Config) ->
     ?assertMatch({ok, #raft_state{current_term = 2}}, wa_raft_durable_state:load(State0)),
 
     % Candidate demotes to follower when advancing term
-    {candidate, StateB0} = server_invoke(state_timeout, election),
+    {candidate, StateB0} = server_election_timeout(),
     ?assertEqual(3, StateB0#raft_state.current_term),
     {follower, StateB1} = server_cast(?NOTIFY_TERM_RPC(4, Name, Node)),
     ?assertEqual(4, StateB1#raft_state.current_term),
@@ -1462,6 +1743,7 @@ advance_term_vote(Config) ->
 
     % Follower should advance upon receiving normal vote request in new term.
     %  * No prior leader heartbeat means that this vote request should be accepted.
+    server_expire_election_guard(),
     {follower, StateA0} = server_cast(?REQUEST_VOTE_RPC(2, Name, node2, normal, 1, 1)),
     ?assertEqual(2, StateA0#raft_state.current_term),
 
@@ -1499,7 +1781,7 @@ named_rpc(Config) ->
     {leader, State1} = server_cast(?RAFT_NAMED_RPC(append_entries_response, 3, SenderName, node2, {10, true, 10})),
     ?assertMatch(#{node2 := 10}, State1#raft_state.match_indices),
     {follower, _, ok} = server_call(?RESIGN_COMMAND),
-    {candidate, State2} = server_invoke(state_timeout, election),
+    {candidate, State2} = server_election_timeout(),
     Term = State2#raft_state.current_term,
     {candidate, State3} = server_cast(?RAFT_NAMED_RPC(vote, Term, SenderName, node2, undefined)),
     ?assertMatch(#{node2 := false}, State3#raft_state.votes),
@@ -1552,7 +1834,7 @@ stale_rpc(Config) ->
     ?assertCast(Name, node2, ?NOTIFY_TERM_RPC(4, Name, Node)),
 
     % Candidate should ignore stale RPCs and respond with NotifyTerm
-    {candidate, State1} = server_invoke(state_timeout, election),
+    {candidate, State1} = server_election_timeout(),
     ok = clear_message_queue(),
     ?assertEqual({candidate, State1}, server_cast(?APPEND_ENTRIES_RPC(2, Name, node2, 20, 2, [], 20, 0))),
     ?assertCast(Name, node2, ?NOTIFY_TERM_RPC(5, Name, Node)),
@@ -1670,7 +1952,7 @@ election(Config) ->
     %  * Candidate should advance term for election
     %  * Advancing term should update durable state with new term
     %  * Candidate should send a vote to self and request votes from all peers
-    {candidate, State1} = server_invoke(state_timeout, election),
+    {candidate, State1} = server_election_timeout(),
     ?assertEqual(2, State1#raft_state.current_term),
     ?assertMatch({ok, #raft_state{current_term = 2}}, wa_raft_durable_state:load(State0)),
     ?assertCast(Name, Node, ?VOTE_RPC(2, Name, Node, true, _)),
@@ -1683,7 +1965,7 @@ election(Config) ->
     %  * Candidate should advance another term for election restart
     %  * Advancing term should update durable state with new term
     %  * Candidate should send a vote to self and request votes from all peers
-    {candidate, State2} = server_invoke(state_timeout, election),
+    {candidate, State2} = server_election_timeout(),
     ?assertEqual(3, State2#raft_state.current_term),
     ?assertMatch({ok, #raft_state{current_term = 3}}, wa_raft_durable_state:load(State0)),
     ?assertCast(Name, Node, ?VOTE_RPC(3, Name, Node, true, _)),
@@ -1722,7 +2004,7 @@ election(Config) ->
     {follower, _} = server_cast(?NOTIFY_TERM_RPC(4, Name, node2)),
 
     % Become leader for the new term with uncommitted log entries
-    {candidate, _} = server_invoke(state_timeout, election),
+    {candidate, _} = server_election_timeout(),
     {candidate, _} = server_cast(?VOTE_RPC(5, Name, Node, true)),
     {candidate, _} = server_cast(?VOTE_RPC(5, Name, node2, true)),
     {leader, _} = server_cast(?VOTE_RPC(5, Name, node3, true)),
@@ -1763,7 +2045,7 @@ election_three_members(Config) ->
     {follower, _} = server_start_and_bootstrap(ConfigA, Config),
     {leader, _, ok} = server_call(?PROMOTE_COMMAND(1, true)),
     {follower, _, ok} = server_call(?RESIGN_COMMAND),
-    {candidate, _} = server_invoke(state_timeout, election),
+    {candidate, _} = server_election_timeout(),
     ?assertCast(Name, Node, ?VOTE_RPC(2, Name, Node, true, _)),
     ?assertCast(Name, node2, ?REQUEST_VOTE_RPC(2, Name, Node, normal, _, _, _)),
     ?assertCast(Name, node3, ?REQUEST_VOTE_RPC(2, Name, Node, normal, _, _, _)),
@@ -1791,7 +2073,7 @@ election_four_members(Config) ->
     {follower, _} = server_start_and_bootstrap(ConfigA, Config),
     {leader, _, ok} = server_call(?PROMOTE_COMMAND(1, true)),
     {follower, _, ok} = server_call(?RESIGN_COMMAND),
-    {candidate, _} = server_invoke(state_timeout, election),
+    {candidate, _} = server_election_timeout(),
     ?assertCast(Name, Node, ?VOTE_RPC(2, Name, Node, true, _)),
     ?assertCast(Name, node2, ?REQUEST_VOTE_RPC(2, Name, Node, normal, _, _, _)),
     ?assertCast(Name, node3, ?REQUEST_VOTE_RPC(2, Name, Node, normal, _, _, _)),
@@ -1813,6 +2095,7 @@ request_vote(Config) ->
     {follower, _} = server_start_and_bootstrap(100, 2, Config),
 
     % Followers can only vote yes to a single peer each term
+    server_expire_election_guard(),
     {follower, StateA0} = server_cast(?REQUEST_VOTE_RPC(2, Name, node2, normal, 100, 2)),
     ?assertEqual(node2, StateA0#raft_state.voted_for),
     ?assertCast(Name, node2, ?VOTE_RPC(2, Name, Node, true, _)),
@@ -1875,7 +2158,7 @@ request_vote_drop(Config) ->
     ?assertCast(Name, node2, ?VOTE_RPC(_, Name, Node, false, undefined)),
 
     % Candidates should reject normal vote requests when leader is active
-    {candidate, _} = server_invoke(state_timeout, election),
+    {candidate, _} = server_election_timeout(),
     {candidate, State1} = server_replace_state(SetHeartbeat),
     {candidate, State1} = server_cast(?REQUEST_VOTE_RPC(10, Name, node2, normal, 10, 10, 2222)),
     ?assertCast(Name, node2, ?VOTE_RPC(_, Name, Node, false, 2222)),
@@ -2805,7 +3088,7 @@ commit_candidate(Config) ->
     {follower, _, ok} = server_call(?RESIGN_COMMAND),
 
     % Trigger election to become candidate at term 2
-    {candidate, _} = server_invoke(state_timeout, election),
+    {candidate, _} = server_election_timeout(),
     clear_message_queue(),
 
     % Buffer commits while in candidate state
@@ -2860,7 +3143,7 @@ commit_cancelled_candidate(Config) ->
     {follower, _, ok} = server_call(?RESIGN_COMMAND),
 
     % Trigger election to become candidate at term 2
-    {candidate, _} = server_invoke(state_timeout, election),
+    {candidate, _} = server_election_timeout(),
     clear_message_queue(),
 
     % Buffer commits while in candidate state
@@ -3008,7 +3291,7 @@ read_candidate(Config) ->
 
     % Resign and trigger election
     {follower, _, ok} = server_call(?RESIGN_COMMAND),
-    {candidate, _} = server_invoke(state_timeout, election),
+    {candidate, _} = server_election_timeout(),
     clear_message_queue(),
 
     % Submit reads while in candidate state (ReadIndex = last_index + 1 = 2)
@@ -3066,7 +3349,7 @@ read_after_candidate(Config) ->
     % Resign and trigger an election so we're in candidate state with
     % last_index + 1 = 2 as the base floor.
     {follower, _, ok} = server_call(?RESIGN_COMMAND),
-    {candidate, _} = server_invoke(state_timeout, election),
+    {candidate, _} = server_election_timeout(),
     clear_message_queue(),
     ?assert(Queues =/= undefined),
 
@@ -3471,7 +3754,7 @@ update_info(Config) ->
     {follower, StateB0} = server_cast(?APPEND_ENTRIES_RPC(6, Name, node2, 0, 0, [], 0, 0)),
     ?assertEqual(#raft_identity{name = Name, node = node2}, StateB0#raft_state.leader),
     ?assertEqual(node2, wa_raft_info:get_leader(Table, Partition)),
-    {candidate, StateB1} = server_invoke(state_timeout, election),
+    {candidate, StateB1} = server_election_timeout(),
     ?assertEqual(undefined, StateB1#raft_state.leader),
     ?assertEqual(undefined, wa_raft_info:get_leader(Table, Partition)),
     ?assertEqual({7, undefined, Node}, wa_raft_info:get_current_term_info(Table, Partition)),
@@ -3485,7 +3768,7 @@ update_info(Config) ->
     %  * Leader sets self as leader when promoted
     %  * Leader should clear leader when resigning
     %  * Leader should keep leader when promoting to self
-    {candidate, StateC0} = server_invoke(state_timeout, election),
+    {candidate, StateC0} = server_election_timeout(),
     ?assertEqual(undefined, StateC0#raft_state.leader),
     ?assertEqual(undefined, wa_raft_info:get_leader(Table, Partition)),
     ?assertEqual({8, undefined, Node}, wa_raft_info:get_current_term_info(Table, Partition)),
@@ -3509,7 +3792,7 @@ update_info(Config) ->
     %  * Disabled clears leader on term advance
     %  * Disabled sets leader when getting first heartbeat
     %  * Reenabling does not clear leader on initial entry
-    {candidate, _} = server_invoke(state_timeout, election),
+    {candidate, _} = server_election_timeout(),
     {candidate, _} = server_cast(?VOTE_RPC(10, Name, node(), true)),
     {candidate, _} = server_cast(?VOTE_RPC(10, Name, node2, true)),
     {leader, _} = server_cast(?VOTE_RPC(10, Name, node3, true)),
@@ -3660,7 +3943,7 @@ resign(Config) ->
     ?assertMatch({follower, _, {error, not_leader}}, server_call(?RESIGN_COMMAND)),
 
     % Candidate cannot resign
-    {candidate, _} = server_invoke(state_timeout, election),
+    {candidate, _} = server_election_timeout(),
     ?assertMatch({candidate, _, {error, not_leader}}, server_call(?RESIGN_COMMAND)),
 
     % Disabled cannot resign
@@ -3772,6 +4055,7 @@ disable_follower(Config) ->
 disable_candidate(Config) ->
     % Test candidate -> disabled transition
     {follower, _} = server_start_and_bootstrap(Config),
+    server_expire_election_guard(),
     {candidate, _, ok} = server_call(?TRIGGER_ELECTION_COMMAND(current)),
     {disabled, _, ok} = server_call(?DISABLE_COMMAND("Test disable.")),
 
@@ -4098,7 +4382,7 @@ add_member_follower(Config) ->
 
     % Follower times out and starts a new election (now with 7 nodes)
     % Leader replicates to all nodes after being follower
-    {candidate, _} = server_invoke(state_timeout, election),
+    {candidate, _} = server_election_timeout(),
     {candidate, _} = server_cast(?VOTE_RPC(2, Name, Node, true)),
     {candidate, _} = server_cast(?VOTE_RPC(2, Name, node6, true)),
     {candidate, _} = server_cast(?VOTE_RPC(2, Name, node5, true)),
@@ -4117,7 +4401,7 @@ add_member_follower(Config) ->
 
     % Follower times out and starts a new election (now with only 6 nodes because config was rolled back)
     clear_message_queue(),
-    {candidate, _} = server_invoke(state_timeout, election),
+    {candidate, _} = server_election_timeout(),
     ?assertCast(Name, node2, ?REQUEST_VOTE_RPC(4, Name, Node, normal, _, _, _)),
     ?assertCast(Name, node3, ?REQUEST_VOTE_RPC(4, Name, Node, normal, _, _, _)),
     ?assertCast(Name, node4, ?REQUEST_VOTE_RPC(4, Name, Node, normal, _, _, _)),
@@ -4230,7 +4514,7 @@ remove_member_follower(Config) ->
 
     % Follower times out and starts a new election (now with 3 nodes)
     % Leader replicates to only nodes in latest config after being follower
-    {candidate, _} = server_invoke(state_timeout, election),
+    {candidate, _} = server_election_timeout(),
     {candidate, _} = server_cast(?VOTE_RPC(2, Name, Node, true)),
     clear_message_queue(),
     {leader, _} = server_cast(?VOTE_RPC(2, Name, node2, true)),
@@ -4245,7 +4529,7 @@ remove_member_follower(Config) ->
 
     % Follower times out and starts a new election (now with 4 nodes because config was rolled back)
     clear_message_queue(),
-    {candidate, _} = server_invoke(state_timeout, election),
+    {candidate, _} = server_election_timeout(),
     ?assertCast(Name, node2, ?REQUEST_VOTE_RPC(4, Name, Node, normal, _, _, _)),
     ?assertCast(Name, node3, ?REQUEST_VOTE_RPC(4, Name, Node, normal, _, _, _)),
     ?assertCast(Name, node4, ?REQUEST_VOTE_RPC(4, Name, Node, normal, _, _, _)),
@@ -4404,18 +4688,18 @@ node_weight(Config) ->
     ?assertEqual(4, State1#raft_state.current_term),
 
     % Follower should not attempt an election when ineligible
-    {follower, State2} = server_invoke(state_timeout, election),
+    {follower, State2} = server_election_timeout(),
     ?assertEqual(4, State2#raft_state.current_term),
 
     % Follower should not attempt an election when its weight is zero
     ok = application:unset_env(?RAFT_APPLICATION, ?RAFT_LEADER_ELIGIBLE),
     ok = application:set_env(?RAFT_APPLICATION, ?RAFT_ELECTION_WEIGHT, 0),
-    {follower, State3} = server_invoke(state_timeout, election),
+    {follower, State3} = server_election_timeout(),
     ?assertEqual(4, State3#raft_state.current_term),
     ok = application:unset_env(?RAFT_APPLICATION, ?RAFT_ELECTION_WEIGHT),
 
     % Follower should attempt elections when eligible and when weight is non-zero
-    {candidate, State4} = server_invoke(state_timeout, election),
+    {candidate, State4} = server_election_timeout(),
     ?assertEqual(5, State4#raft_state.current_term),
 
     % Triggering new elections should be allowed now
@@ -4588,7 +4872,7 @@ stepped_down_leader_is_not_stale(Config) ->
     server_replace_state(
         fun({SN, S}) -> {SN, S#raft_state{leader_quorum_ts = Stale, leader_commit_index_ts = Stale}} end
     ),
-    {_, _} = server_invoke(state_timeout, election),
+    {_, _} = server_election_timeout(),
     ?assertEqual(true, wa_raft_info:get_stale(Table, Partition)),
 
     ok = server_stop().
@@ -4813,7 +5097,7 @@ get_current_config_different_states(Config) ->
     ?assertEqual(ClusterConfig, ConfigResigned),
 
     % Test 5: Trigger election to test in candidate state
-    {candidate, _} = server_invoke(state_timeout, election),
+    {candidate, _} = server_election_timeout(),
     {candidate, _, ConfigCandidate} = server_call(?CURRENT_CONFIG_COMMAND),
     ?assertEqual(ClusterConfig, ConfigCandidate),
 
@@ -4836,7 +5120,7 @@ pre_vote_election(Config) ->
     %  * Pre-vote ref should be set
     %  * REQUEST_PRE_VOTE should be sent to all peers
     %  * No REQUEST_VOTE should be sent yet
-    {candidate, State1} = server_invoke(state_timeout, election),
+    {candidate, State1} = server_election_timeout(),
     ?assertEqual(1, State1#raft_state.current_term),
     Ref = State1#raft_state.pre_vote_ref,
     ?assertNotEqual(undefined, Ref),
@@ -4881,6 +5165,46 @@ pre_vote_election(Config) ->
     % Stop server
     ok = server_stop().
 
+-spec pre_vote_rechecks_election_guard(Config :: ct_suite:ct_config()) -> ok.
+pre_vote_rechecks_election_guard(Config) ->
+    Name = ?SERVER_NAME(Config),
+    Node = node(),
+    ok = application:set_env(?RAFT_APPLICATION, ?RAFT_ELECTION_PRE_VOTE, true),
+    ok = application:set_env(?RAFT_APPLICATION, ?RAFT_ELECTION_TIMEOUT_MIN, 60_000),
+    ok = application:set_env(?RAFT_APPLICATION, ?RAFT_ELECTION_TIMEOUT_MAX, 60_001),
+    {follower, _} = server_start_and_bootstrap(1, 1, Config),
+    {candidate, PreVote} = server_election_timeout(),
+    Ref = PreVote#raft_state.pre_vote_ref,
+    ?assertNotEqual(undefined, Ref),
+
+    % Late legacy vote replies can renew quorum freshness while pre-vote is pending.
+    {candidate, _} = server_cast(?VOTE_RPC(1, Name, node2, false)),
+    {candidate, Renewed} = server_cast(?VOTE_RPC(1, Name, node3, false)),
+    ?assertNotEqual(undefined, Renewed#raft_state.leader_quorum_ts),
+    clear_message_queue(),
+    {candidate, _} = server_cast(?PRE_VOTE_RPC(1, Name, node2, Ref, true, 1, 1)),
+    {candidate, Guarded} = server_cast(?PRE_VOTE_RPC(1, Name, node3, Ref, true, 1, 1)),
+    ?assertEqual(1, Guarded#raft_state.current_term),
+    ?assertEqual(undefined, Guarded#raft_state.voted_for),
+    ?assertEqual(Ref, Guarded#raft_state.pre_vote_ref),
+    ?assertNotCast(_, _, ?REQUEST_VOTE_RPC(_, _, _, _, _, _, _), 0),
+    ?assertNotCast(_, _, ?VOTE_RPC(_, _, _, true, _), 0),
+    {candidate, StillGuarded} = server_cast(?PRE_VOTE_RPC(1, Name, node4, Ref, true, 1, 1)),
+    ?assertEqual(1, StillGuarded#raft_state.current_term),
+    ?assertEqual(undefined, StillGuarded#raft_state.voted_for),
+    ?assertNotCast(_, _, ?REQUEST_VOTE_RPC(_, _, _, _, _, _, _), 0),
+
+    {candidate, Retry} = server_election_timeout(),
+    RetryRef = Retry#raft_state.pre_vote_ref,
+    ?assertNotEqual(Ref, RetryRef),
+    {candidate, _} = server_cast(?PRE_VOTE_RPC(1, Name, node2, RetryRef, true, 1, 1)),
+    {candidate, Voting} = server_cast(?PRE_VOTE_RPC(1, Name, node3, RetryRef, true, 1, 1)),
+    ?assertEqual(2, Voting#raft_state.current_term),
+    ?assertEqual(Node, Voting#raft_state.voted_for),
+    ?assertCast(Name, Node, ?VOTE_RPC(2, Name, Node, true, _)),
+    ?assertCast(Name, node2, ?REQUEST_VOTE_RPC(2, Name, Node, normal, 1, 1, _)),
+    ok = server_stop().
+
 -spec pre_vote_rejected(Config :: ct_suite:ct_config()) -> ok.
 pre_vote_rejected(Config) ->
     Name = ?SERVER_NAME(Config),
@@ -4889,7 +5213,7 @@ pre_vote_rejected(Config) ->
 
     % Setup follower and trigger election → candidate with pre-vote
     {follower, _} = server_start_and_bootstrap(1, 1, Config),
-    {candidate, State0} = server_invoke(state_timeout, election),
+    {candidate, State0} = server_election_timeout(),
     ?assertEqual(1, State0#raft_state.current_term),
     Ref = State0#raft_state.pre_vote_ref,
     ?assertNotEqual(undefined, Ref),
@@ -4917,6 +5241,7 @@ pre_vote_request(Config) ->
 
     % 1. Follower with missing leader (no recent heartbeat) → should grant pre-vote
     {follower, _} = server_start_and_bootstrap(1, 1, Config),
+    server_expire_election_guard(),
     {follower, _} = server_cast(?REQUEST_PRE_VOTE_RPC(1, Name, node2, Ref)),
     ?assertCast(Name, node2, ?PRE_VOTE_RPC(1, Name, Node, Ref, true, 1, 1)),
 
@@ -4964,7 +5289,7 @@ rpc_sender_timestamps(Config) ->
     clear_message_queue(),
     {follower, _, ok} = server_call(?RESIGN_COMMAND),
     clear_message_queue(),
-    {candidate, _} = server_invoke(state_timeout, election),
+    {candidate, _} = server_election_timeout(),
     {cast, {_, _, ?REQUEST_VOTE_RPC(2, Name, Node, normal, 1, 1, CandTs)}} =
         ?assertCast(Name, node2, ?REQUEST_VOTE_RPC(2, Name, Node, normal, 1, 1, _)),
     {cast, {_, _, ?VOTE_RPC(2, Name, Node, true, SelfTs)}} =
@@ -5017,6 +5342,7 @@ request_vote_timestamp_echo(Config) ->
     ok = application:set_env(wa_raft, raft_election_pre_vote, false),
 
     {follower, _} = server_start_and_bootstrap(100, 2, Config),
+    server_expire_election_guard(),
     {follower, StateA0} = server_cast(?REQUEST_VOTE_RPC(2, Name, node2, normal, 100, 2, 4242)),
     ?assertEqual(node2, StateA0#raft_state.voted_for),
     ?assertCast(Name, node2, ?VOTE_RPC(2, Name, Node, true, 4242)),
@@ -5033,7 +5359,7 @@ request_vote_timestamp_echo(Config) ->
 
     {follower, _, ok} = server_call(?RESIGN_COMMAND),
     clear_message_queue(),
-    {candidate, _} = server_invoke(state_timeout, election),
+    {candidate, _} = server_election_timeout(),
     clear_message_queue(),
     {candidate, _} = server_cast(?REQUEST_VOTE_RPC(4, Name, node2, force, 10, 10, 5555)),
     ?assertCast(Name, node2, ?VOTE_RPC(4, Name, Node, false, 5555)),
@@ -5113,7 +5439,7 @@ vote_reply_timestamps_three_members(Config) ->
         #raft_identity{name = Name, node = node3}
     ]),
     {follower, _} = server_start_and_bootstrap(ConfigA, Config),
-    {candidate, _} = server_invoke(state_timeout, election),
+    {candidate, _} = server_election_timeout(),
     clear_message_queue(),
     {candidate, StateA1} = server_cast(?VOTE_RPC(2, Name, Node, true, SelfTs)),
     ?assertEqual(#{Node => true}, StateA1#raft_state.votes),
@@ -5135,7 +5461,7 @@ vote_reply_timestamps(Config) ->
     Peer4Ts = Now - 5_000,
     ok = application:set_env(wa_raft, raft_election_pre_vote, false),
     {follower, _} = server_start_and_bootstrap(Config),
-    {candidate, _} = server_invoke(state_timeout, election),
+    {candidate, _} = server_election_timeout(),
     clear_message_queue(),
     {candidate, StateB1} = server_cast(?VOTE_RPC(2, Name, Node, true, SelfTs)),
     ?assertEqual(#{Node => SelfTs}, StateB1#raft_state.heartbeat_reply_ts),
@@ -5180,7 +5506,7 @@ legacy_vote_missing_timestamp(Config) ->
     Name = ?SERVER_NAME(Config),
     ok = application:set_env(wa_raft, raft_election_pre_vote, false),
     {follower, _} = server_start_and_bootstrap(Config),
-    {candidate, _} = server_invoke(state_timeout, election),
+    {candidate, _} = server_election_timeout(),
     clear_message_queue(),
     VoteBefore = erlang:monotonic_time(millisecond),
     {candidate, State1} = server_cast(?VOTE_RPC(2, Name, node2, true)),
