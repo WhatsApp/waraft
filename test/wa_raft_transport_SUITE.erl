@@ -22,7 +22,14 @@
     absolute_paths_rejected/1,
     worker_failures/1,
     worker_shutdown/1,
-    may_accept/1
+    may_accept/1,
+    may_accept_asks_transport_provider/1,
+    may_accept_from_trunk_follower/1
+]).
+
+%% Transport provider behavior callbacks
+-export([
+    transport_accept/2
 ]).
 
 %% Transport worker behavior callbacks
@@ -51,7 +58,9 @@ groups() ->
             absolute_paths_rejected,
             worker_failures,
             worker_shutdown,
-            may_accept
+            may_accept,
+            may_accept_asks_transport_provider,
+            may_accept_from_trunk_follower
         ]}
     ].
 
@@ -59,6 +68,10 @@ groups() ->
 %% UNIT TESTS
 
 -define(ROOT, "/var/data/transport/1").
+-define(INCOMING_BYTES, 1024).
+-define(PRECHECK_META(Witness), #{
+    type => snapshot, table => test, partition => 1, witness => Witness, incoming_bytes => ?INCOMING_BYTES
+}).
 
 -spec safe_relative_paths_accepted(Config :: ct_suite:ct_config()) -> ok.
 safe_relative_paths_accepted(_Config) ->
@@ -178,28 +191,96 @@ may_accept(_Config) ->
         {ok, Transport} = wa_raft_transport:start_link(),
         ok = application:set_env(wa_raft, raft_max_incoming_snapshot_transfers, 1),
         ok = application:set_env(wa_raft, raft_max_incoming_witness_snapshot_transfers, 1),
-        ?assertEqual(ok, wa_raft_transport:may_accept(node(), false, 1000)),
-        ?assertEqual(ok, wa_raft_transport:may_accept(node(), true, 1000)),
+        ?assertEqual(ok, wa_raft_transport:may_accept(node(), ?PRECHECK_META(false), 1000)),
+        ?assertEqual(ok, wa_raft_transport:may_accept(node(), ?PRECHECK_META(true), 1000)),
         ok = application:set_env(wa_raft, raft_max_incoming_snapshot_transfers, 0),
-        ?assertEqual({error, receiver_overloaded}, wa_raft_transport:may_accept(node(), false, 1000)),
-        ?assertEqual(ok, wa_raft_transport:may_accept(node(), true, 1000)),
+        ?assertEqual({error, receiver_overloaded}, wa_raft_transport:may_accept(node(), ?PRECHECK_META(false), 1000)),
+        ?assertEqual(ok, wa_raft_transport:may_accept(node(), ?PRECHECK_META(true), 1000)),
         ok = application:set_env(wa_raft, raft_max_incoming_witness_snapshot_transfers, 0),
-        ?assertEqual({error, receiver_overloaded}, wa_raft_transport:may_accept(node(), true, 1000)),
-        ?assertEqual({error, unavailable}, wa_raft_transport:may_accept('nonexistent@nohost', false, 1000)),
+        ?assertEqual({error, receiver_overloaded}, wa_raft_transport:may_accept(node(), ?PRECHECK_META(true), 1000)),
+        ?assertEqual(
+            {error, unavailable}, wa_raft_transport:may_accept('nonexistent@nohost', ?PRECHECK_META(false), 1000)
+        ),
         ok = gen_server:stop(Transport),
-        ?assertEqual({error, unavailable}, wa_raft_transport:may_accept(node(), false, 1000)),
+        ?assertEqual({error, unavailable}, wa_raft_transport:may_accept(node(), ?PRECHECK_META(false), 1000)),
         Stub = spawn_link(fun() ->
             receive
                 {'$gen_call', From, _Request} -> gen_server:reply(From, {error, unknown_reason})
             end
         end),
         true = register(wa_raft_transport, Stub),
-        ?assertEqual({error, unavailable}, wa_raft_transport:may_accept(node(), false, 1000))
+        ?assertEqual({error, unavailable}, wa_raft_transport:may_accept(node(), ?PRECHECK_META(false), 1000))
     after
         application:unset_env(wa_raft, raft_max_incoming_snapshot_transfers),
         application:unset_env(wa_raft, raft_max_incoming_witness_snapshot_transfers),
         process_flag(trap_exit, PreviousTrapExit)
     end.
+
+-spec may_accept_asks_transport_provider(Config :: ct_suite:ct_config()) -> ok.
+may_accept_asks_transport_provider(_Config) ->
+    PreviousTrapExit = process_flag(trap_exit, true),
+    try
+        ok = meck:new(wa_raft_transport, [passthrough]),
+        ok = meck:expect(wa_raft_transport, registered_module, fun(_Table, _Partition) -> ?MODULE end),
+        ok = application:set_env(wa_raft, transport_accept_test_owner, self()),
+        ok = application:set_env(wa_raft, raft_max_incoming_snapshot_transfers, 1),
+        {ok, Transport} = wa_raft_transport:start_link(),
+        ok = application:set_env(wa_raft, transport_accept_test_reply, {error, receiver_disk_full}),
+        ?assertEqual({error, receiver_disk_full}, wa_raft_transport:may_accept(node(), ?PRECHECK_META(false), 1000)),
+        ?assertEqual({transport_accept, ?PRECHECK_META(false), ?INCOMING_BYTES}, receive_message()),
+        ok = application:set_env(wa_raft, transport_accept_test_reply, {error, other_reason}),
+        ?assertEqual({error, unavailable}, wa_raft_transport:may_accept(node(), ?PRECHECK_META(false), 1000)),
+        ?assertEqual({transport_accept, ?PRECHECK_META(false), ?INCOMING_BYTES}, receive_message()),
+        % A provider that crashes must not take down the transport server.
+        ok = application:set_env(wa_raft, transport_accept_test_reply, crash),
+        ?assertEqual({error, unavailable}, wa_raft_transport:may_accept(node(), ?PRECHECK_META(false), 1000)),
+        ?assertEqual({transport_accept, ?PRECHECK_META(false), ?INCOMING_BYTES}, receive_message()),
+        ?assert(is_process_alive(Transport)),
+        ok = application:set_env(wa_raft, transport_accept_test_reply, ok),
+        ?assertEqual(ok, wa_raft_transport:may_accept(node(), ?PRECHECK_META(false), 1000)),
+        ?assertEqual({transport_accept, ?PRECHECK_META(false), ?INCOMING_BYTES}, receive_message()),
+        % A sender that predates precheck_meta() still gets a capacity-only answer.
+        ok = application:set_env(wa_raft, transport_accept_test_reply, {error, receiver_disk_full}),
+        ?assertEqual(ok, gen_server:call(Transport, {may_accept, false}, 1000)),
+        ?assertEqual(timeout, receive_message()),
+        % A follower without a free slot answers before asking the provider.
+        ok = application:set_env(wa_raft, raft_max_incoming_snapshot_transfers, 0),
+        ?assertEqual({error, receiver_overloaded}, wa_raft_transport:may_accept(node(), ?PRECHECK_META(false), 1000)),
+        ?assertEqual(timeout, receive_message()),
+        ok = gen_server:stop(Transport)
+    after
+        application:unset_env(wa_raft, raft_max_incoming_snapshot_transfers),
+        application:unset_env(wa_raft, transport_accept_test_owner),
+        application:unset_env(wa_raft, transport_accept_test_reply),
+        process_flag(trap_exit, PreviousTrapExit)
+    end.
+
+-spec may_accept_from_trunk_follower(Config :: ct_suite:ct_config()) -> ok.
+may_accept_from_trunk_follower(_Config) ->
+    Owner = self(),
+    Follower = spawn_link(fun() -> trunk_follower(Owner) end),
+    true = register(wa_raft_transport, Follower),
+    ?assertEqual({error, unavailable}, wa_raft_transport:may_accept(node(), ?PRECHECK_META(false), 1000)),
+    ?assertEqual({unrecognized_call, {may_accept_meta, ?PRECHECK_META(false)}}, receive_message()),
+    ?assert(is_process_alive(Follower)).
+
+% Mirrors the precheck handling of a follower that predates precheck_meta(): an
+% unguarded boolean precheck clause and a catch-all that replies unsupported.
+-spec trunk_follower(Owner :: pid()) -> no_return().
+trunk_follower(Owner) ->
+    receive
+        {'$gen_call', From, {may_accept, Witness}} ->
+            Reply =
+                case Witness of
+                    true -> ok;
+                    false -> ok
+                end,
+            gen_server:reply(From, Reply);
+        {'$gen_call', From, Request} ->
+            Owner ! {unrecognized_call, Request},
+            gen_server:reply(From, {error, unsupported})
+    end,
+    trunk_follower(Owner).
 
 -spec mock_transport() -> ok.
 mock_transport() ->
@@ -278,6 +359,17 @@ receive_message() ->
         Message -> Message
     after 1000 ->
         timeout
+    end.
+
+-spec transport_accept(
+    Meta :: wa_raft_transport:meta() | wa_raft_transport:precheck_meta(), IncomingBytes :: non_neg_integer()
+) -> ok | {error, Reason :: atom()}.
+transport_accept(Meta, IncomingBytes) ->
+    {ok, Owner} = application:get_env(wa_raft, transport_accept_test_owner),
+    Owner ! {transport_accept, Meta, IncomingBytes},
+    case application:get_env(wa_raft, transport_accept_test_reply, ok) of
+        crash -> error(provider_crash);
+        Reply -> Reply
     end.
 
 -spec transport_init(node()) -> {ok, test_state} | {stop, init_failed}.

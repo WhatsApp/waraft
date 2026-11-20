@@ -89,7 +89,8 @@
     transport_info/0,
     file_id/0,
     file_info/0,
-    meta/0
+    meta/0,
+    precheck_meta/0
 ]).
 
 -include_lib("kernel/include/file.hrl").
@@ -162,6 +163,13 @@
     position := wa_raft_log:log_pos(),
     witness := boolean()
 }.
+-type precheck_meta() :: #{
+    type := snapshot,
+    table := wa_raft:table(),
+    partition := wa_raft:partition(),
+    witness := boolean(),
+    incoming_bytes := non_neg_integer()
+}.
 
 %%------------------------------------------------------------------------------
 %% Public and Internal Types - File
@@ -220,7 +228,10 @@
 %% Returns whether or not the transport provider should allow or reject some
 %% incoming transport before it is initiated. One common usecase is to reject
 %% an incoming transport if there might not be enough local space to hold it.
--callback transport_accept(Meta :: meta(), IncomingBytes :: non_neg_integer()) -> ok | {error, Reason :: term()}.
+%% A snapshot catchup precheck asks with `precheck_meta()` and the sender's estimate of
+%% the snapshot size, before the sender has created the snapshot.
+-callback transport_accept(Meta :: meta() | precheck_meta(), IncomingBytes :: non_neg_integer()) ->
+    ok | {error, Reason :: term()}.
 
 %% Request the transport provider to start the specified transport. The callback
 %% must synchronously clean up partially started resources before returning an
@@ -257,6 +268,7 @@
 -define(EMPTY_TIMESTAMP, -16#8000000000000000).
 
 -define(MAY_ACCEPT(Witness), {may_accept, Witness}).
+-define(MAY_ACCEPT_META(Meta), {may_accept_meta, Meta}).
 
 %%% ------------------------------------------------------------------------
 
@@ -344,13 +356,16 @@ transfer(Peer, Table, Partition, Root, Timeout) ->
 %% Ask a peer whether it currently has capacity to accept an incoming snapshot
 %% transport. This is advisory and reserves nothing: the peer performs the
 %% authoritative check again when the transport is offered, so a concurrent
-%% sender may still consume the last slot in between.
--spec may_accept(Peer :: atom(), Witness :: boolean(), Timeout :: timeout()) ->
-    ok | {error, receiver_overloaded} | {error, unavailable}.
-may_accept(Peer, Witness, Timeout) ->
-    try gen_server:call({?MODULE, Peer}, ?MAY_ACCEPT(Witness), Timeout) of
+%% sender may still consume the last slot in between. The peer also asks the
+%% transport provider whether it can accept a transport of the estimated size,
+%% such as whether it fits on disk.
+-spec may_accept(Peer :: atom(), Meta :: precheck_meta(), Timeout :: timeout()) ->
+    ok | {error, receiver_overloaded | receiver_disk_full | unavailable}.
+may_accept(Peer, Meta, Timeout) ->
+    try gen_server:call({?MODULE, Peer}, ?MAY_ACCEPT_META(Meta), Timeout) of
         ok                           -> ok;
         {error, receiver_overloaded} -> {error, receiver_overloaded};
+        {error, receiver_disk_full}  -> {error, receiver_disk_full};
         {error, _}                   -> {error, unavailable}
     catch
         exit:_ -> {error, unavailable}
@@ -837,11 +852,28 @@ init(_) ->
 -spec handle_call(Request, From :: gen_server:from(), State :: #state{}) -> {reply, Reply :: term(), NewState :: #state{}} | {noreply, NewState :: #state{}}
     when
         Request ::
+            {may_accept_meta, Meta :: precheck_meta()} |
             {may_accept, Witness :: boolean()} |
             {start, Peer :: node(), Meta :: meta(), Root :: string()} |
             {start_wait, Peer :: node(), Meta :: meta(), Root :: string()} |
             {transport, ID :: transport_id(), Peer :: node(), Module :: module(), Meta :: meta(), Files :: [{file_id(), RelPath :: string(), Size :: integer()}]} |
             {cancel, ID :: transport_id(), Reason :: term()}.
+handle_call(?MAY_ACCEPT_META(#{table := Table, witness := Witness, incoming_bytes := IncomingBytes} = Meta), _From, State) ->
+    Reply = case check_capacity(Witness, State) of
+        ok ->
+            try
+                transport_accept(transport_module(Meta), Meta, IncomingBytes)
+            catch
+                T:E:S ->
+                    ?RAFT_COUNT(Table, 'transport.precheck.error'),
+                    ?RAFT_LOG_WARNING("wa_raft_transport failed to precheck transport for ~0p~n~s", [Table, erl_error:format_exception(T, E, S)]),
+                    {error, failed}
+            end;
+        Throttled ->
+            Throttled
+    end,
+    {reply, Reply, State};
+% TODO(T298806767): remove once every sender passes precheck_meta()
 handle_call(?MAY_ACCEPT(Witness), _From, State) ->
     {reply, check_capacity(Witness, State), State};
 handle_call({start, Peer, Meta, Root}, _From, State) ->
@@ -1073,7 +1105,7 @@ add_pending_notify(_ID, undefined, State) ->
 add_pending_notify(ID, From, #state{pending_notify = PendingNotify} = State) ->
     State#state{pending_notify = PendingNotify#{ID => From}}.
 
--spec transport_module(Meta :: meta()) -> module().
+-spec transport_module(Meta :: meta() | precheck_meta()) -> module().
 transport_module(#{table := Table, partition := Partition}) ->
     wa_raft_transport:registered_module(Table, Partition);
 transport_module(_Meta) ->
@@ -1101,7 +1133,7 @@ check_capacity(Witness, #state{global_atomics = GlobalAtomics}) ->
 
 %% Ask the transport implementation whether it can accept an incoming transport of
 %% IncomingBytes total. Implementations that do not export the optional callback always accept.
--spec transport_accept(Module :: module(), Meta :: meta(), IncomingBytes :: non_neg_integer()) ->
+-spec transport_accept(Module :: module(), Meta :: meta() | precheck_meta(), IncomingBytes :: non_neg_integer()) ->
     ok | {error, Reason :: term()}.
 transport_accept(Module, Meta, IncomingBytes) ->
     case erlang:function_exported(Module, transport_accept, 2) of

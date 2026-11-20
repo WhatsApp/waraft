@@ -61,7 +61,9 @@ child_spec() ->
 start_link() ->
     gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
 
--spec transport_accept(Meta :: wa_raft_transport:meta(), IncomingBytes :: non_neg_integer()) -> ok.
+-spec transport_accept(
+    Meta :: wa_raft_transport:meta() | wa_raft_transport:precheck_meta(), IncomingBytes :: non_neg_integer()
+) -> ok.
 transport_accept(_, _) ->
     ok.
 

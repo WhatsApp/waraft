@@ -144,7 +144,7 @@ handle_cast(?CATCHUP(App, Name, Node, Table, Partition, Witness), State0) ->
     Now = erlang:monotonic_time(millisecond),
     case allowed(Now, Name, Node, State0) of
         {true, #state{transports = Transports, snapshots = Snapshots, overload_backoffs = OverloadBackoffs} = State1} ->
-            case precheck(App, Node, Table, Witness) of
+            case precheck(App, Node, Table, Partition, Witness) of
                 {error, PrecheckReason} ->
                     ?RAFT_LOG_NOTICE(
                         "destination node ~0p declined a transport for ~0p:~0p due to ~0p before snapshot creation, try again later",
@@ -217,19 +217,39 @@ terminate(_Reason, #state{transports = Transports, snapshots = Snapshots}) ->
     ],
     ok.
 
--spec precheck(App :: atom(), Node :: node(), Table :: wa_raft:table(), Witness :: boolean()) ->
-    ok | {error, receiver_overloaded}.
-precheck(App, Node, Table, Witness) ->
+-spec precheck(
+    App :: atom(),
+    Node :: node(),
+    Table :: wa_raft:table(),
+    Partition :: wa_raft:partition(),
+    Witness :: boolean()
+) -> ok | {error, receiver_overloaded | receiver_disk_full}.
+precheck(App, Node, Table, Partition, Witness) ->
     case ?RAFT_SNAPSHOT_CATCHUP_PRECHECK(App, Table) of
         false ->
             ok;
         true ->
-            case wa_raft_transport:may_accept(Node, Witness, ?RAFT_SNAPSHOT_CATCHUP_PRECHECK_TIMEOUT_MS(App, Table)) of
+            IncomingBytes =
+                case Witness of
+                    true -> 0;
+                    false -> wa_raft_storage:snapshot_size_estimate(Table, Partition)
+                end,
+            Meta = #{
+                type => snapshot,
+                table => Table,
+                partition => Partition,
+                witness => Witness,
+                incoming_bytes => IncomingBytes
+            },
+            case wa_raft_transport:may_accept(Node, Meta, ?RAFT_SNAPSHOT_CATCHUP_PRECHECK_TIMEOUT_MS(App, Table)) of
                 ok ->
                     ok;
                 {error, receiver_overloaded} ->
                     ?RAFT_COUNT(Table, 'snapshot_catchup.precheck.rejected'),
                     {error, receiver_overloaded};
+                {error, receiver_disk_full} ->
+                    ?RAFT_COUNT(Table, 'snapshot_catchup.precheck.disk_full'),
+                    {error, receiver_disk_full};
                 {error, unavailable} ->
                     % Peers that cannot answer the precheck are treated as accepting so that
                     % the authoritative check made when the transport is offered still decides.

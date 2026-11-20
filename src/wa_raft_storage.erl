@@ -25,6 +25,7 @@ storage solutions on top of the RAFT consensus algorithm.
     status/1,
     position/1,
     durable_position/2,
+    snapshot_size_estimate/2,
     label/1,
     config/1,
     read/2
@@ -227,6 +228,14 @@ storage solutions on top of the RAFT consensus algorithm.
 -callback storage_durable_position(Table :: wa_raft:table(), Partition :: wa_raft:partition()) ->
     Position :: wa_raft_log:log_pos() | unbounded.
 
+%% Estimate the size in bytes of a snapshot of the current storage state before
+%% one is created. Called from the snapshot catchup server, so it must not call
+%% either RAFT server. Underestimating is safe; overestimating can stop a peer
+%% from ever accepting a snapshot it has room for.
+-callback storage_snapshot_size_estimate(Table :: wa_raft:table(), Partition :: wa_raft:partition()) ->
+    {ok, Bytes :: non_neg_integer()} | {error, Reason :: term()}.
+-optional_callbacks([storage_snapshot_size_estimate/2]).
+
 %% Issue a read command to get the label associated with the most
 %% recent command that was applied with a label. See the optional
 %% callback `storage_apply/4` for details.
@@ -411,6 +420,41 @@ durable_position(Table, Partition) ->
     case wa_raft_part_sup:options(Table, Partition) of
         #raft_options{storage_module = Module} -> Module:storage_durable_position(Table, Partition);
         undefined -> #raft_log_pos{}
+    end.
+
+%% Returns 0 when the storage provider cannot estimate the snapshot size.
+-spec snapshot_size_estimate(Table :: wa_raft:table(), Partition :: wa_raft:partition()) -> non_neg_integer().
+snapshot_size_estimate(Table, Partition) ->
+    case wa_raft_part_sup:options(Table, Partition) of
+        #raft_options{storage_module = Module} ->
+            % A provider failure must not crash the caller, which serves every partition on the node.
+            try
+                case
+                    erlang:function_exported(Module, storage_snapshot_size_estimate, 2) andalso
+                        Module:storage_snapshot_size_estimate(Table, Partition)
+                of
+                    false ->
+                        0;
+                    {ok, Bytes} ->
+                        Bytes;
+                    {error, Reason} ->
+                        ?RAFT_COUNT(Table, 'storage.snapshot_size_estimate.error'),
+                        ?RAFT_LOG_WARNING(
+                            "Storage[~0p:~0p] failed to estimate the snapshot size due to ~0p", [Table, Partition, Reason]
+                        ),
+                        0
+                end
+            catch
+                T:E:S ->
+                    ?RAFT_COUNT(Table, 'storage.snapshot_size_estimate.error'),
+                    ?RAFT_LOG_WARNING(
+                        "Storage[~0p:~0p] failed to estimate the snapshot size~n~s",
+                        [Table, Partition, erl_error:format_exception(T, E, S)]
+                    ),
+                    0
+            end;
+        undefined ->
+            0
     end.
 
 -spec label(Storage :: gen_server:server_ref()) -> {ok, Label :: wa_raft_label:label()} | {error, Reason :: term()}.

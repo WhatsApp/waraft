@@ -19,6 +19,8 @@
 %% Test cases
 -export([
     precheck_overloaded_skips_snapshot/1,
+    precheck_disk_full_skips_snapshot/1,
+    precheck_sends_snapshot_size_estimate/1,
     precheck_unavailable_creates_snapshot/1,
     precheck_disabled_creates_snapshot/1
 ]).
@@ -30,6 +32,10 @@
 -define(TABLE, test_table).
 -define(PARTITION, 1).
 -define(PEER, 'follower@nohost').
+-define(WITNESS_PEER, 'witness@nohost').
+-define(PRECHECK_META(Witness, IncomingBytes), #{
+    type => snapshot, table => ?TABLE, partition => ?PARTITION, witness => Witness, incoming_bytes => IncomingBytes
+}).
 
 -spec suite() -> [term()].
 suite() ->
@@ -39,6 +45,8 @@ suite() ->
 all() ->
     [
         precheck_overloaded_skips_snapshot,
+        precheck_disk_full_skips_snapshot,
+        precheck_sends_snapshot_size_estimate,
         precheck_unavailable_creates_snapshot,
         precheck_disabled_creates_snapshot
     ].
@@ -69,6 +77,24 @@ precheck_overloaded_skips_snapshot(_Config) ->
     ?assert(meck:called(wa_raft_metrics, count, [{raft, ?TABLE, 'snapshot_catchup.precheck.rejected'}])),
     ?assertNot(meck:called(wa_raft_storage, create_snapshot, '_')).
 
+-spec precheck_disk_full_skips_snapshot(Config :: ct_suite:ct_config()) -> ok.
+precheck_disk_full_skips_snapshot(_Config) ->
+    ok = meck:expect(wa_raft_transport, may_accept, fun(_Peer, _Request, _Timeout) -> {error, receiver_disk_full} end),
+    catchup(),
+    ?assert(meck:called(wa_raft_metrics, count, [{raft, ?TABLE, 'snapshot_catchup.precheck.disk_full'}])),
+    ?assertNot(meck:called(wa_raft_storage, create_snapshot, '_')).
+
+-spec precheck_sends_snapshot_size_estimate(Config :: ct_suite:ct_config()) -> ok.
+precheck_sends_snapshot_size_estimate(_Config) ->
+    ok = meck:expect(wa_raft_storage, snapshot_size_estimate, fun(?TABLE, ?PARTITION) -> 4096 end),
+    ok = meck:expect(wa_raft_transport, may_accept, fun(_Peer, _Request, _Timeout) -> {error, receiver_disk_full} end),
+    catchup(),
+    ?assert(meck:called(wa_raft_transport, may_accept, [?PEER, ?PRECHECK_META(false, 4096), '_'])),
+    % Witness snapshots carry no storage data, so they are not estimated.
+    catchup(witness_name, ?WITNESS_PEER, true),
+    ?assert(meck:called(wa_raft_transport, may_accept, [?WITNESS_PEER, ?PRECHECK_META(true, 0), '_'])),
+    ?assertEqual(1, meck:num_calls(wa_raft_storage, snapshot_size_estimate, '_')).
+
 -spec precheck_unavailable_creates_snapshot(Config :: ct_suite:ct_config()) -> ok.
 precheck_unavailable_creates_snapshot(_Config) ->
     ok = meck:expect(wa_raft_transport, may_accept, fun(_Peer, _Request, _Timeout) -> {error, unavailable} end),
@@ -86,7 +112,11 @@ precheck_disabled_creates_snapshot(_Config) ->
 
 -spec catchup() -> ok.
 catchup() ->
-    ok = wa_raft_snapshot_catchup:catchup(?APP, test_name, ?PEER, ?TABLE, ?PARTITION, false),
+    catchup(test_name, ?PEER, false).
+
+-spec catchup(Name :: atom(), Peer :: node(), Witness :: boolean()) -> ok.
+catchup(Name, Peer, Witness) ->
+    ok = wa_raft_snapshot_catchup:catchup(?APP, Name, Peer, ?TABLE, ?PARTITION, Witness),
     % A call is handled only after the catchup cast queued before it.
     _ = wa_raft_snapshot_catchup:which_transports(),
     ok.
