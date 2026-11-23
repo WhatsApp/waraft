@@ -5,7 +5,6 @@
 %% the LICENSE file in the root directory of this source tree.
 
 -module(wa_raft_snapshot_catchup_SUITE).
--oncall("whatsapp_kvdb").
 -compile(warn_missing_spec_all).
 
 %% Test server callbacks
@@ -68,7 +67,12 @@ init_per_testcase(_TestCase, Config) ->
 -spec end_per_testcase(TestCase :: atom(), Config :: ct_suite:ct_config()) -> ok.
 end_per_testcase(_TestCase, _Config) ->
     application:unset_env(wa_raft, raft_snapshot_catchup_precheck),
-    gen_server:stop(wa_raft_snapshot_catchup).
+    try
+        ok = gen_server:stop(wa_raft_snapshot_catchup)
+    after
+        % Unloaded explicitly because the open-source build has no automatic mock cleanup.
+        wa_raft_test_helper:unload_mocks([wa_raft_part_sup, wa_raft_storage, wa_raft_transport, wa_raft_metrics])
+    end.
 
 -spec precheck_overloaded_skips_snapshot(Config :: ct_suite:ct_config()) -> ok.
 precheck_overloaded_skips_snapshot(_Config) ->

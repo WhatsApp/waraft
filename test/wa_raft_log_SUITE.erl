@@ -5,7 +5,6 @@
 %% the LICENSE file in the root directory of this source tree.
 
 -module(wa_raft_log_SUITE).
--oncall("whatsapp_msgd").
 -compile(warn_missing_spec_all).
 
 %% Test server callbacks

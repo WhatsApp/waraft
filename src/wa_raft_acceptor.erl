@@ -85,7 +85,8 @@ This module implements the front-end process for accepting commits / reads
 -type key() :: term().
 -type op() :: {Key :: key(), Command :: command()}.
 -type priority() :: high | low.
--type from() :: gen_server:from() | {Pid :: pid(), Tag :: reference()}.
+% Callers may build their own `{Pid, Ref}` reply target, and `gen_server` reply tags are opaque.
+-type from() :: gen_server:from() | {Pid :: pid(), Tag :: dynamic()}.
 
 -type call_error_type() :: timeout | unreachable | {call_error, Reason :: term()}.
 -type call_error() :: {error, call_error_type()}.

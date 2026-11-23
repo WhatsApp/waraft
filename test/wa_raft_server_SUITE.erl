@@ -5,7 +5,6 @@
 %% the LICENSE file in the root directory of this source tree.
 
 -module(wa_raft_server_SUITE).
--oncall("whatsapp_msgd").
 -compile(warn_missing_spec_all).
 
 %% Test server callbacks
@@ -199,7 +198,7 @@ end_per_group(_, Config) ->
 
 -spec init_per_testcase(Testcase :: atom(), Config :: ct_suite:ct_config()) -> ct_suite:ct_config().
 init_per_testcase(Testcase, Config0) ->
-    Config1 = [{testcase, Testcase} | Config0],
+    Config1 = wa_raft_test_helper:setup_testcase([{testcase, Testcase} | Config0]),
     case proplists:get_value(group, Config1) of
         unit -> unit_init_per_testcase(Config1);
         server -> server_init_per_testcase(Config1);
@@ -207,7 +206,8 @@ init_per_testcase(Testcase, Config0) ->
     end.
 
 -spec end_per_testcase(Testcase :: atom(), Config :: ct_suite:ct_config()) -> ok.
-end_per_testcase(_, _) ->
+end_per_testcase(_, Config) ->
+    ok = wa_raft_test_helper:teardown_testcase(Config),
     wa_raft_test_helper:unload_mocks([wa_raft_log, wa_raft_snapshot_catchup]).
 
 -spec all() -> [ct_suite:ct_test_def()].
@@ -924,14 +924,6 @@ server_init_per_group(Config) ->
     ok = meck:expect(wa_raft_server, disabled, fun server_callback_mock/3),
 
     ok = meck:new(wa_raft_test_distribution, [non_strict, no_link]),
-    ok = meck:expect(
-        wa_raft_test_distribution,
-        cast,
-        fun({Name, Node}, _Identifier, Message) ->
-            server_notify(host(), cast, {Name, Node, Message}),
-            ok
-        end
-    ),
     ok = meck:new(wa_raft_test_label, [non_strict, no_link]),
     ok = meck:expect(
         wa_raft_test_label,
@@ -999,6 +991,16 @@ server_init_per_testcase(Config) ->
 
     % Preload RAFT options into cache, actual spec used may be different
     wa_raft_part_sup:prepare_spec(?RAFT_APPLICATION, Options),
+
+    % Set per testcase because some testcases override it.
+    ok = meck:expect(
+        wa_raft_test_distribution,
+        cast,
+        fun({Name, Node}, _Identifier, Message) ->
+            server_notify(host(), cast, {Name, Node, Message}),
+            ok
+        end
+    ),
 
     [{table, Table}, {partition, Partition}, {options, Options} | Config].
 
@@ -3417,10 +3419,8 @@ setup_leader_with_quorum(Config) ->
     clear_message_queue(),
     {leader, Name, 1, State}.
 
-%% Set the leader read lease knob for the current testcase and ensure it is
-%% reset on testcase end. Callers must call `application:unset_env/2`
-%% themselves at the end of the testcase if they want to be tidy — the test
-%% helper resets the environment between suites.
+%% Set the leader read lease knob for the current testcase; the test helper
+%% restores the environment when the testcase ends.
 -spec set_lease_ms(LeaseMs :: non_neg_integer()) -> ok.
 set_lease_ms(LeaseMs) ->
     application:set_env(?RAFT_APPLICATION, ?RAFT_LEADER_READ_LEASE_MS, LeaseMs).

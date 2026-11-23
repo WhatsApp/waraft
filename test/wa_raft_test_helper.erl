@@ -5,7 +5,6 @@
 %% the LICENSE file in the root directory of this source tree.
 
 -module(wa_raft_test_helper).
--oncall("whatsapp_msgd").
 -compile(warn_missing_spec_all).
 
 -export([
@@ -17,7 +16,9 @@
     setup_environment/1,
     teardown_environment/1,
     setup_group/1,
-    teardown_group/1
+    teardown_group/1,
+    setup_testcase/1,
+    teardown_testcase/1
 ]).
 
 -export([
@@ -54,6 +55,7 @@
 -define(SENTINELS_KEY, wa_raft_test_helper_sentinels).
 -define(APPLICATION_ENV_KEY, wa_raft_test_helper_application_env).
 -define(GROUP_APPLICATION_ENV_KEY, wa_raft_test_helper_group_application_env).
+-define(TESTCASE_APPLICATION_ENV_KEY, wa_raft_test_helper_testcase_application_env).
 
 -spec suite() -> [term()].
 suite() ->
@@ -85,6 +87,15 @@ teardown_group(Config) ->
     stop_sentinels(Config),
     restore_application_env(proplists:get_value(?GROUP_APPLICATION_ENV_KEY, Config, [])),
     ok.
+
+% Isolates application env changes when all testcases share one node.
+-spec setup_testcase(Config :: ct_suite:ct_config()) -> ct_suite:ct_config().
+setup_testcase(Config) ->
+    [{?TESTCASE_APPLICATION_ENV_KEY, application:get_all_env(?RAFT_APPLICATION)} | Config].
+
+-spec teardown_testcase(Config :: ct_suite:ct_config()) -> ok.
+teardown_testcase(Config) ->
+    restore_application_env(proplists:get_value(?TESTCASE_APPLICATION_ENV_KEY, Config, [])).
 
 -spec stop_sentinels(Config :: ct_suite:ct_config()) -> ok.
 stop_sentinels(Config) ->
